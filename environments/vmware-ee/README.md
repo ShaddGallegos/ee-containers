@@ -1,5 +1,5 @@
-# aws_ee
-definition file for aws_ee
+# vmware_ee
+definition file for vmware_ee
 
 ## Requirements:
 
