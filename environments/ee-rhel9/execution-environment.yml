@@ -1,18 +1,37 @@
 ---
-version: 1
+version: 3
 
-build_arg_defaults:
-  EE_BASE_IMAGE: 'registry.redhat.io/ansible-automation-platform-22/ee-supported-rhel8'
-  
-ansible_config: '../ansible.cfg'
+build_arg_defaults: {}
+
+images:
+  base_image:
+    name: 'registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel9:1.0.0-808'
+
+additional_build_files:
+  - src: ./ansible.cfg
+    dest: configs
 
 dependencies:
   galaxy: requirements.yml
   python: requirements.txt
+  system: bindep.txt
+
+options:
+  package_manager_path: /usr/bin/microdnf
 
 additional_build_steps:
-  prepend: |
+  prepend_final: |
+    # DNS configuration first
+    RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf
+    RUN echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+    # Add hosts entry for galaxy.ansible.com
+    RUN echo "151.101.158.232 galaxy.ansible.com" >> /etc/hosts
+    # Verify DNS resolution
+    RUN ping -c 1 galaxy.ansible.com || true
+    # Continue with other steps
     RUN pip3 install --upgrade pip setuptools
-  # append: |
-  #   LABEL quay.expires-after="45d"
- 
+    RUN microdnf upgrade -y
+    RUN pip install --no-cache-dir bindep pyyaml requirements-parser --index-url https://pypi.org/simple
+
+  append_final: |
+    ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
