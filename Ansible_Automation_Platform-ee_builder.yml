@@ -145,7 +145,7 @@
 
     - name: Copy ansible.cfg to /tmp/ee-containers/_build/configs if it does not exist
       ansible.builtin.copy:
-        src: /etc/ansible/ansible.cfg
+        src: /tmp/ee-containers/templates/ansible.cfg.j2
         dest: /tmp/ee-containers/_build/configs/ansible.cfg
         mode: '0644'
       when: not ansible_cfg.stat.exists
