@@ -10,23 +10,32 @@
     - name: rh_password
       prompt: "Enter your Red Hat CDN password"
       private: true
+    - name: automation_hub_token
+      prompt: "Enter your Automation Hub token"
+      private: true
+    - name: galaxy_token
+      prompt: "Enter your Galaxy token (or press enter to skip)"
+      private: true
+      default: ""
 
   pre_tasks:
-    - name: Verify internet connection
-      ansible.builtin.command:
-        cmd: ping -c 4 google.com
-      register: ping_result
+    - name: Verify internet connectivity
+      ansible.builtin.uri:
+        url: https://google.com
+        method: GET
+      register: connectivity_check
+      failed_when: connectivity_check.status != 200
       changed_when: false
-      ignore_errors: true
 
     - name: Fail if no internet connection is detected
       ansible.builtin.fail:
         msg: "No internet connection detected."
-      when: ping_result.rc != 0
+      when: connectivity_check.status != 200
 
-    - name: Ensure required packages are installed via dnf
-      ansible.builtin.dnf:
-        name:
+    - name: Install prerequisites
+      tags: [setup, packages]
+      vars:
+        packages:
           - python3-pip
           - ansible-core
           - git
@@ -37,12 +46,26 @@
           - podman-plugins
           - podman-remote
           - yum-utils
-        state: present
+      block:
+        - name: Install required packages
+          ansible.builtin.package:
+            name: "{{ packages }}"
+            state: present
 
-    - name: dnf upgrade all packages
+    - name: Do dnf upgrade all packages
       ansible.builtin.dnf:
         name: '*'
         state: latest
+
+    - name: Check directories
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - environments
+        - /tmp/ee-containers/environments
+        - environments/.git
+        - /tmp/ee-containers/environments/.git
+      register: dir_checks
 
     - name: Check if local environments directory exists
       ansible.builtin.stat:
@@ -74,22 +97,26 @@
       register: environments_dir_content
       when: environments_dir.stat.exists
 
-    - name: Copy local environments directory to /tmp/ee-containers/environments/ if it does not exist or is empty
-      ansible.builtin.copy:
-        mode: '0755'
-        src: environments/
-        dest: /tmp/ee-containers/environments/
-      when: not environments_dir.stat.exists or environments_dir_content.matched == 0
+    - name: Check if /tmp/ee-containers/environments is a git repository
+      ansible.builtin.stat:
+        path: /tmp/ee-containers/environments/.git
+      register: git_repo_exists
 
-    - name: Clone GitHub repository to /tmp/ee-containers if environments directory does not exist or is empty
+    - name: Remove existing directory if it's not a git repository
+      ansible.builtin.file:
+        path: /tmp/ee-containers/environments
+        state: absent
+      when: environments_dir.stat.exists and not git_repo_exists.stat.exists
+
+    - name: Clone or update GitHub repository
       ansible.builtin.git:
         repo: 'https://github.com/cloin/ee-builds.git'
         dest: /tmp/ee-containers/environments/
-        version: 'main'  # Specify the branch or commit
+        version: 'main'
         clone: true
         update: true
         force: true
-      when: not environments_dir.stat.exists or environments_dir_content.matched == 0
+      when: not environments_dir.stat.exists or not git_repo_exists.stat.exists or environments_dir_content.matched == 0
 
     - name: Check if repository is already cloned in current directory
       ansible.builtin.stat:
@@ -106,16 +133,22 @@
         force: true
       when: not repo_cloned_local.stat.exists and not local_environments_dir.stat.exists
 
-  tasks:
-    - name: Login to registry.redhat.io
+    - name: Install required collections
       ansible.builtin.command:
-        cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} registry.redhat.io"
+        cmd: ansible-galaxy collection install community.general
       changed_when: false
 
-    - name: Login to console.redhat.com
+  tasks:
+    - name: Login to registries
       ansible.builtin.command:
-        cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} console.redhat.com"
-      changed_when: false
+        cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
+      loop:
+        - registry.redhat.io
+        - console.redhat.com
+        - registry.access.redhat.com
+        - quay.io
+        - registry.connect.redhat.com
+      no_log: true  # Hide sensitive information from logs
 
     - name: Check if requirements.txt exists
       ansible.builtin.stat:
@@ -145,50 +178,46 @@
         state: directory
         mode: '0755'
 
-    - name: Check if ansible.cfg exists in /tmp/ee-containers/_build/configs
-      ansible.builtin.stat:
-        path: /tmp/ee-containers/_build/configs/ansible.cfg
-      register: ansible_cfg
-
-    - name: Copy ansible.cfg to /tmp/ee-containers/_build/configs if it does not exist
+    - name: Create ansible.cfg in /tmp/ee-containers/_build/configs
       ansible.builtin.copy:
-        src: /tmp/ee-containers/templates/ansible.cfg.j2
         dest: /tmp/ee-containers/_build/configs/ansible.cfg
         mode: '0644'
-      when: not ansible_cfg.stat.exists
+        content: |
+          [defaults]
+          inventory = /etc/ansible/hosts
+          remote_user = root
+          host_key_checking = False
+          retry_files_enabled = False
+          collections_paths = ~/.ansible/collections:/usr/share/ansible/collections
+          roles_path = ~/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles
 
-    - name: Verify DNS resolution for github.com
+          [galaxy]
+          server_list = validated, published, galaxy
+
+          [galaxy_server.published]
+          url=https://console.redhat.com/api/automation-hub/content/published/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+          token={{ automation_hub_token }}
+
+          [galaxy_server.validated]
+          url=https://console.redhat.com/api/automation-hub/content/validated/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+          token={{ automation_hub_token }}
+
+          [galaxy_server.galaxy]
+          url=https://galaxy.ansible.com/
+          token={{ galaxy_token if galaxy_token != "" else omit }}
+
+    - name: Verify DNS resolution
       ansible.builtin.command:
-        cmd: nslookup github.com
-      register: nslookup_github_result
+        cmd: "nslookup {{ item }}"
+      loop:
+        - github.com
+        - cdn-ubi.redhat.com
+        - galaxy.ansible.com
+      register: dns_checks
       changed_when: false
-
-    - name: Fail if DNS resolution for github.com fails
-      ansible.builtin.fail:
-        msg: "DNS resolution for github.com failed."
-      when: nslookup_github_result.rc != 0
-
-    - name: Verify DNS resolution for cdn-ubi.redhat.com
-      ansible.builtin.command:
-        cmd: nslookup cdn-ubi.redhat.com
-      register: nslookup_redhat_result
-      changed_when: false
-
-    - name: Fail if DNS resolution for cdn-ubi.redhat.com fails
-      ansible.builtin.fail:
-        msg: "DNS resolution for cdn-ubi.redhat.com failed."
-      when: nslookup_redhat_result.rc != 0
-
-    - name: Verify DNS resolution for galaxy.ansible.com
-      ansible.builtin.command:
-        cmd: nslookup galaxy.ansible.com
-      register: nslookup_galaxy_result
-      changed_when: false
-
-    - name: Fail if DNS resolution for galaxy.ansible.com fails
-      ansible.builtin.fail:
-        msg: "DNS resolution for galaxy.ansible.com failed."
-      when: nslookup_galaxy_result.rc != 0
+      failed_when: dns_checks.rc != 0
 
     - name: Set DNS servers for Podman
       ansible.builtin.copy:
@@ -276,29 +305,29 @@
         state: directory
         mode: '0755'
 
-    - name: Create UBI 9 BaseOS repository configuration file
-      ansible.builtin.copy:
-        dest: "{{ selected_env }}/repos.d/ubi-9-baseos.repo"
-        content: |
-          [ubi-9-baseos-rpms]
-          name=Red Hat Universal Base Image 9 BaseOS
-          baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/baseos/os/
-          enabled=1
-          gpgcheck=1
-          gpgkey=https://access.redhat.com/security/pki/keys/redhat/redhat-ubi-9-key.pub
-        mode: '0644'
+#    - name: Create UBI 9 BaseOS repository configuration file
+#      ansible.builtin.copy:
+#        dest: "{{ selected_env }}/repos.d/ubi-9-baseos.repo"
+#        content: |
+#          [ubi-9-baseos-rpms]
+#          name=Red Hat Universal Base Image 9 BaseOS
+#          baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/baseos/os/
+#          enabled=1
+#          gpgcheck=1
+#          gpgkey=https://access.redhat.com/security/pki/keys/redhat/redhat-ubi-9-key.pub
+#        mode: '0644'
 
-    - name: Create UBI 9 AppStream repository configuration file
-      ansible.builtin.copy:
-        dest: "{{ selected_env }}/repos.d/ubi-9-appstream.repo"
-        content: |
-          [ubi-9-appstream-rpms]
-          name=Red Hat Universal Base Image 9 AppStream
-          baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/appstream/os/
-          enabled=1
-          gpgcheck=1
-          gpgkey=https://access.redhat.com/security/pki/keys/redhat/redhat-ubi-9-key.pub
-        mode: '0644'
+#    - name: Create UBI 9 AppStream repository configuration file
+#      ansible.builtin.copy:
+#        dest: "{{ selected_env }}/repos.d/ubi-9-appstream.repo"
+#        content: |
+#          [ubi-9-appstream-rpms]
+#          name=Red Hat Universal Base Image 9 AppStream
+#          baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/appstream/os/
+#          enabled=1
+#          gpgcheck=1
+#          gpgkey=https://access.redhat.com/security/pki/keys/redhat/redhat-ubi-9-key.pub
+#        mode: '0644'
 
     - name: Check if image already exists
       ansible.builtin.command:
@@ -306,43 +335,122 @@
       register: image_exists
       changed_when: false
 
-    - name: Start image build process in the background if image does not exist
-      ansible.builtin.shell: |
-        nohup /usr/local/bin/ansible-builder build --prune-images --no-cache -v3 \
-        -f {{ selected_env }}/execution-environment.yml --context /tmp/ee-containers \
-        --tag {{ selected_env | basename }} > /tmp/build.log 2>&1 & echo $!
-      when: image_exists.stdout == ""
-      register: build_pid
-      changed_when: false
+    - name: Handle image building
+      block:
+        - name: Build container image
+          ansible.builtin.shell: |
+            /usr/local/bin/ansible-builder build --prune-images --no-cache -v3 \
+            -f {{ selected_env }}/execution-environment.yml --context /tmp/ee-containers \
+            --tag {{ selected_env | basename }} > /tmp/build.log 2>&1
+          when: image_exists.stdout == ""
+          async: 2800
+          poll: 10
+      rescue:
+        - name: Display build failure
+          ansible.builtin.debug:
+            msg: "Image build failed. Check /tmp/build.log for details."
+      always:
+        - name: Cleanup build artifacts
+          ansible.builtin.file:
+            path: /tmp/build.log
+            state: absent
 
-    - name: Monitor build process and tee log to console
-      ansible.builtin.shell: |
-        while ps -p {{ build_pid.stdout }} > /dev/null 2>&1; do
-          tail -n +1 /tmp/build.log
-          sleep 10
-        done
-      async: 2800  # Increased timeout to 30 minutes
-      poll: 10
-      changed_when: false
+    - name: Check if build log exists
+      ansible.builtin.stat:
+        path: /tmp/build.log
+      register: build_log_file
 
     - name: Display build log
       ansible.builtin.command:
         cmd: cat /tmp/build.log
-      changed_when: false
       register: build_log
+      when: build_log_file.stat.exists
+      changed_when: false
 
     - name: Display build log output
       ansible.builtin.debug:
         var: build_log.stdout
+      when: build_log is defined and build_log.stdout is defined
 
     - name: Clean up build log
       ansible.builtin.file:
         path: /tmp/build.log
         state: absent
       changed_when: false
+      when: build_log_file.stat.exists
+
+    - name: Clean up unused images and build artifacts
+      block:
+        - name: Get list of images to keep
+          ansible.builtin.set_fact:
+            keep_images: "{{ all_dirs | map(attribute='path') | map('basename') | list }}"
+
+        - name: Create temporary script for cleanup
+          ansible.builtin.copy:
+            dest: /tmp/cleanup_images.sh
+            mode: '0755'
+            content: |
+              #!/bin/bash
+              # Function to check if image should be protected
+              is_protected() {
+                local image="$1"
+                if [[ "$image" =~ (ee-minimal|ee-supported|ee-rhel) ]]; then
+                  return 0  # Protected
+                fi
+                return 1  # Not protected
+              }
+
+              # Remove dangling images except protected ones
+              podman images --filter "dangling=true" --format {% raw %}"{{.Repository}}"{% endraw %} | \
+              while read -r image; do
+                if ! is_protected "$image"; then
+                  podman rmi "$image" 2>/dev/null || true
+                fi
+              done
+
+              # Get all images except protected ones
+              podman images --format {% raw %}"{{.Repository}}:{{.Tag}}"{% endraw %} | \
+              while read -r image; do
+                if ! is_protected "$image"; then
+                  podman rmi -f "$image" 2>/dev/null || true
+                fi
+              done
+
+        - name: Execute cleanup script
+          ansible.builtin.command:
+            cmd: /tmp/cleanup_images.sh
+          register: cleanup_result
+          changed_when: cleanup_result.rc == 0
+
+        - name: Remove temporary cleanup script
+          ansible.builtin.file:
+            path: /tmp/cleanup_images.sh
+            state: absent
+
+        - name: Display cleanup results
+          ansible.builtin.debug:
+            msg: "Cleanup completed. Results: {{ cleanup_result.stdout }}"
 
     - name: List podman images
       ansible.builtin.command:
-        cmd: podman images
-      changed_when: false
+        cmd: podman images --format {% raw %}'{{.Repository}}|{{.Tag}}|{{.ID}}|{{.Created}}|{{.Size}}'{% endraw %}
       register: images
+      changed_when: false
+
+    - name: Display podman images
+      ansible.builtin.debug:
+        msg: |
+          REPOSITORY          TAG         IMAGE ID      CREATED            SIZE
+          {%- for line in images.stdout_lines -%}
+          {%- set fields = line.split('|') -%}
+          {{ "%-18s" | format(fields[0]) }}{{ "%-11s" | format(fields[1]) }}{{ "%-12s" | format(fields[2]) }}{{ "%-18s" | format(fields[3]) }}{{ fields[4] }}
+          {%- endfor %}
+
+  handlers:
+    - name: Cleanup temp files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/build.log
+        - /tmp/cleanup_images.sh
