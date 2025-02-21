@@ -31,11 +31,18 @@
           - ansible-core
           - git
           - podman
+          - ansible-dev-tools
           - podman-docker
           - podman-compose
           - podman-plugins
           - podman-remote
+          - yum-utils
         state: present
+
+    - name: dnf upgrade all packages
+      ansible.builtin.dnf:
+        name: '*'
+        state: latest
 
     - name: Check if local environments directory exists
       ansible.builtin.stat:
@@ -188,7 +195,7 @@
         dest: /etc/containers/registries.conf
         content: |
           [registries.search]
-          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.centos.org']
+          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.redhat.io']
 
           [registries.insecure]
           registries = []
@@ -197,7 +204,7 @@
           registries = []
 
           [registries]
-          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.centos.org']
+          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.redhat.io']
 
           [engine]
           dns_servers = ['8.8.8.8', '8.8.4.4']
@@ -314,7 +321,7 @@
           tail -n +1 /tmp/build.log
           sleep 10
         done
-      async: 1800  # Increased timeout to 30 minutes
+      async: 2800  # Increased timeout to 30 minutes
       poll: 10
       changed_when: false
 
