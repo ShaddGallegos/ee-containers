@@ -37,4 +37,5 @@ additional_build_steps:
         && rm -rf /var/lib/dnf/history.* \
         && rm -rf /var/log/dnf.* /var/log/hawkey.log \
         && rm -rf /var/cache/dnf \
-        && rm -rf /root/.cache
+        && rm -rf /root/.cache \
+        && rm -rf /etc/ansible/ansible.cfg

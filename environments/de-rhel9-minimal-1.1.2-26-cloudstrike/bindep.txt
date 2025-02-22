@@ -1,7 +1,8 @@
-gcc
-libpq-devel
 pkgconf-pkg-config
-python3.11
+systemd-devel
+gcc
 python3.11-devel
 python3.11-pip
-systemd-devel
+python3
+python
+make

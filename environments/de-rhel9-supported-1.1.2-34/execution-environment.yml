@@ -28,3 +28,10 @@ additional_build_steps:
 
   append_final: |
     ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
+    RUN microdnf clean all \
+      && rm -rf /var/cache/{dnf,yum} \
+      && rm -rf /var/lib/dnf/history.* \
+      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
+      && rm -rf /var/cache/dnf \
+      && rm -rf /root/.cache \
+      && rm -rf /etc/ansible/ansible.cfg
