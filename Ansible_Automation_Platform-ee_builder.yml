@@ -11,7 +11,7 @@
       prompt: "Enter your Red Hat CDN password"
       private: true
     - name: automation_hub_token
-      prompt: "Enter your Automation Hub token"
+      prompt: "Enter your Automation Hub token (or press enter to skip)"
       private: true
     - name: galaxy_token
       prompt: "Enter your Galaxy token (or press enter to skip)"
