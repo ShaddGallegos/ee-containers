@@ -1,0 +1,6 @@
+dnf
+microdnf
+pkgconf-pkg-config
+python39
+python39-devel
+python39-pip

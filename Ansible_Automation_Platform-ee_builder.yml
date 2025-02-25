@@ -3,6 +3,32 @@
   hosts: localhost
   become: true
 
+  vars:
+    container_registries:
+      - registry.redhat.io
+      - console.redhat.com
+      - registry.access.redhat.com
+      - quay.io
+      - registry.connect.redhat.com
+    dns_servers:
+      - '8.8.8.8'
+      - '8.8.4.4'
+    required_packages:
+      - python3-pip
+      - ansible-core
+      - git
+      - podman
+      - ansible-dev-tools
+      - podman-docker
+      - podman-compose
+      - podman-plugins
+      - podman-remote
+      - yum-utils
+    git_repo:
+      url: 'https://github.com/cloin/ee-builds.git'
+      branch: 'main'
+    work_dir: '/tmp/ee-containers'
+
   vars_prompt:
     - name: rh_username
       prompt: "Enter your Red Hat CDN username"
@@ -11,10 +37,10 @@
       prompt: "Enter your Red Hat CDN password"
       private: true
     - name: automation_hub_token
-      prompt: "Enter your Automation Hub token (or press enter to skip)"
+      prompt: "Enter your Automation Hub token from https://console.redhat.com/ansible/automation-hub/token (or press enter to skip)"
       private: true
     - name: galaxy_token
-      prompt: "Enter your Galaxy token (or press enter to skip)"
+      prompt: "Enter your Galaxy token from https://galaxy.ansible.com/ui/token (or press enter to skip)"
       private: true
       default: ""
 
@@ -57,6 +83,29 @@
         name: '*'
         state: latest
 
+    - name: Ensure container policy directory exists
+      ansible.builtin.file:
+        path: /etc/containers/policy.d
+        state: directory
+        mode: '0755'
+
+    - name: Create container policy file
+      ansible.builtin.copy:
+        dest: /etc/containers/policy.d/default.json
+        mode: '0644'
+        content: |
+          {
+            "default": [{"type": "reject"}],
+            "transports": {
+              "docker": {
+                "registry.redhat.io": [{"type": "insecureAcceptAnything"}],
+                "registry.access.redhat.com": [{"type": "insecureAcceptAnything"}],
+                "quay.io": [{"type": "insecureAcceptAnything"}],
+                "docker.io": [{"type": "insecureAcceptAnything"}]
+              }
+            }
+          }
+
     - name: Check directories
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -65,6 +114,7 @@
         - /tmp/ee-containers/environments
         - environments/.git
         - /tmp/ee-containers/environments/.git
+        - /etc/containers/policy.d/
       register: dir_checks
 
     - name: Check if local environments directory exists
@@ -139,16 +189,59 @@
       changed_when: false
 
   tasks:
-    - name: Login to registries
+    - name: Check if already logged in to registries
       ansible.builtin.command:
         cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
+        creates: "/root/.config/containers/auth.json"
       loop:
         - registry.redhat.io
         - console.redhat.com
         - registry.access.redhat.com
         - quay.io
         - registry.connect.redhat.com
-      no_log: true  # Hide sensitive information from logs
+#      no_log: true  # Hide sensitive information from logs
+
+    - name: Pull required container images
+      ansible.builtin.command:
+        cmd: "podman pull {{ item }}"
+      loop:
+        - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
+        - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
+        - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
+        - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
+        - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
+        - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
+        - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
+        - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
+      register: pull_results
+      changed_when: "'Downloaded newer image' in pull_results.stdout"
+      retries: 3
+      delay: 5
+      until: pull_results is success
+
+    - name: Display pulled images status
+      ansible.builtin.debug:
+        msg: "{{ pull_results }}"
+
+    - name: Clean up container registry
+      block:
+        - name: Remove unused images
+          ansible.builtin.command:
+            cmd: podman image prune -af
+          register: prune_result
+          changed_when: prune_result.stdout != ""
+
+        - name: Clean registry cache
+          ansible.builtin.command:
+            cmd: podman system prune -f
+          register: system_prune_result
+          changed_when: system_prune_result.stdout != ""
+
+        - name: Display cleanup results
+          ansible.builtin.debug:
+            msg: 
+              - "Image pruning results: {{ prune_result.stdout }}"
+              - "System pruning results: {{ system_prune_result.stdout }}"
 
     - name: Check if requirements.txt exists
       ansible.builtin.stat:
@@ -337,23 +430,40 @@
 
     - name: Handle image building
       block:
-        - name: Build container image
-          ansible.builtin.shell: |
-            /usr/local/bin/ansible-builder build --prune-images --no-cache -v3 \
-            -f {{ selected_env }}/execution-environment.yml --context /tmp/ee-containers \
-            --tag {{ selected_env | basename }} > /tmp/build.log 2>&1
-          when: image_exists.stdout == ""
+        - name: Build container image if it does not exist
+          ansible.builtin.command:
+            cmd: "/usr/local/bin/ansible-builder build --prune-images --no-cache -v3 -f {{ selected_env }}/execution-environment.yml --context /tmp/ee-containers --tag {{ selected_env | basename }}"
           async: 2800
-          poll: 10
-      rescue:
-        - name: Display build failure
+          poll: 0
+          register: build_job
+          when: image_exists.stdout == ""
+          changed_when: false
+
+        - name: Wait for build to finish
+          ansible.builtin.async_status:
+            jid: "{{ build_job.ansible_job_id }}"
+          register: build_result
+          until: build_result.finished
+          retries: 30
+          delay: 60
+
+        - name: Display build log
+          ansible.builtin.command:
+            cmd: "cat /tmp/build.log"
+          register: build_log
+          when: build_result.rc != 0
+          changed_when: false
+
+        - name: Display build log output
           ansible.builtin.debug:
-            msg: "Image build failed. Check /tmp/build.log for details."
-      always:
+            var: build_log.stdout
+          when: build_result.rc != 0
+
         - name: Cleanup build artifacts
           ansible.builtin.file:
             path: /tmp/build.log
             state: absent
+          when: build_result.rc != 0
 
     - name: Check if build log exists
       ansible.builtin.stat:
@@ -454,3 +564,8 @@
       loop:
         - /tmp/build.log
         - /tmp/cleanup_images.sh
+
+    - name: Restart podman
+      ansible.builtin.service:
+        name: podman
+        state: restarted

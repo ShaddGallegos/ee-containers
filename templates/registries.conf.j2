@@ -1,0 +1,11 @@
+[registries.search]
+registries = {{ container_registries | to_json }}
+
+[registries.insecure]
+registries = []
+
+[registries.block]
+registries = []
+
+[engine]
+dns_servers = {{ dns_servers | to_json }}

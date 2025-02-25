@@ -1,6 +1,0 @@
-[ubi-9-appstream-rpms]
-name=Red Hat Universal Base Image 9 AppStream
-baseurl=https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/appstream/os/
-enabled=1
-gpgcheck=1
-gpgkey=https://access.redhat.com/security/pki/keys/redhat/redhat-ubi-9-key.pub

@@ -1,0 +1,7 @@
+---
+collections:
+  - name: infra.aap_configuration
+  - name: ansible.eda
+  - name: ansible.utils
+  - name: community.general
+  
