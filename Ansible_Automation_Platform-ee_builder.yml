@@ -199,6 +199,11 @@
         - registry.access.redhat.com
         - quay.io
         - registry.connect.redhat.com
+      register: login_result
+      failed_when:
+        - login_result.rc != 0
+        - item != 'console.redhat.com'  # Ignore failures for console.redhat.com
+      ignore_errors: "{{ item == 'console.redhat.com' }}"  # Only ignore errors for console.redhat.com
 #      no_log: true  # Hide sensitive information from logs
 
     - name: Pull required container images
@@ -239,7 +244,7 @@
 
         - name: Display cleanup results
           ansible.builtin.debug:
-            msg: 
+            msg:
               - "Image pruning results: {{ prune_result.stdout }}"
               - "System pruning results: {{ system_prune_result.stdout }}"
 
@@ -501,30 +506,65 @@
             mode: '0755'
             content: |
               #!/bin/bash
+              
+              # Store selected environment
+              SELECTED_ENV="{{ selected_env | basename }}"
+              
+              # List of protected base images with tags
+              declare -a PROTECTED_IMAGES=(
+                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+                "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
+                "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
+              )
+              
               # Function to check if image should be protected
               is_protected() {
                 local image="$1"
-                if [[ "$image" =~ (ee-minimal|ee-supported|ee-rhel) ]]; then
-                  return 0  # Protected
+                local tag="$2"
+                
+                # Always protect the selected environment
+                if [[ "$image" == *"$SELECTED_ENV"* ]]; then
+                  echo "Protecting selected environment: $image:$tag"
+                  return 0
                 fi
-                return 1  # Not protected
+                
+                # Check protected images list
+                for protected in "${PROTECTED_IMAGES[@]}"; do
+                  local p_image="${protected%:*}"
+                  if [[ "$image" == *"$p_image"* ]]; then
+                    echo "Protecting base image: $image:$tag"
+                    return 0
+                  fi
+                done
+                
+                return 1
               }
-
-              # Remove dangling images except protected ones
-              podman images --filter "dangling=true" --format {% raw %}"{{.Repository}}"{% endraw %} | \
-              while read -r image; do
-                if ! is_protected "$image"; then
-                  podman rmi "$image" 2>/dev/null || true
+              
+              echo "Protected Environment: $SELECTED_ENV"
+              echo "Current images before cleanup:"
+              podman images
+              
+              # Only remove unprotected images
+              echo -e "\nChecking images for cleanup..."
+              FORMAT='{% raw %}{{.Repository}}|{{.Tag}}|{{.ID}}{% endraw %}'
+              podman images --format "$FORMAT" | while IFS='|' read -r image tag id; do
+                if ! is_protected "$image" "$tag"; then
+                  if [[ "$image" != *"registry.redhat.io/ansible-automation-platform-25"* ]]; then
+                    echo "Removing unprotected image: $image:$tag"
+                    podman rmi -f "$id" 2>/dev/null || true
+                  fi
                 fi
               done
-
-              # Get all images except protected ones
-              podman images --format {% raw %}"{{.Repository}}:{{.Tag}}"{% endraw %} | \
-              while read -r image; do
-                if ! is_protected "$image"; then
-                  podman rmi -f "$image" 2>/dev/null || true
-                fi
-              done
+              
+              echo -e "\nRemaining images after cleanup:"
+              sleep 2 
+              reset
+              podman images
 
         - name: Execute cleanup script
           ansible.builtin.command:
