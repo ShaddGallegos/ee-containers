@@ -1,8 +1,8 @@
-gcc
-microdnf
-pkgconf-pkg-config
-python3.11-devel
-systemd-devel
-python3.11-pip
-python39-pip
-python39-devel
+python3-devel [platform:rpm]
+gcc [platform:rpm]
+python3-pip [platform:rpm]
+shadow-utils [platform:rpm]
+sudo [platform:rpm]
+systemd-devel [platform:rpm]
+pkgconfig [platform:rpm]
+make [platform:rpm]

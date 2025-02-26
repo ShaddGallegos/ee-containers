@@ -1,0 +1,37 @@
+#!/bin/bash
+set -eo pipefail
+
+# Array of protected images
+declare -a PROTECTED_IMAGES=(
+{% for image in protected_images %}
+    "{{ image }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+)
+
+cleanup_images() {
+    local image="$1"
+    local id="$2"
+    
+    if [[ " ${PROTECTED_IMAGES[@]} " =~ " ${image} " ]] || \
+       [[ "${image}" == *"/ee-"* ]] || \
+       [[ "${image}" == *"/de-"* ]]; then
+        echo "Protecting: ${image}"
+        return 0
+    fi
+    
+    echo "Removing: ${image}"
+    podman rmi -f "${id}" || true
+}
+
+# Process images
+echo "Starting cleanup..."
+while IFS= read -r line; do
+    [[ -z "${line}" || "${line}" =~ ^REPOSITORY ]] && continue
+    
+    image=$(echo "${line}" | awk '{print $1":"$2}')
+    id=$(echo "${line}" | awk '{print $3}')
+    
+    cleanup_images "${image}" "${id}"
+done < <(podman images --format "table {% raw %}{{.Repository}} {{.Tag}} {{.ID}}{% endraw %}")
+
+echo "Cleanup complete"
