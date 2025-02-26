@@ -1,5 +1,4 @@
----
-- name: Comprehensive Setup Playbook
+- name: Automaticly build Execution Environments for Ansible Automation Platform
   hosts: localhost
   become: true
 
@@ -228,25 +227,25 @@
       ansible.builtin.debug:
         msg: "{{ pull_results }}"
 
-    - name: Clean up container registry
-      block:
-        - name: Remove unused images
-          ansible.builtin.command:
-            cmd: podman image prune -af
-          register: prune_result
-          changed_when: prune_result.stdout != ""
+#    - name: Clean up container registry
+#      block:
+#        - name: Remove unused images
+#          ansible.builtin.command:
+#            cmd: podman image prune -af
+#          register: prune_result
+#          changed_when: prune_result.stdout != ""
 
-        - name: Clean registry cache
-          ansible.builtin.command:
-            cmd: podman system prune -f
-          register: system_prune_result
-          changed_when: system_prune_result.stdout != ""
+#       - name: Clean registry cache
+#          ansible.builtin.command:
+#            cmd: podman system prune -f
+#          register: system_prune_result
+#          changed_when: system_prune_result.stdout != ""
 
-        - name: Display cleanup results
-          ansible.builtin.debug:
-            msg:
-              - "Image pruning results: {{ prune_result.stdout }}"
-              - "System pruning results: {{ system_prune_result.stdout }}"
+#        - name: Display cleanup results
+#          ansible.builtin.debug:
+#            msg:
+#              - "Image pruning results: {{ prune_result.stdout }}"
+#              - "System pruning results: {{ system_prune_result.stdout }}"
 
     - name: Check if requirements.txt exists
       ansible.builtin.stat:
@@ -397,11 +396,11 @@
           ansible.builtin.debug:
             var: selected_env
 
-    - name: Ensure repository configuration directory exists
-      ansible.builtin.file:
-        path: "{{ selected_env }}/repos.d"
-        state: directory
-        mode: '0755'
+#    - name: Ensure repository configuration directory exists
+#      ansible.builtin.file:
+#        path: "{{ selected_env }}/repos.d"
+#        state: directory
+#        mode: '0755'
 
 #    - name: Create UBI 9 BaseOS repository configuration file
 #      ansible.builtin.copy:
@@ -445,12 +444,39 @@
           changed_when: false
 
         - name: Wait for build to finish
-          ansible.builtin.async_status:
-            jid: "{{ build_job.ansible_job_id }}"
-          register: build_result
-          until: build_result.finished
-          retries: 30
-          delay: 60
+          block:
+            - name: Monitor async build progress
+              ansible.builtin.async_status:
+                jid: "{{ build_job.ansible_job_id }}"
+              register: build_result
+              until: build_result.finished
+              retries: 30
+              delay: 60
+              vars:
+                msg: "Working - Building container image (Attempt {{ build_result.attempts | default(1) }} of 30)"
+              failed_when:
+                - build_result.finished == 1 
+                - build_result.rc != 0
+
+            - name: Output build progress status
+              ansible.builtin.debug:
+                msg: "{{ build_result.msg | default('Working - Building container image...') }}"
+              when: not build_result.finished
+
+            - name: Process build failure
+              when: 
+                - build_result.finished == 1
+                - build_result.rc != 0
+              block:
+                - name: Extract build error information
+                  ansible.builtin.set_fact:
+                    build_error: "{{ build_result.stdout_lines | default([]) | select('match', '^Error:.*') | list }}"
+
+                - name: Report build failure details
+                  ansible.builtin.fail:
+                    msg: |
+                      Build failed after {{ build_result.attempts }} attempts
+                      Error: {{ build_error[0] | default('Unknown error') }}
 
         - name: Display build log
           ansible.builtin.command:
@@ -496,90 +522,107 @@
 
     - name: Clean up unused images and build artifacts
       block:
-        - name: Get list of images to keep
+        - name: Create protected images list
           ansible.builtin.set_fact:
-            keep_images: "{{ all_dirs | map(attribute='path') | map('basename') | list }}"
+            protected_images:
+              - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
+              - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
 
-        - name: Create temporary script for cleanup
+        - name: Create selective cleanup script
           ansible.builtin.copy:
-            dest: /tmp/cleanup_images.sh
+            dest: /tmp/selective_cleanup.sh
             mode: '0755'
             content: |
               #!/bin/bash
               
-              # Store selected environment
-              SELECTED_ENV="{{ selected_env | basename }}"
-              
-              # List of protected base images with tags
+              # Array of protected images
               declare -a PROTECTED_IMAGES=(
-                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
-                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
-                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
-                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
                 "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
                 "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
                 "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
                 "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
+                "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
               )
-              
-              # Function to check if image should be protected
+
+              # Function to check if image is protected
               is_protected() {
                 local image="$1"
-                local tag="$2"
-                
-                # Always protect the selected environment
-                if [[ "$image" == *"$SELECTED_ENV"* ]]; then
-                  echo "Protecting selected environment: $image:$tag"
-                  return 0
-                fi
-                
-                # Check protected images list
                 for protected in "${PROTECTED_IMAGES[@]}"; do
-                  local p_image="${protected%:*}"
-                  if [[ "$image" == *"$p_image"* ]]; then
-                    echo "Protecting base image: $image:$tag"
+                  if [[ "$image" == "$protected" ]]; then
                     return 0
                   fi
                 done
-                
                 return 1
               }
-              
-              echo "Protected Environment: $SELECTED_ENV"
+
               echo "Current images before cleanup:"
               podman images
               
-              # Only remove unprotected images
-              echo -e "\nChecking images for cleanup..."
-              FORMAT='{% raw %}{{.Repository}}|{{.Tag}}|{{.ID}}{% endraw %}'
-              podman images --format "$FORMAT" | while IFS='|' read -r image tag id; do
-                if ! is_protected "$image" "$tag"; then
-                  if [[ "$image" != *"registry.redhat.io/ansible-automation-platform-25"* ]]; then
-                    echo "Removing unprotected image: $image:$tag"
+              echo -e "\nStarting selective cleanup..."
+              while IFS= read -r line; do
+                repo=$(echo "$line" | awk '{print $1":"$2}')
+                id=$(echo "$line" | awk '{print $3}')
+                
+                if ! is_protected "$repo"; then
+                  if [[ "$repo" != *"registry.redhat.io/ansible-automation-platform-25"* ]]; then
+                    echo "Removing unprotected image: $repo"
                     podman rmi -f "$id" 2>/dev/null || true
                   fi
+                else
+                  echo "Protecting image: $repo"
                 fi
-              done
+              done < <(podman images --format "table {{.Repository}} {{.Tag}} {{.ID}}" | tail -n +2)
               
               echo -e "\nRemaining images after cleanup:"
-              sleep 2 
-              reset
               podman images
 
-        - name: Execute cleanup script
+        - name: Execute selective cleanup
           ansible.builtin.command:
-            cmd: /tmp/cleanup_images.sh
+            cmd: /tmp/selective_cleanup.sh
           register: cleanup_result
           changed_when: cleanup_result.rc == 0
 
-        - name: Remove temporary cleanup script
+        - name: Remove cleanup script
           ansible.builtin.file:
-            path: /tmp/cleanup_images.sh
+            path: /tmp/selective_cleanup.sh
             state: absent
 
         - name: Display cleanup results
           ansible.builtin.debug:
-            msg: "Cleanup completed. Results: {{ cleanup_result.stdout }}"
+            msg: "Cleanup completed. Protected images preserved."
+
+    - name: Clean up dangling images
+      block:
+        - name: Get list of dangling images
+          ansible.builtin.command:
+            cmd: podman images -f "dangling=true" -q
+          register: dangling_images
+          changed_when: false
+
+        - name: Remove dangling images
+          ansible.builtin.command:
+            cmd: "podman rmi {{ item }}"
+          with_items: "{{ dangling_images.stdout_lines }}"
+          when: dangling_images.stdout_lines | length > 0
+          register: cleanup_result
+          changed_when: cleanup_result.rc == 0
+          failed_when: 
+            - cleanup_result.rc != 0
+            - '"image is being used" not in cleanup_result.stderr'
+
+        - name: Display cleanup results
+          ansible.builtin.debug:
+            msg: "Removed {{ dangling_images.stdout_lines | length }} dangling images"
+          when: dangling_images.stdout_lines | length > 0
 
     - name: List podman images
       ansible.builtin.command:
