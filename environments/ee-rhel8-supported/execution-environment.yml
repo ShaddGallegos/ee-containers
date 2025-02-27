@@ -21,10 +21,6 @@ additional_build_files:
     dest: configs/ansible.cfg
 
 dependencies:
-  ansible_core:
-    package_pip: "ansible-core>=2.15.0,<2.16"
-  ansible_runner:
-    package_pip: "ansible-runner>=2.3.1"
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
@@ -32,42 +28,16 @@ dependencies:
 additional_build_steps:
   prepend_base: |
     USER root
-    RUN python3 -m pip uninstall ansible ansible-core ansible-lint ansible-runner || true && \
-        rpm --rebuilddb && \
-        rpm -qa >/dev/null 2>&1 && \
-        microdnf remove -y \
-            ansible-core \
-            ansible-lint \
-            python3.11-ansible-compat \
-            python3-ansible-core || true && \
-        microdnf install -y \
-            python3 \
-            shadow-utils \
-            sudo \
-            python3-pip \
-            python3-devel \
-            gcc \
-            make \
-            pkg-config \
-            systemd-devel \
-            systemd \
-            python3-systemd \
-            systemd-libs && \
+    python3 -m pip install --upgrade pip setuptools wheel
+    RUN microdnf upgrade -y && \
         useradd -m -s /bin/bash admin && \
         echo "admin:redhat" | chpasswd && \
         echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
         chown -R admin:admin /home/admin && \
-        python3 -m pip install --upgrade pip setuptools wheel
 
   prepend_final: |
     USER root
-    RUN pip3 uninstall -y ansible-core ansible-lint ansible-runner && \
-        python3 -m pip install --no-cache-dir --break-system-packages \
-            "ansible-core>=2.15.0,<2.16" \
-            "ansible-runner>=2.3.1" \
-            "ansible-compat>=4.1.11" \
-            "ansible-lint>=24.9.0" && \
-        ln -sf /usr/lib64/libsystemd.so.0 /usr/lib64/libsystemd.so && \
+    RUN ln -sf /usr/lib64/libsystemd.so.0 /usr/lib64/libsystemd.so && \
         ln -sf /usr/lib64/libsystemd.so.0 /usr/lib64/libsystemd-journal.so && \
         ln -sf /usr/lib64/pkgconfig/libsystemd.pc /usr/lib64/pkgconfig/systemd.pc
 
@@ -78,5 +48,4 @@ additional_build_steps:
         echo "remote_tmp = /tmp/.ansible-\${USER}/tmp" >> /etc/ansible/ansible.cfg && \
         microdnf clean all && \
         rm -rf /var/cache/{dnf,yum}
-
-
+        

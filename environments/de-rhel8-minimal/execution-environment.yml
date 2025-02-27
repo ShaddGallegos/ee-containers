@@ -13,13 +13,9 @@ images:
 
 additional_build_files:
   - src: ./ansible.cfg
-    dest: configs
+    dest: configs/ansible.cfg
 
 dependencies:
-  ansible_core:
-    package_pip: ansible-core>=2.13.10
-  ansible_runner:
-    package_pip: ansible-runner
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt

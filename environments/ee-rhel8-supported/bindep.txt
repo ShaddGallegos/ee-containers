@@ -1,6 +1,7 @@
 gcc [platform:rpm]
 make [platform:rpm]
 pkg-config [platform:rpm]
+python3 [platform:rpm]
 python3-devel [platform:rpm]
 python3-pip [platform:rpm]
 python3-systemd [platform:rpm]

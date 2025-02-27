@@ -1,8 +1,0 @@
-ansible-builder
-ansible-compat
-ansible-core
-ansible-creator
-ansible-lint
-ansible-navigator
-ansible-runner
-ansible-sign

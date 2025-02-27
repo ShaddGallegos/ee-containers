@@ -1,0 +1,63 @@
+---
+- name: Check if image already exists
+  ansible.builtin.command:
+    cmd: "podman images -q {{ selected_env | basename }}"
+  register: image_exists
+  changed_when: false
+
+- name: Handle build process for {{ selected_env | basename }}
+  block:
+    - name: Create build directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ work_dir }}/_build"
+        - "{{ work_dir }}/0_build"
+        - "{{ work_dir }}/context"
+
+    - name: Build EE container image
+      ansible.builtin.command:
+        cmd: >-
+          ansible-builder build
+          --tag {{ selected_env | basename }}
+          --container-runtime podman
+          --verbosity 2
+          --prune-images
+          --context {{ work_dir }}/context
+          -f {{ selected_env }}/execution-environment.yml
+      register: build_result
+      ignore_errors: true
+      when: image_exists.stdout == ""
+
+    - name: Set build status
+      ansible.builtin.set_fact:
+        build_failed: "{{ build_result is failed }}"
+
+    - name: Display build output
+      ansible.builtin.debug:
+        msg: |
+          Build Status for {{ selected_env | basename }}: {{ 'Failed' if build_result is failed else 'Success' }}
+          
+          STDOUT:
+          {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+          
+          STDERR:
+          {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
+
+    - name: Copy build artifacts
+      ansible.builtin.command:
+        cmd: "rsync -av {{ work_dir }}/context/_build/ {{ work_dir }}/0_build/"
+      when: not build_failed | default(false)
+
+    - name: Clean up on build failure
+      when: build_result is failed
+      block:
+        - name: Remove build artifacts
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ work_dir }}/_build"
+            - "{{ work_dir }}/context"

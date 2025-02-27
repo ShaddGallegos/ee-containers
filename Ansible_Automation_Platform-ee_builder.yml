@@ -434,168 +434,167 @@
         - name: Prompt user for environment selection
           ansible.builtin.pause:
             prompt: |
-              Select an environment (number):
+              Select environment(s) (numbers separated by commas):
               {{ menu_options }}
           register: user_selection
 
-        - name: Set selected environment based on user input
+        - name: Parse user selections
           ansible.builtin.set_fact:
-            selected_env: "{{ all_dirs[user_selection.user_input | int - 1].path }}"
+            selected_environments: >-
+              {{
+                user_selection.user_input.split(',')
+                | map('trim')
+                | map('int')
+                | map('extract', all_dirs)
+                | map(attribute='path')
+                | map('basename')
+                | list
+              }}
 
-        - name: Display selected environment
+        - name: Set environment paths
+          ansible.builtin.set_fact:
+            selected_envs: >-
+              {{
+                selected_environments
+                | map('regex_replace', '^(.*)$', playbook_dir ~ '/environments/\\1')
+                | list
+              }}
+
+        - name: Display selected environments
           ansible.builtin.debug:
-            var: selected_env
+            msg: |
+              Selected environments:
+              {% for env in selected_environments %}
+              - {{ env }}
+              Full path: {{ playbook_dir }}/environments/{{ env }}
+              {% endfor %}
+
+        - name: Ensure files directory exists
+          ansible.builtin.file:
+            path: "{{ work_dir }}/files"
+            state: directory
+            mode: '0755'
+
+        - name: Copy build tasks file
+          ansible.builtin.copy:
+            src: files/build_ee.yml
+            dest: "{{ work_dir }}/files/build_ee.yml"
+            mode: '0644'
+
+        - name: Build selected environments
+          block:
+            - name: Check if image already exists
+              ansible.builtin.command:
+                cmd: "podman images -q {{ selected_env | basename }}"
+              register: image_exists
+              changed_when: false
+
+            - name: Handle build process
+              block:
+                - name: Build EE container image
+                  ansible.builtin.command:
+                    cmd: >-
+                      ansible-builder build
+                      --tag {{ selected_env | basename }}
+                      --container-runtime podman
+                      --verbosity 2
+                      --prune-images
+                      --context {{ work_dir }}/context
+                      -f {{ selected_env }}/execution-environment.yml
+                  register: build_result
+                  ignore_errors: true
+                  when: image_exists.stdout == ""
+
+                - name: Display build output
+                  ansible.builtin.debug:
+                    msg: |
+                      Build Status for {{ selected_env | basename }}: {{ 'Failed' if build_result is failed else 'Success' }}
+                      
+                      STDOUT:
+                      {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+                      
+                      STDERR:
+                      {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
+
+                - name: Clean up on build failure
+                  when: build_result is failed
+                  block:
+                    - name: Remove build artifacts
+                      ansible.builtin.file:
+                        path: "{{ item }}"
+                        state: absent
+                      loop:
+                        - "{{ work_dir }}/_build"
+                        - "{{ work_dir }}/context"
+          loop: "{{ selected_envs }}"
+          loop_control:
+            loop_var: selected_env
+            label: "{{ selected_env | basename }}"
+
+        - name: Process selected environments
+          include_tasks: "{{ work_dir }}/files/build_ee.yml"
+          loop: "{{ selected_envs }}"
+          loop_control:
+            loop_var: selected_env
+            label: "{{ selected_env | basename }}"
 
     - name: Check if image already exists
       ansible.builtin.command:
-        cmd: "podman images -q {{ selected_env | basename }}"
+        cmd: podman images -q de-rhel8-minimal
       register: image_exists
       changed_when: false
 
-    - name: Handle image building
+    - name: Handle build result
       block:
-        - name: Prepare build environment
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: directory
-            mode: '0755'
-          loop:
-            - /tmp/ee-containers/_build
-            - /tmp/ee-containers/context
+        - name: Check if image already exists
+          ansible.builtin.command:
+            cmd: podman images -q {{ selected_env | basename }}
+          register: image_exists
+          changed_when: false
 
-        - name: Handle build result
+        - name: Check if image already exists
+          ansible.builtin.command:
+            cmd: podman images -q {{ selected_env | basename }}
+          register: image_exists
+          changed_when: false
+
+        - name: Build EE container image
+          ansible.builtin.command:
+            cmd: >-
+              ansible-builder build
+              --tag {{ selected_env | basename }}
+              --container-runtime podman
+              --verbosity 2
+              --prune-images
+              --context {{ selected_env }}
+              -f {{ selected_env }}/execution-environment.yml
+          register: build_result
+          ignore_errors: true
+          when: image_exists.stdout == ""
+          changed_when: "'Downloaded newer image' in build_result.stdout or 'Successfully built' in build_result.stdout"
+
+        - name: Display build error
+          ansible.builtin.debug:
+            msg: |
+              Build failed with the following output:
+              STDOUT:
+              {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+              STDERR:
+              {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
+          when: build_result is failed
+
+        - name: Clean up on build failure
+          when: build_result is failed
           block:
-            - name: Build EE container image
-              ansible.builtin.command:
-                cmd: >-
-                  ansible-builder build
-                  --tag {{ selected_env | basename }}
-                  --container-runtime podman
-                  --verbosity 2
-                  --prune-images
-                  --context {{ selected_env }}
-                  -f {{ selected_env }}/execution-environment.yml
-                creates: "/tmp/ee-containers/{{ selected_env | basename }}.tar"
-              register: build_result
-              failed_when: build_result.rc != 0
-              when: image_exists.stdout == ""
+            - name: Remove build artifacts
+              ansible.builtin.file:
+                path: "{{ item }}"
+                state: absent
+              loop:
+                - "{{ selected_env }}/_build"
+                - "{{ selected_env }}/Containerfile"
 
-            - name: Display build error
-              when: build_result.rc != 0
-              ansible.builtin.debug:
-                msg: |
-                  Build failed with return code {{ build_result.rc }}
-                  STDOUT:
-                  {{ build_result.stdout_lines | to_nice_yaml }}
-                  STDERR:
-                  {{ build_result.stderr_lines | to_nice_yaml }}
-
-            - name: Clean up on build failure
-              when: build_result.rc != 0
-              block:
-                - name: Remove build artifacts
-                  ansible.builtin.file:
-                    path: "{{ item }}"
-                    state: absent
-                  loop:
-                    - "{{ selected_env }}/_build"
-                    - "{{ selected_env }}/Containerfile"
-
-                - name: Clean dangling images
-                  ansible.builtin.shell:
-                    cmd: |
-                      set -o pipefail
-                      podman images --filter "dangling=true" -q | xargs -r podman rmi -f
-                      podman image prune -f
-                  register: cleanup_result
-                  changed_when: cleanup_result.stdout != ""
-                  failed_when: false
-
-                - name: Fail with build error message
-                  ansible.builtin.fail:
-                    msg: "Container build failed. See previous error messages."
-
-    - name: Check if build log exists
-      ansible.builtin.stat:
-        path: /tmp/build.log
-      register: build_log_file
-
-    - name: Display build log
-      ansible.builtin.command:
-        cmd: cat /tmp/build.log
-      register: build_log
-      when: build_log_file.stat.exists
-      changed_when: false
-
-    - name: Display build log output
-      ansible.builtin.debug:
-        var: build_log.stdout
-      when: build_log is defined and build_log.stdout is defined
-
-    - name: Clean up build log
-      ansible.builtin.file:
-        path: /tmp/build.log
-        state: absent
-      changed_when: false
-      when: build_log_file.stat.exists
-
-    - name: List podman images
-      ansible.builtin.command:
-        cmd: ["podman", "images", "--format", "{% raw %}{{.Repository}}|{{.Tag}}|{{.ID}}|{{.Created}}|{{.Size}}{% endraw %}"]
-      register: images
-      changed_when: false
-
-    - name: Display podman images
-      ansible.builtin.debug:
-        msg: |
-          REPOSITORY          TAG         IMAGE ID      CREATED            SIZE
-          {%- for line in images.stdout_lines -%}
-          {%- set fields = line.split('|') -%}
-          {{ "%-18s" | format(fields[0]) }}{{ "%-11s" | format(fields[1]) }}{{ "%-12s" | format(fields[2]) }}{{ "%-18s" | format(fields[3]) }}{{ fields[4] }}
-          {%- endfor %}
-
-    - name: Clean up dangling images
-      ansible.builtin.shell:
-        cmd: |
-          set -o pipefail
-          podman images --filter "dangling=true" -q | xargs -r podman rmi -f
-          podman image prune -f
-      register: cleanup_result
-      changed_when: cleanup_result.stdout != ""
-      failed_when: false
-      tags:
-        - cleanup
-        - build
-        - none
-
-  handlers:
-    - name: Cleanup temp files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /tmp/build.log
-
-    - name: Display pulled images status
-      ansible.builtin.debug:
-        msg: "Images already present or successfully pulled"
-
-  post_tasks:
-
-    - name: Restart podman
-      ansible.builtin.service:
-        name: podman
-        state: restarted
-
-    - name: Clean build artifacts and temporary files
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "/tmp/ee-containers/_build"
-        - "/tmp/ee-containers/context"
-        - "/tmp/build.log"
-        - "{{ selected_env }}/_build"
-        - "{{ selected_env }}/Containerfile"
-      failed_when: false
-      when: selected_env is defined
+        - name: Fail if build failed
+          ansible.builtin.fail:
+            msg: "Container build failed. See above for details."
+          when: build_result is failed

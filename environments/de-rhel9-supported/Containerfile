@@ -1,4 +1,4 @@
-ARG EE_BASE_IMAGE="registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
+ARG EE_BASE_IMAGE="registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
 ARG PYCMD="/usr/bin/python3"
 ARG PKGMGR_PRESERVE_CACHE="false"
 ARG ANSIBLE_GALAXY_CLI_COLLECTION_OPTS="--ignore-errors"
@@ -18,24 +18,7 @@ ARG ANSIBLE_INSTALL_REFS
 ARG PKGMGR
 
 USER root
-RUN rpm -e --nodeps ansible-core python3-ansible-core || true && \
-    rpm --rebuilddb && \
-    microdnf remove -y --skip-broken \
-        *ansible* \
-        || true && \
-    microdnf install -y \
-        python3 \
-        shadow-utils \
-        sudo \
-        python3-pip \
-        python3-devel \
-        gcc \
-        make \
-        pkg-config \
-        systemd-devel \
-        systemd \
-        python3-systemd \
-        systemd-libs && \
+RUN microdnf install -y shadow-utils sudo python3-pip systemd-devel && \
     useradd -m -s /bin/bash admin && \
     echo "admin:redhat" | chpasswd && \
     echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
@@ -94,15 +77,10 @@ ARG ANSIBLE_INSTALL_REFS
 ARG PKGMGR
 
 USER root
-RUN pip3 uninstall -y ansible-core ansible-lint ansible-runner && \
-    python3 -m pip install --no-cache-dir \
-        "ansible-core>=2.15.0,<2.16" \
-        "ansible-runner>=2.3.1" \
-        "ansible-compat>=4.1.11" \
-        "ansible-lint>=24.9.0" && \
-    ln -sf /usr/lib64/libsystemd.so.0 /usr/lib64/libsystemd.so && \
+RUN microdnf install -y gcc make pkg-config python3-devel systemd-devel && \
     ln -sf /usr/lib64/libsystemd.so.0 /usr/lib64/libsystemd-journal.so && \
-    ln -sf /usr/lib64/pkgconfig/libsystemd.pc /usr/lib64/pkgconfig/systemd.pc
+    ansible --version && \
+    ansible-runner --version
 RUN /output/scripts/check_ansible $PYCMD
 
 COPY --from=galaxy /usr/share/ansible /usr/share/ansible
