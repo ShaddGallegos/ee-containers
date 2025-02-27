@@ -503,11 +503,6 @@
           vars:
             env_path: "{{ playbook_dir }}/environments/{{ env_name }}"
 
-      rescue:
-        - name: Handle build failure
-          ansible.builtin.fail:
-            msg: "Build process failed. Please check the output above."
-
       always:
         - name: Clean up build directories
           ansible.builtin.file:

@@ -3,10 +3,6 @@
   ansible.builtin.set_fact:
     current_env: "{{ env_name }}"
     current_path: "{{ env_path }}"
-    build_dirs:
-      - "{{ work_dir }}/_build"
-      - "{{ work_dir }}/0_build"
-      - "{{ work_dir }}/context"
 
 - name: Display build info
   ansible.builtin.debug:
@@ -14,16 +10,7 @@
 
 - name: Build process
   block:
-    - name: Create build directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        mode: '0755'
-      loop: "{{ build_dirs }}"
-      loop_control:
-        label: "Creating directory: {{ item }}"
-
-    - name: Check if image already exists
+    - name: Check if image exists
       ansible.builtin.command:
         cmd: "podman images -q {{ current_env }}"
       register: image_exists
@@ -31,29 +18,29 @@
 
     - name: Build EE container image
       ansible.builtin.command:
-        cmd: >
+        cmd: >-
           ansible-builder build
           --tag {{ current_env }}
           --container-runtime podman
           --verbosity 2
           --prune-images
           --context {{ work_dir }}/context
-          when: image_exists.stdout == "" and not ansible.builtin.stat.path.exists and ansible.builtin.stat.path != "{{ work_dir }}/context"
           -f {{ current_path }}/execution-environment.yml
-        when: image_exists.stdout == "" and ansible.builtin.stat.path != "{{ work_dir }}/context"
       register: build_result
-      when: image_exists.stdout == "" and ansible.builtin.stat.path != "{{ work_dir }}/context"
+      when: image_exists.stdout == ""
+      changed_when: "'Downloaded newer image' in build_result.stdout or 'Successfully built' in build_result.stdout"
 
   rescue:
-    - name: Clean up on build failure
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop: "{{ build_dirs }}"
-      loop_control:
-        label: "Cleaning up: {{ item }}"
+    - name: Display build error
+      ansible.builtin.debug:
+        msg: |
+          Build failed for {{ current_env }} with the following output:
+          STDOUT:
+          {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+          STDERR:
+          {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
 
-    - name: Fail with build error
+    - name: Fail the build
       ansible.builtin.fail:
         msg: "Container build failed for {{ current_env }}. See output above."
 
@@ -68,13 +55,3 @@
           
           STDERR:
           {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
-
-- name: Display build error
-  ansible.builtin.debug:
-    msg: |
-      Build failed with the following output:
-      STDOUT:
-      {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
-      STDERR:
-      {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
-  when: build_result is failed
