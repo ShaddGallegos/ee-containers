@@ -26,23 +26,51 @@
           --prune-images
           --context {{ work_dir }}/context
           -f {{ current_path }}/execution-environment.yml
+          --build-arg PYCMD=/usr/bin/python3
+          --build-arg PKGMGR=/usr/bin/microdnf
       register: build_result
       when: image_exists.stdout == ""
       changed_when: "'Downloaded newer image' in build_result.stdout or 'Successfully built' in build_result.stdout"
 
   rescue:
+    - name: Create pip cache directory
+      ansible.builtin.file:
+        path: "{{ work_dir }}/.cache/pip"
+        state: directory
+        mode: '0755'
+      when: build_result is failed
+
+    - name: Retry build with pip cache
+      ansible.builtin.command:
+        cmd: >-
+          ansible-builder build
+          --tag {{ current_env }}
+          --container-runtime podman
+          --verbosity 2
+          --prune-images
+          --context {{ work_dir }}/context
+          -f {{ current_path }}/execution-environment.yml
+          --build-arg PIP_CACHE_DIR="{{ work_dir }}/.cache/pip"
+          --build-arg PYCMD=/usr/bin/python3
+          --build-arg PKGMGR=/usr/bin/microdnf
+      register: build_retry
+      when: build_result is failed
+      changed_when: "'Downloaded newer image' in build_retry.stdout or 'Successfully built' in build_retry.stdout"
+
     - name: Display build error
       ansible.builtin.debug:
         msg: |
           Build failed for {{ current_env }} with the following output:
           STDOUT:
-          {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+          {{ (build_retry.stdout_lines if build_retry is defined else build_result.stdout_lines) | default([]) | to_nice_yaml }}
           STDERR:
-          {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
+          {{ (build_retry.stderr_lines if build_retry is defined else build_result.stderr_lines) | default([]) | to_nice_yaml }}
+      when: (build_result is failed and build_retry is not defined) or (build_retry is defined and build_retry is failed)
 
     - name: Fail the build
       ansible.builtin.fail:
         msg: "Container build failed for {{ current_env }}. See output above."
+      when: (build_result is failed and build_retry is not defined) or (build_retry is defined and build_retry is failed)
 
   always:
     - name: Display build status

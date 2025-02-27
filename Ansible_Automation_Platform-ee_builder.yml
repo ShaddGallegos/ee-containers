@@ -399,79 +399,77 @@
 
     - name: Build a numeric menu for the user to select environment
       block:
-        - name: Find EE environment directories
+        - name: Find environment directories
           ansible.builtin.find:
             paths: "environments/"
-            patterns: "ee-*"
+            patterns: "*-*e-*"  # Matches both ee and de
             recurse: false
             file_type: directory
-          register: found_ee_dirs
+          register: found_dirs
 
-        - name: Display EE environment directories
-          ansible.builtin.debug:
-            var: found_ee_dirs
-
-        - name: Find DE environment directories
-          ansible.builtin.find:
-            paths: "environments/"
-            patterns: "de-*"
-            recurse: false
-            file_type: directory
-          register: found_de_dirs
-
-        - name: Display DE environment directories
-          ansible.builtin.debug:
-            var: found_de_dirs
-
-        - name: Combine and sort environment directories
+        - name: Sort environment directories
           ansible.builtin.set_fact:
-            all_dirs: "{{ (found_ee_dirs.files + found_de_dirs.files) | sort(attribute='path') }}"
+            all_dirs: "{{ found_dirs.files | sort(attribute='path') }}"
 
-        - name: Display combined environment directories
-          ansible.builtin.debug:
-            var: all_dirs
-
-        - name: Build menu options string
+        - name: Create menu display
           ansible.builtin.set_fact:
-            menu_options: |
+            menu_display: |-
               {% for item in all_dirs %}
               {{ loop.index }}: {{ item.path | basename }}
               {% endfor %}
 
         - name: Display menu options
           ansible.builtin.debug:
-            msg: "{{ menu_options }}"
+            msg: "{{ menu_display }}"
 
         - name: Prompt user for environment selection
           ansible.builtin.pause:
             prompt: |
-              Select environment(s) (numbers separated by commas):
-              {{ menu_options }}
+              Select environment(s) (numbers separated by commas, max {{ all_dirs | length }}):
+              {{ menu_display }}
           register: user_selection
 
-        - name: Parse user selections
+        - name: Parse and validate selection numbers
+          ansible.builtin.set_fact:
+            raw_numbers: "{{ user_selection.user_input.split(',') | map('trim') | list }}"
+
+        - name: Convert and validate selections
+          ansible.builtin.set_fact:
+            selection_numbers: >-
+              {{
+                raw_numbers |
+                map('int') |
+                select('>', 0) |
+                select('<=', all_dirs | length) |
+                map('int') |
+                list
+              }}
+
+        - name: Map selections to environments
           ansible.builtin.set_fact:
             selected_environments: >-
               {{
-                user_selection.user_input.split(',')
-                | map('trim')
-                | map('int')
-                | map('extract', all_dirs)
-                | map(attribute='path')
-                | map('basename')
-                | list
+                selection_numbers |
+                map('int') |
+                map('extract', environment_mapping) |
+                list
               }}
+          vars:
+            environment_mapping: "{{ all_dirs | map(attribute='path') | map('basename') | list }}"
 
-        - name: Set environment paths
-          ansible.builtin.set_fact:
-            selected_envs: "{{ selected_environments | map('regex_replace', '^(.*)$', playbook_dir + '/environments/\\1') | list }}"
+        - name: Verify selections
+          ansible.builtin.assert:
+            that:
+              - "selection_numbers | length > 0"
+              - "selection_numbers | length == selected_environments | length"
+              - "selection_numbers | max <= (all_dirs | length)"
+            fail_msg: "Invalid selection. Please choose numbers between 1 and {{ all_dirs | length }}"
 
         - name: Display selected environments
           ansible.builtin.debug:
             msg: |
               Selected environments:
-              - {{ selected_environments | first }}
-              Full path: {{ selected_envs }}
+              {{ selected_environments | to_nice_yaml }}
 
     - name: Process build environments
       block:
@@ -488,7 +486,7 @@
 
         - name: Set correct ownership for build directories
           ansible.builtin.file:
-            path: /tmp/ee-containers
+            path: "{{ work_dir }}"
             state: directory
             recurse: true
             owner: "{{ ansible_user_id }}"
@@ -514,23 +512,17 @@
 
     - name: Check if image already exists
       ansible.builtin.command:
-        cmd: podman images -q de-rhel8-minimal
+        cmd: podman images -q {{ selected_env }}
       register: image_exists
       changed_when: false
 
     - name: Handle build result
       block:
-        - name: Check if image already exists
-          ansible.builtin.command:
-            cmd: podman images -q {{ selected_env | basename }}
-          register: image_exists
-          changed_when: false
-
-        - name: Check if image already exists
-          ansible.builtin.command:
-            cmd: podman images -q {{ selected_env | basename }}
-          register: image_exists
-          changed_when: false
+#        - name: Check if image already exists
+#          ansible.builtin.command:
+#            cmd: podman images -q {{ selected_env | basename }}
+#          register: image_exists
+#          changed_when: false
 
         - name: Build EE container image
           ansible.builtin.command:
