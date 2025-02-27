@@ -1,8 +1,0 @@
-pkgconf-pkg-config
-systemd-devel
-gcc
-python3.11-devel
-python3.11-pip
-python3
-python
-make

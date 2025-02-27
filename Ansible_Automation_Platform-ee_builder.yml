@@ -337,6 +337,9 @@
           retry_files_enabled = False
           collections_paths = ~/.ansible/collections:/usr/share/ansible/collections
           roles_path = ~/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles
+          stdout_callback = yaml
+          bin_ansible_callbacks = true
+          interpreter_python = auto_silent
 
           [galaxy]
           server_list = validated, published, galaxy
@@ -354,6 +357,14 @@
           [galaxy_server.galaxy]
           url=https://galaxy.ansible.com/
           token={{ galaxy_token if galaxy_token != "" else omit }}
+
+    - name: Copy ansible.cfg to build context
+      ansible.builtin.copy:
+        src: /tmp/ee-containers/_build/configs/ansible.cfg
+        dest: /etc/ansible/ansible.cfg
+        mode: '0644'
+        remote_src: true
+      become: true
 
     - name: Verify DNS resolution
       ansible.builtin.command:
@@ -453,90 +464,58 @@
 
         - name: Set environment paths
           ansible.builtin.set_fact:
-            selected_envs: >-
-              {{
-                selected_environments
-                | map('regex_replace', '^(.*)$', playbook_dir ~ '/environments/\\1')
-                | list
-              }}
+            selected_envs: "{{ selected_environments | map('regex_replace', '^(.*)$', playbook_dir + '/environments/\\1') | list }}"
 
         - name: Display selected environments
           ansible.builtin.debug:
             msg: |
               Selected environments:
-              {% for env in selected_environments %}
-              - {{ env }}
-              Full path: {{ playbook_dir }}/environments/{{ env }}
-              {% endfor %}
+              - {{ selected_environments | first }}
+              Full path: {{ selected_envs }}
 
-        - name: Ensure files directory exists
+    - name: Process build environments
+      block:
+        - name: Ensure build directories exist
           ansible.builtin.file:
-            path: "{{ work_dir }}/files"
+            path: "{{ item }}"
             state: directory
             mode: '0755'
+          loop:
+            - "{{ work_dir }}/files"
+            - "{{ work_dir }}/_build"
+            - "{{ work_dir }}/0_build"
+            - "{{ work_dir }}/context"
 
-        - name: Copy build tasks file
-          ansible.builtin.copy:
-            src: files/build_ee.yml
-            dest: "{{ work_dir }}/files/build_ee.yml"
-            mode: '0644'
+        - name: Set correct ownership for build directories
+          ansible.builtin.file:
+            path: /tmp/ee-containers
+            state: directory
+            recurse: true
+            owner: "{{ ansible_user_id }}"
+            group: "{{ ansible_user_id }}"
+          become: true
 
-        - name: Build selected environments
-          block:
-            - name: Check if image already exists
-              ansible.builtin.command:
-                cmd: "podman images -q {{ selected_env | basename }}"
-              register: image_exists
-              changed_when: false
-
-            - name: Handle build process
-              block:
-                - name: Build EE container image
-                  ansible.builtin.command:
-                    cmd: >-
-                      ansible-builder build
-                      --tag {{ selected_env | basename }}
-                      --container-runtime podman
-                      --verbosity 2
-                      --prune-images
-                      --context {{ work_dir }}/context
-                      -f {{ selected_env }}/execution-environment.yml
-                  register: build_result
-                  ignore_errors: true
-                  when: image_exists.stdout == ""
-
-                - name: Display build output
-                  ansible.builtin.debug:
-                    msg: |
-                      Build Status for {{ selected_env | basename }}: {{ 'Failed' if build_result is failed else 'Success' }}
-                      
-                      STDOUT:
-                      {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
-                      
-                      STDERR:
-                      {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
-
-                - name: Clean up on build failure
-                  when: build_result is failed
-                  block:
-                    - name: Remove build artifacts
-                      ansible.builtin.file:
-                        path: "{{ item }}"
-                        state: absent
-                      loop:
-                        - "{{ work_dir }}/_build"
-                        - "{{ work_dir }}/context"
-          loop: "{{ selected_envs }}"
+        - name: Process each selected environment
+          ansible.builtin.include_tasks: files/build_ee.yml
+          loop: "{{ selected_environments }}"
           loop_control:
-            loop_var: selected_env
-            label: "{{ selected_env | basename }}"
+            loop_var: env_name
+          vars:
+            env_path: "{{ playbook_dir }}/environments/{{ env_name }}"
 
-        - name: Process selected environments
-          include_tasks: "{{ work_dir }}/files/build_ee.yml"
-          loop: "{{ selected_envs }}"
-          loop_control:
-            loop_var: selected_env
-            label: "{{ selected_env | basename }}"
+      rescue:
+        - name: Handle build failure
+          ansible.builtin.fail:
+            msg: "Build process failed. Please check the output above."
+
+      always:
+        - name: Clean up build directories
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "{{ work_dir }}/_build"
+            - "{{ work_dir }}/context"
 
     - name: Check if image already exists
       ansible.builtin.command:

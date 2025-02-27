@@ -1,44 +1,67 @@
 ---
-- name: Check if image already exists
-  ansible.builtin.command:
-    cmd: "podman images -q {{ selected_env | basename }}"
-  register: image_exists
-  changed_when: false
+- name: Set build variables
+  ansible.builtin.set_fact:
+    current_env: "{{ env_name }}"
+    current_path: "{{ env_path }}"
+    build_dirs:
+      - "{{ work_dir }}/_build"
+      - "{{ work_dir }}/0_build"
+      - "{{ work_dir }}/context"
 
-- name: Handle build process for {{ selected_env | basename }}
+- name: Display build info
+  ansible.builtin.debug:
+    msg: "Building environment: {{ current_env }} from {{ current_path }}"
+
+- name: Build process
   block:
     - name: Create build directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: '0755'
-      loop:
-        - "{{ work_dir }}/_build"
-        - "{{ work_dir }}/0_build"
-        - "{{ work_dir }}/context"
+      loop: "{{ build_dirs }}"
+      loop_control:
+        label: "Creating directory: {{ item }}"
+
+    - name: Check if image already exists
+      ansible.builtin.command:
+        cmd: "podman images -q {{ current_env }}"
+      register: image_exists
+      changed_when: false
 
     - name: Build EE container image
       ansible.builtin.command:
-        cmd: >-
+        cmd: >
           ansible-builder build
-          --tag {{ selected_env | basename }}
+          --tag {{ current_env }}
           --container-runtime podman
           --verbosity 2
           --prune-images
           --context {{ work_dir }}/context
-          -f {{ selected_env }}/execution-environment.yml
+          when: image_exists.stdout == "" and not ansible.builtin.stat.path.exists and ansible.builtin.stat.path != "{{ work_dir }}/context"
+          -f {{ current_path }}/execution-environment.yml
+        when: image_exists.stdout == "" and ansible.builtin.stat.path != "{{ work_dir }}/context"
       register: build_result
-      ignore_errors: true
-      when: image_exists.stdout == ""
+      when: image_exists.stdout == "" and ansible.builtin.stat.path != "{{ work_dir }}/context"
 
-    - name: Set build status
-      ansible.builtin.set_fact:
-        build_failed: "{{ build_result is failed }}"
+  rescue:
+    - name: Clean up on build failure
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ build_dirs }}"
+      loop_control:
+        label: "Cleaning up: {{ item }}"
 
-    - name: Display build output
+    - name: Fail with build error
+      ansible.builtin.fail:
+        msg: "Container build failed for {{ current_env }}. See output above."
+
+  always:
+    - name: Display build status
       ansible.builtin.debug:
         msg: |
-          Build Status for {{ selected_env | basename }}: {{ 'Failed' if build_result is failed else 'Success' }}
+          Build Status for {{ current_env }}: {{ 'Failed' if build_result.failed | default(false) else 'Success' }}
           
           STDOUT:
           {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
@@ -46,18 +69,12 @@
           STDERR:
           {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
 
-    - name: Copy build artifacts
-      ansible.builtin.command:
-        cmd: "rsync -av {{ work_dir }}/context/_build/ {{ work_dir }}/0_build/"
-      when: not build_failed | default(false)
-
-    - name: Clean up on build failure
-      when: build_result is failed
-      block:
-        - name: Remove build artifacts
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ work_dir }}/_build"
-            - "{{ work_dir }}/context"
+- name: Display build error
+  ansible.builtin.debug:
+    msg: |
+      Build failed with the following output:
+      STDOUT:
+      {{ build_result.stdout_lines | default([]) | to_nice_yaml }}
+      STDERR:
+      {{ build_result.stderr_lines | default([]) | to_nice_yaml }}
+  when: build_result is failed

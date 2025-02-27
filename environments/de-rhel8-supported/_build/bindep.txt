@@ -1,5 +1,0 @@
-gcc
-microdnf
-pkgconf-pkg-config
-python3.11-devel
-systemd-devel

@@ -1,3 +1,0 @@
-aiomqtt
-typing-extensions
-aiohttp
