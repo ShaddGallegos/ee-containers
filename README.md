@@ -21,6 +21,12 @@ Enter numbers for environments to build (comma-separated, max 8):
 
 You can copy the environment and create a definition for your vendor (EXAMPLE: Cloudstrike).
 
+## Requires 
+A Redhat CDN username and password
+annd tokens from:
+- https://console.redhat.com/ansible/automation-hub/token 
+- https://galaxy.ansible.com/ui/token 
+
 ## Running the Playbook
 
 Run the playbook with the following command:

@@ -1,4 +1,4 @@
-- name: Automaticly build Execution Environments for Ansible Automation Platform
+- name: Automatically build Execution Environments for Ansible Automation Platform
   hosts: localhost
   become: true
 
@@ -22,10 +22,13 @@
       - podman-compose
       - podman-plugins
       - podman-remote
+      - tmux
       - yum-utils
-    git_repo:
-      url: 'https://github.com/cloin/ee-builds.git'
-      branch: 'main'
+    git_repos:
+      - url: 'https://github.com/cloin/ee-builds.git'
+        dest: 'scripts/ee-builds'
+      - url: 'https://github.com/nickarellano/ee-container.git'
+        dest: 'scripts/ee-container'
     work_dir: '/tmp/ee-containers'
 
   vars_prompt:
@@ -57,30 +60,10 @@
         msg: "No internet connection detected."
       when: connectivity_check.status != 200
 
-    - name: Install prerequisites
-      tags: [setup, packages]
-      vars:
-        packages:
-          - python3-pip
-          - ansible-core
-          - git
-          - podman
-          - ansible-dev-tools
-          - podman-docker
-          - podman-compose
-          - podman-plugins
-          - podman-remote
-          - yum-utils
-      block:
-        - name: Install required packages
-          ansible.builtin.package:
-            name: "{{ packages }}"
-            state: present
-
-    - name: Do dnf upgrade all packages
-      ansible.builtin.dnf:
-        name: '*'
-        state: latest
+    - name: Install required packages
+      ansible.builtin.package:
+        name: "{{ required_packages }}"
+        state: present
 
     - name: Ensure container policy directory exists
       ansible.builtin.file:
@@ -89,98 +72,29 @@
         mode: '0755'
 
     - name: Create container policy file
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: templates/container_policy.json.j2
         dest: /etc/containers/policy.d/default.json
         mode: '0644'
-        content: |
-          {
-            "default": [{"type": "reject"}],
-            "transports": {
-              "docker": {
-                "registry.redhat.io": [{"type": "insecureAcceptAnything"}],
-                "registry.access.redhat.com": [{"type": "insecureAcceptAnything"}],
-                "quay.io": [{"type": "insecureAcceptAnything"}],
-                "docker.io": [{"type": "insecureAcceptAnything"}]
-              }
-            }
-          }
 
-    - name: Check directories
-      ansible.builtin.stat:
-        path: "{{ item }}"
-      loop:
-        - environments
-        - /tmp/ee-containers/environments
-        - environments/.git
-        - /tmp/ee-containers/environments/.git
-        - /etc/containers/policy.d/
-      register: dir_checks
+    - name: Clone GitHub repositories to scripts directory if not already cloned
+      block:
+        - name: Check if repository exists
+          ansible.builtin.stat:
+            path: "{{ item.dest }}"
+          register: repo_exists
+          loop: "{{ git_repos }}"
 
-    - name: Check if local environments directory exists
-      ansible.builtin.stat:
-        path: environments
-      register: local_environments_dir
-
-    - name: Check if local environments directory is empty
-      ansible.builtin.find:
-        paths: environments
-        recurse: false
-      register: local_environments_dir_content
-      when: local_environments_dir.stat.exists
-
-    - name: Ensure /tmp/ee-containers/environments directory exists
-      ansible.builtin.file:
-        path: /tmp/ee-containers/environments
-        state: directory
-        mode: '0755'
-
-    - name: Check if /tmp/ee-containers/environments directory exists
-      ansible.builtin.stat:
-        path: /tmp/ee-containers/environments
-      register: environments_dir
-
-    - name: Check if /tmp/ee-containers/environments directory is empty
-      ansible.builtin.find:
-        paths: /tmp/ee-containers/environments
-        recurse: false
-      register: environments_dir_content
-      when: environments_dir.stat.exists
-
-    - name: Check if /tmp/ee-containers/environments is a git repository
-      ansible.builtin.stat:
-        path: /tmp/ee-containers/environments/.git
-      register: git_repo_exists
-
-    - name: Remove existing directory if it's not a git repository
-      ansible.builtin.file:
-        path: /tmp/ee-containers/environments
-        state: absent
-      when: environments_dir.stat.exists and not git_repo_exists.stat.exists
-
-    - name: Clone or update GitHub repository
-      ansible.builtin.git:
-        repo: 'https://github.com/cloin/ee-builds.git'
-        dest: /tmp/ee-containers/environments/
-        version: 'main'
-        clone: true
-        update: true
-        force: true
-      when: not environments_dir.stat.exists or not git_repo_exists.stat.exists or environments_dir_content.matched == 0
-
-    - name: Check if repository is already cloned in current directory
-      ansible.builtin.stat:
-        path: environments/.git
-      register: repo_cloned_local
-
-    - name: Clone GitHub repository to current directory if not already cloned
-      ansible.builtin.git:
-        repo: 'https://github.com/cloin/ee-builds.git'
-        dest: environments/
-        version: 'main'  # Specify the branch or commit
-        clone: true
-        update: true
-        force: true
-      when: not repo_cloned_local.stat.exists and not local_environments_dir.stat.exists
+        - name: Clone repository
+          ansible.builtin.git:
+            repo: "{{ item.url }}"
+            dest: "{{ item.dest }}"
+            version: 'main'  # Specify the branch or commit
+            clone: true
+            update: true
+            force: true
+          when: not repo_exists.results[loop.index0].stat.exists
+          loop: "{{ git_repos }}"
 
     - name: Install required collections
       ansible.builtin.command:
@@ -213,17 +127,10 @@
       ansible.builtin.command:
         cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
         creates: "/root/.config/containers/auth.json"
-      loop:
-        - registry.redhat.io
-        - console.redhat.com
-        - registry.access.redhat.com
-        - quay.io
-        - registry.connect.redhat.com
+      loop: "{{ container_registries }}"
       register: login_result
-      failed_when:
-        - login_result.rc != 0
-        - item != 'console.redhat.com'  # Ignore failures for console.redhat.com
-      ignore_errors: "{{ item == 'console.redhat.com' }}"  # Only ignore errors for console.redhat.com
+      failed_when: login_result.rc != 0
+      ignore_errors: true
       no_log: true
 
     - name: Check if required container images exist
@@ -242,7 +149,6 @@
       changed_when: false
       failed_when: false
 
-
     - name: Pull missing container images
       ansible.builtin.command:
         cmd: "podman pull {{ item.item }}"
@@ -252,8 +158,9 @@
       changed_when: "'Downloaded newer image' in pull_results.stdout"
       retries: 3
       delay: 5
-      until: pull_results is success
-      notify: Display pulled images status
+      until: pull_results is succeeded
+      loop_control:
+        loop_var: item
 
     - name: Clean up unused images and build artifacts
       block:
@@ -343,10 +250,10 @@
 
     - name: Install ansible-galaxy collections from requirements.yml if it exists
       ansible.builtin.command:
-        cmd: "ansible-galaxy collection install -r /tmp/ee-containers/files/requirements.yml"
-        creates: "/root/.ansible/collections/ansible_collections"
-      when: requirements_yml.stat.exists
-      failed_when: requirements_yml.rc != 0
+        cmd: ansible-galaxy collection install -r /tmp/ee-containers/files/requirements.yml
+      when: requirements_yml.stat.exists | default(false)
+      args:
+        creates: /tmp/ee-containers/files/requirements.yml
 
     - name: Ensure /tmp/ee-containers/_build/configs directory exists
       ansible.builtin.file:
@@ -380,23 +287,9 @@
       failed_when: dns_checks.rc != 0
 
     - name: Set DNS servers for Podman
-      ansible.builtin.copy:
+      ansible.builtin.template:
+        src: templates/registries.conf.j2
         dest: /etc/containers/registries.conf
-        content: |
-          [registries.search]
-          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.redhat.io']
-
-          [registries.insecure]
-          registries = []
-
-          [registries.block]
-          registries = []
-
-          [registries]
-          registries = ['docker.io', 'quay.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'registry.redhat.io']
-
-          [engine]
-          dns_servers = ['8.8.8.8', '8.8.4.4']
         mode: '0644'
 
     - name: Build a numeric menu for the user to select environment
@@ -421,14 +314,22 @@
               {{ loop.index }}. {{ env }}
               {% endfor %}
 
-        - name: Prompt user for environment selection
-          ansible.builtin.pause:
-            prompt: |
+        - name: Display prompt for environment selection
+          ansible.builtin.debug:
+            msg: |
               Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }}):
               {% for env in environment_mapping %}
               {{ loop.index }}. {{ env }}
               {% endfor %}
+
+        - name: Pause for user input
+          ansible.builtin.pause:
+            prompt: "Enter your selection: "
           register: user_selection
+
+        - name: Set user selection fact
+          ansible.builtin.set_fact:
+            user_selection: "{{ user_selection.user_input }}"
 
         - name: Parse selections
           ansible.builtin.set_fact:
@@ -505,15 +406,13 @@
           loop:
             - "{{ work_dir }}/_build"
             - "{{ work_dir }}/context"
-          ignore_errors: true
+          failed_when: false
 
     - name: Include build environment tasks
-      include_tasks: tasks/build_environment.yml
+      ansible.builtin.include_tasks: tasks/build_environment.yml
       loop: "{{ selected_environments }}"
       loop_control:
         loop_var: current_env
-      vars:
-        current_env: "{{ current_env }}"
 
     - name: Handle build result
       block:
@@ -528,7 +427,9 @@
           ansible.builtin.command:
             cmd: >-
               podman ps -a --filter ancestor={{ current_env }} --format "{{ '{{.ID}}' }}" | xargs -r podman rm -f
-          ignore_errors: true
+          register: remove_containers_result
+          failed_when: remove_containers_result.rc not in [0, 1]
+          changed_when: remove_containers_result.stdout != ""
           when: image_exists.rc != 0
 
         - name: Build EE container image

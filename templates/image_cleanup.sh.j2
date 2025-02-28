@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+# List of protected images
+protected_images=(
+{% for image in protected_images %}
+  "{{ image }}"
+{% endfor %}
+)
+
+# Get list of all images
+all_images=$(podman images --format "{{ '{{.Repository}}:{{.Tag}}' }}")
+
+# Loop through all images and remove those not in the protected list
+for image in $all_images; do
+  if [[ ! " ${protected_images[@]} " =~ " ${image} " ]]; then
+    podman rmi "$image"
+  fi
+done
