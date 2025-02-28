@@ -1,4 +1,29 @@
 ---
+- name: Check if execution environment file exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+  register: ee_file
+
+- name: Fail if execution environment file doesn't exist
+  ansible.builtin.fail:
+    msg: "Execution environment file for {{ current_env }} not found at {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+  when: not ee_file.stat.exists
+
+- name: Check for required dependency files mentioned in execution-environment.yml
+  ansible.builtin.command:
+    cmd: "grep -o 'requirements\\.\\(txt\\|yml\\|yaml\\)' {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+  register: required_files
+  changed_when: false
+  failed_when: false
+
+- name: Ensure required files exist
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/{{ item }}"
+    state: touch
+    mode: '0644'
+  with_items: "{{ required_files.stdout_lines | default([]) }}"
+  when: required_files.rc == 0
+
 - name: Check if image exists
   ansible.builtin.command:
     cmd: "podman images -q {{ current_env }}"
@@ -16,5 +41,5 @@
       --context {{ work_dir }}/context
       -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
   register: build_output
-  changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+  changed_when: build_output.rc == 0
   when: image_exists.stdout == ""

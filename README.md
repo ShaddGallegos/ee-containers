@@ -1,46 +1,44 @@
 # EE-Containers
 
-Building EEs the easy way. If you clone this repo, by default, the definitions to update base EEs for RHEL 8 and RHEL 9 are included. If you add EE or DE definitions using the naming convention with a `-de-` or `-ee-` in it, in the environments folder, it will appear in the dynamic build menu.
+A streamlined approach to building Ansible Execution Environments (EEs) with minimal effort. This repository automates the process of building EEs for different scenarios and platforms.
 
-## Task: Prompt User for Environment Selection
+## Overview
 
-```plaintext
-TASK [Prompt user for environment selection] *********************************************************************************************************************
-task path: /home/sgallego/ee-containers/Ansible_Automation_Platform-ee_builder.yml:427
-[Prompt user for environment selection]
-Enter numbers for environments to build (comma-separated, max 8):
-1. rhel8-de-minimal
-2. rhel8-de-supported
-3. rhel8-ee-minimal
-4. rhel9-de-minimal
-5. rhel9-de-minimal-cloudstrike
-6. rhel9-de-supported
-7. rhel9-ee-minimal
-8. rhel9-ee-supported
-```
+This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the `environments` folder.
 
-You can copy the environment and create a definition for your vendor (EXAMPLE: Cloudstrike).
+## Prerequisites
 
-## Requires 
-A Redhat CDN username and password
-and tokens from:
-- https://console.redhat.com/ansible/automation-hub/token 
-- https://galaxy.ansible.com/ui/token 
+- Red Hat subscription
+- Red Hat CDN username and password
+- Tokens from:
+  - [Automation Hub](https://console.redhat.com/ansible/automation-hub/token)
+  - [Ansible Galaxy](https://galaxy.ansible.com/ui/token) (optional)
+- Installed packages:
+  - ansible-core
+  - python3-pip
+  - podman
+  - git
+
+## Required Files for Each Environment
+
+Each environment in the `environments` directory must include:
+
+1. `execution-environment.yml` - The main configuration file
+2. Any dependency files referenced in the execution-environment.yml:
+   - `requirements.txt` - Python package requirements
+   - `requirements.yml` - Ansible collection requirements
+   - `bindep.txt` - Binary dependencies
 
 ## Running the Playbook
-```
-Run the playbook with the following command:
-```
+
+Execute the playbook with:
 ansible-playbook Ansible_Automation_Platform-ee_builder.yml
-```
-```
-open a rerminal and watch your build progress 
+
+open a terminal and watch your build progress 
 watch -n .5 podman images
-```
-```
+
 You can select multiple environments, comma-separated: 
 1,2,3,4,5,6,7,8
-```
 
 And poof, you have the latest and greatest based on the definitions provided.
 
