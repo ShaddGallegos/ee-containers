@@ -1,1 +1,2 @@
-ansible-runner>=2.3.1
+ansible-core
+ansible-runner

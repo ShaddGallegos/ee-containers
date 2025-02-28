@@ -1,0 +1,10 @@
+{
+    "auths": {
+{% for registry in container_registries %}
+        "{{ registry }}": {
+            "auth": "{{ (rh_username + ':' + rh_password) | b64encode }}",
+            "email": "{{ rh_username }}"
+        }{% if not loop.last %},{% endif %}
+{% endfor %}
+    }
+}

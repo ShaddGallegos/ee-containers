@@ -1,3 +1,0 @@
-ansible-core
-ansible-runner
-ansible-lint

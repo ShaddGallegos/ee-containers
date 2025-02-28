@@ -1,0 +1,20 @@
+---
+- name: Check if image exists
+  ansible.builtin.command:
+    cmd: "podman images -q {{ current_env }}"
+  register: image_exists
+  changed_when: false
+
+- name: Build container image
+  ansible.builtin.command:
+    cmd: >-
+      ansible-builder build
+      --tag {{ current_env }}
+      --container-runtime podman
+      --verbosity 2
+      --prune-images
+      --context {{ work_dir }}/context
+      -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
+  register: build_output
+  changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+  when: image_exists.stdout == ""

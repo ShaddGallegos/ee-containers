@@ -1,4 +1,0 @@
-python3-systemd
-systemd-devel
-python3.11-devel
-gcc

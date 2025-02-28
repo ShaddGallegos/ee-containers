@@ -18,6 +18,10 @@ dependencies:
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
+  ansible_core:
+    package_pip: 'ansible-core>=2.11.0'
+  ansible_runner:
+    package_pip: 'ansible-runner>=2.0.0'
 
 options:
   package_manager_path: /usr/bin/microdnf
@@ -25,9 +29,7 @@ options:
 additional_build_steps:
   prepend_final: |
     RUN microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc \
-        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --no-cache-dir ansible-core>=2.13.10 ansible-runner
+        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
   append_final: |
     RUN microdnf clean all \

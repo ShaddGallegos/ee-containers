@@ -188,6 +188,27 @@
       changed_when: false
 
   tasks:
+    - name: Ensure tmux is installed
+      ansible.builtin.package:
+        name: tmux
+        state: present
+
+    - name: Check if tmux session exists
+      ansible.builtin.command:
+        cmd: tmux has-session -t podman_watch
+      register: tmux_session_check
+      failed_when: false
+      changed_when: false
+
+    - name: Start tmux session and run watch command
+      ansible.builtin.command:
+        cmd: tmux new-session -d -s podman_watch 'watch -n .5 podman images'
+      when: tmux_session_check.rc != 0
+      async: 1
+      poll: 0
+      register: tmux_session
+      changed_when: false
+
     - name: Check if already logged in to registries
       ansible.builtin.command:
         cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
@@ -203,7 +224,7 @@
         - login_result.rc != 0
         - item != 'console.redhat.com'  # Ignore failures for console.redhat.com
       ignore_errors: "{{ item == 'console.redhat.com' }}"  # Only ignore errors for console.redhat.com
-#      no_log: true  # Hide sensitive information from logs
+      no_log: true
 
     - name: Check if required container images exist
       ansible.builtin.command:
@@ -249,8 +270,13 @@
                   'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest',
                   'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest',
                   'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
-                ] + (menu_options | regex_replace('\n\d+: ', '\n') | regex_replace('\n', '\n') | split('\n') | select('regex', '.+') | list)
+                ] + (selected_environments | default([]))
               }}
+
+        - name: Check if cleanup script template exists
+          ansible.builtin.stat:
+            path: templates/image_cleanup.sh.j2
+          register: cleanup_template
 
         - name: Create cleanup script
           ansible.builtin.template:
@@ -258,28 +284,31 @@
             dest: /tmp/image_cleanup.sh
             mode: '0755'
             validate: bash -n %s
+          when: cleanup_template.stat.exists
 
         - name: Execute image cleanup
           ansible.builtin.command:
             cmd: /tmp/image_cleanup.sh
           register: cleanup_result
           changed_when: cleanup_result.rc == 0
+          when: cleanup_template.stat.exists
 
         - name: Remove cleanup script
           ansible.builtin.file:
             path: /tmp/image_cleanup.sh
             state: absent
+          when: cleanup_template.stat.exists
 
         - name: Display cleanup summary
           ansible.builtin.debug:
             msg: "Image cleanup completed successfully"
-          when: cleanup_result.rc == 0
+          when: cleanup_result.rc == 0 and cleanup_template.stat.exists
 
         - name: Debug cleanup removal
           ansible.builtin.debug:
             var: cleanup_result
             verbosity: 1
-          when: cleanup_result.failed is defined
+          when: cleanup_result.failed is defined and cleanup_template.stat.exists
 
       rescue:
         - name: Handle cleanup failure
@@ -327,36 +356,9 @@
 
     - name: Create ansible.cfg in /tmp/ee-containers/_build/configs
       ansible.builtin.copy:
+        src: /home/sgallego/ee-containers/ansible.cfg
         dest: /tmp/ee-containers/_build/configs/ansible.cfg
         mode: '0644'
-        content: |
-          [defaults]
-          inventory = /etc/ansible/hosts
-          remote_user = root
-          host_key_checking = False
-          retry_files_enabled = False
-          collections_paths = ~/.ansible/collections:/usr/share/ansible/collections
-          roles_path = ~/.ansible/roles:/usr/share/ansible/roles:/etc/ansible/roles
-          stdout_callback = yaml
-          bin_ansible_callbacks = true
-          interpreter_python = auto_silent
-
-          [galaxy]
-          server_list = validated, published, galaxy
-
-          [galaxy_server.published]
-          url=https://console.redhat.com/api/automation-hub/content/published/
-          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-          token={{ automation_hub_token }}
-
-          [galaxy_server.validated]
-          url=https://console.redhat.com/api/automation-hub/content/validated/
-          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-          token={{ automation_hub_token }}
-
-          [galaxy_server.galaxy]
-          url=https://galaxy.ansible.com/
-          token={{ galaxy_token if galaxy_token != "" else omit }}
 
     - name: Copy ansible.cfg to build context
       ansible.builtin.copy:
@@ -409,69 +411,58 @@
 
         - name: Sort environment directories
           ansible.builtin.set_fact:
-            all_dirs: "{{ found_dirs.files | sort(attribute='path') }}"
-
-        - name: Create menu display
-          ansible.builtin.set_fact:
-            menu_display: |-
-              {% for item in all_dirs %}
-              {{ loop.index }}: {{ item.path | basename }}
-              {% endfor %}
+            environment_mapping: "{{ found_dirs.files | map(attribute='path') | map('basename') | list | sort }}"
 
         - name: Display menu options
           ansible.builtin.debug:
-            msg: "{{ menu_display }}"
+            msg: |
+              Available environments:
+              {% for env in environment_mapping %}
+              {{ loop.index }}. {{ env }}
+              {% endfor %}
 
         - name: Prompt user for environment selection
           ansible.builtin.pause:
             prompt: |
-              Select environment(s) (numbers separated by commas, max {{ all_dirs | length }}):
-              {{ menu_display }}
+              Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }}):
+              {% for env in environment_mapping %}
+              {{ loop.index }}. {{ env }}
+              {% endfor %}
           register: user_selection
 
-        - name: Parse and validate selection numbers
+        - name: Parse selections
           ansible.builtin.set_fact:
-            raw_numbers: "{{ user_selection.user_input.split(',') | map('trim') | list }}"
-
-        - name: Convert and validate selections
-          ansible.builtin.set_fact:
-            selection_numbers: >-
-              {{
-                raw_numbers |
-                map('int') |
-                select('>', 0) |
-                select('<=', all_dirs | length) |
-                map('int') |
-                list
-              }}
+            selection_numbers: "{{ user_selection.user_input.split(',') | map('trim') | map('int') | list }}"
 
         - name: Map selections to environments
           ansible.builtin.set_fact:
             selected_environments: >-
-              {{
-                selection_numbers |
-                map('int') |
-                map('extract', environment_mapping) |
-                list
-              }}
-          vars:
-            environment_mapping: "{{ all_dirs | map(attribute='path') | map('basename') | list }}"
+              {%- set result = [] -%}
+              {%- for num in selection_numbers -%}
+                {%- set index = (num | int) - 1 -%}
+                {%- if index >= 0 and index < environment_mapping | length -%}
+                  {{- result.append(environment_mapping[index]) -}}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ result }}
 
-        - name: Verify selections
+        - name: Validate selections
           ansible.builtin.assert:
             that:
               - "selection_numbers | length > 0"
-              - "selection_numbers | length == selected_environments | length"
-              - "selection_numbers | max <= (all_dirs | length)"
-            fail_msg: "Invalid selection. Please choose numbers between 1 and {{ all_dirs | length }}"
+              - "selection_numbers | min > 0"
+              - "selection_numbers | max <= environment_mapping | length"
+            fail_msg: "Invalid selection. Choose numbers between 1 and {{ environment_mapping | length }}"
 
         - name: Display selected environments
           ansible.builtin.debug:
             msg: |
-              Selected environments:
-              {{ selected_environments | to_nice_yaml }}
+              Selected environments to build:
+              {% for env in selected_environments %}
+              - {{ env }}
+              {% endfor %}
 
-    - name: Process build environments
+    - name: Process each selected environment
       block:
         - name: Ensure build directories exist
           ansible.builtin.file:
@@ -481,25 +472,30 @@
           loop:
             - "{{ work_dir }}/files"
             - "{{ work_dir }}/_build"
-            - "{{ work_dir }}/0_build"
             - "{{ work_dir }}/context"
 
         - name: Set correct ownership for build directories
           ansible.builtin.file:
-            path: "{{ work_dir }}"
+            path: "{{ item }}"
             state: directory
             recurse: true
             owner: "{{ ansible_user_id }}"
             group: "{{ ansible_user_id }}"
+          loop:
+            - "{{ work_dir }}/files"
+            - "{{ work_dir }}/_build"
+            - "{{ work_dir }}/context"
           become: true
 
-        - name: Process each selected environment
-          ansible.builtin.include_tasks: files/build_ee.yml
-          loop: "{{ selected_environments }}"
-          loop_control:
-            loop_var: env_name
-          vars:
-            env_path: "{{ playbook_dir }}/environments/{{ env_name }}"
+      rescue:
+        - name: Display build error
+          ansible.builtin.debug:
+            msg: |
+              Build failed for {{ current_env }}:
+              STDOUT:
+              {{ build_output.stdout_lines | default([]) | to_nice_yaml }}
+              STDERR:
+              {{ build_output.stderr_lines | default([]) | to_nice_yaml }}
 
       always:
         - name: Clean up build directories
@@ -509,34 +505,45 @@
           loop:
             - "{{ work_dir }}/_build"
             - "{{ work_dir }}/context"
+          ignore_errors: true
 
-    - name: Check if image already exists
-      ansible.builtin.command:
-        cmd: podman images -q {{ selected_env }}
-      register: image_exists
-      changed_when: false
+    - name: Include build environment tasks
+      include_tasks: tasks/build_environment.yml
+      loop: "{{ selected_environments }}"
+      loop_control:
+        loop_var: current_env
+      vars:
+        current_env: "{{ current_env }}"
 
     - name: Handle build result
       block:
-#        - name: Check if image already exists
-#          ansible.builtin.command:
-#            cmd: podman images -q {{ selected_env | basename }}
-#          register: image_exists
-#          changed_when: false
+        - name: Check if image exists
+          ansible.builtin.command:
+            cmd: "podman image exists {{ current_env }}"
+          register: image_exists
+          changed_when: false
+          failed_when: false
+
+        - name: Stop and remove containers using the image
+          ansible.builtin.command:
+            cmd: >-
+              podman ps -a --filter ancestor={{ current_env }} --format "{{ '{{.ID}}' }}" | xargs -r podman rm -f
+          ignore_errors: true
+          when: image_exists.rc != 0
 
         - name: Build EE container image
           ansible.builtin.command:
             cmd: >-
               ansible-builder build
-              --tag {{ selected_env | basename }}
+              --tag {{ current_env }}
               --container-runtime podman
               --verbosity 2
               --prune-images
-              --context {{ selected_env }}
-              -f {{ selected_env }}/execution-environment.yml
+              --context {{ work_dir }}/context
+              -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
           register: build_result
           ignore_errors: true
-          when: image_exists.stdout == ""
+          when: image_exists.rc != 0
           changed_when: "'Downloaded newer image' in build_result.stdout or 'Successfully built' in build_result.stdout"
 
         - name: Display build error
