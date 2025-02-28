@@ -2,10 +2,9 @@
   "default": [{"type": "reject"}],
   "transports": {
     "docker": {
-      "registry.redhat.io": [{"type": "insecureAcceptAnything"}],
-      "registry.access.redhat.com": [{"type": "insecureAcceptAnything"}],
-      "quay.io": [{"type": "insecureAcceptAnything"}],
-      "docker.io": [{"type": "insecureAcceptAnything"}]
+      {% for registry in container_registries %}
+      "{{ registry }}": [{"type": "insecureAcceptAnything"}]{% if not loop.last %},{% endif %}
+      {% endfor %}
     }
   }
 }

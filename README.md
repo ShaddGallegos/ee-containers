@@ -23,25 +23,28 @@ You can copy the environment and create a definition for your vendor (EXAMPLE: C
 
 ## Requires 
 A Redhat CDN username and password
-annd tokens from:
+and tokens from:
 - https://console.redhat.com/ansible/automation-hub/token 
 - https://galaxy.ansible.com/ui/token 
 
 ## Running the Playbook
-
+```
 Run the playbook with the following command:
-```bash
+```
 ansible-playbook Ansible_Automation_Platform-ee_builder.yml
 ```
-
-You can select multiple environments, comma-separated:
-```plaintext
+```
+open a rerminal and watch your build progress 
+watch -n .5 podman images
+```
+```
+You can select multiple environments, comma-separated: 
 1,2,3,4,5,6,7,8
 ```
 
 And poof, you have the latest and greatest based on the definitions provided.
 
-After you run this once, all of the examples and base images are local, so you don't need a connection other than for UBI updates to your image.
+After you run this once, all of the examples and base images are local in "scripts/", so you don't need a connection other than for UBI updates for your image.
 
 ## Playbook Overview
 
