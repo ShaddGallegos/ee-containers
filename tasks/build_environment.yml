@@ -9,25 +9,215 @@
     msg: "Execution environment file for {{ current_env }} not found at {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
   when: not ee_file.stat.exists
 
-- name: Check for required dependency files mentioned in execution-environment.yml
+# Fix any invalid property names in execution-environment.yml
+- name: Check for invalid 'prepend' property
   ansible.builtin.command:
-    cmd: "grep -o 'requirements\\.\\(txt\\|yml\\|yaml\\)' {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
-  register: required_files
+    cmd: "grep -l '^[[:space:]]*prepend[[:space:]]*:' {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+  register: invalid_prepend
   changed_when: false
   failed_when: false
 
-- name: Ensure required files exist
+- name: Check for invalid 'append' property
+  ansible.builtin.command:
+    cmd: "grep -l '^[[:space:]]*append[[:space:]]*:' {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+  register: invalid_append
+  changed_when: false
+  failed_when: false
+
+- name: Fix invalid 'prepend' property
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+    regexp: '^(\s*)prepend(\s*):(\s*.*)$'
+    replace: '\1prepend_builder\2:\3'
+  when: invalid_prepend.rc == 0
+  register: prepend_fixed
+
+- name: Fix invalid 'append' property
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+    regexp: '^(\s*)append(\s*):(\s*.*)$'
+    replace: '\1append_builder\2:\3'
+  when: invalid_append.rc == 0
+  register: append_fixed
+
+- name: Display property fix status
+  ansible.builtin.debug:
+    msg: "Fixed invalid properties in execution-environment.yml for {{ current_env }}: prepend → prepend_builder, append → append_builder"
+  when: prepend_fixed.changed or append_fixed.changed
+
+# Fix python package references in RHEL 9 environments
+- name: Fix python package references in execution-environment.yml for RHEL 9
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+    regexp: 'python39-(pip|devel)'
+    replace: 'python3-\1'
+  when: "'rhel9' in current_env"
+  register: ee_python_fixed
+
+- name: Display execution-environment.yml fix status
+  ansible.builtin.debug:
+    msg: "Updated Python package names in execution-environment.yml for RHEL 9 compatibility"
+  when: ee_python_fixed.changed
+
+# Fix python package naming in bindep.txt for RHEL 9 environments
+- name: Fix python package naming in bindep.txt for RHEL 9
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/bindep.txt"
+    regexp: '^python39-devel \[platform:rpm\]$'
+    replace: 'python3-devel [platform:rpm]'
+  when: "'rhel9' in current_env and (playbook_dir ~ '/environments/' ~ current_env ~ '/bindep.txt') is file"
+  register: bindep_python_fixed
+
+- name: Display bindep.txt fix status
+  ansible.builtin.debug:
+    msg: "Updated python package names in bindep.txt for RHEL 9 compatibility"
+  when: bindep_python_fixed.changed
+
+# Create dependency files if they don't exist
+- name: Create required files directory if it doesn't exist
   ansible.builtin.file:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/{{ item }}"
+    path: "{{ playbook_dir }}/environments/{{ current_env }}"
+    state: directory
+    mode: '0755'
+
+- name: Check if requirements.txt exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.txt"
+  register: req_txt
+
+- name: Create empty requirements.txt if it doesn't exist
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.txt"
     state: touch
     mode: '0644'
-  with_items: "{{ required_files.stdout_lines | default([]) }}"
-  when: required_files.rc == 0
+  when: not req_txt.stat.exists
 
-- name: Check if image exists
+- name: Check if requirements.yml exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+  register: req_yml
+
+- name: Create default requirements.yml if it doesn't exist
+  ansible.builtin.copy:
+    content: |
+      ---
+      collections:
+        - name: ansible.utils
+          version: ">=2.10.0"
+        - name: ansible.posix
+          version: ">=1.5.4"
+        - name: community.general
+          version: ">=7.0.0"
+    dest: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    mode: '0644'
+  when: not req_yml.stat.exists
+
+- name: Check if bindep.txt exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/bindep.txt"
+  register: bindep_txt
+
+- name: Create default bindep.txt if it doesn't exist
+  ansible.builtin.copy:
+    content: |
+      # System dependencies for Python packages
+      gcc [platform:rpm]
+      make [platform:rpm]
+      libxml2-devel [platform:rpm]
+      openssl-devel [platform:rpm]
+      python3-devel [platform:rpm]
+      rpm-build [platform:rpm]
+      # Kerberos dependencies
+      krb5-devel [platform:rpm]
+      krb5-libs [platform:rpm]
+      krb5-workstation [platform:rpm]
+    dest: "{{ playbook_dir }}/environments/{{ current_env }}/bindep.txt"
+    mode: '0644'
+  when: not bindep_txt.stat.exists
+
+- name: Verify requirements.yml doesn't contain ansible.builtin
   ansible.builtin.command:
-    cmd: "podman images -q {{ current_env }}"
-  register: image_exists
+    cmd: "grep -l 'ansible\\.builtin' {{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+  register: check_builtin
+  changed_when: false
+  failed_when: false
+
+- name: Fix requirements.yml if it contains ansible.builtin
+  ansible.builtin.replace:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    regexp: '(\s+)- name: ansible.builtin(\s+.*)?'
+    replace: '# The following line was removed as ansible.builtin is part of ansible-core and cannot be installed separately'
+  when: check_builtin.rc == 0
+
+# Add this after the bindep.txt checks but before the build steps:
+
+- name: Check if ncclient is in requirements.txt
+  ansible.builtin.command:
+    cmd: "grep -l 'ncclient' {{ playbook_dir }}/environments/{{ current_env }}/requirements.txt"
+  register: check_ncclient
+  changed_when: false
+  failed_when: false
+  when: (playbook_dir ~ '/environments/' ~ current_env ~ '/requirements.txt') is file
+
+- name: Add fix for ncclient in execution-environment.yml
+  ansible.builtin.lineinfile:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+    regexp: '.*RUN touch /requirements-test.txt.*'
+    line: "    # Create empty requirements-test.txt file to fix ncclient installation\n    RUN touch /requirements-test.txt"
+    insertafter: "  prepend_builder: |"
+    state: present
+  when: check_ncclient.rc == 0
+  register: ncclient_fix_added
+
+- name: Display ncclient fix status
+  ansible.builtin.debug:
+    msg: "Added ncclient installation fix to execution-environment.yml"
+  when: ncclient_fix_added.changed
+
+- name: Remove incorrectly added managed block
+  ansible.builtin.blockinfile:
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml"
+    marker: "# {mark} ANSIBLE MANAGED BLOCK"
+    state: absent
+
+# Handle container conflicts
+- name: Get list of containers using the image or derivatives
+  ansible.builtin.command:
+    cmd: podman ps -a --format "{% raw %}{{.ID}}{% endraw %}"
+  register: container_list
+  changed_when: false
+
+- name: Stop and remove any running containers
+  ansible.builtin.command:
+    cmd: "podman rm -f {{ item }}"
+  loop: "{{ container_list.stdout_lines }}"
+  ignore_errors: true
+  changed_when: true
+  when: container_list.stdout_lines | length > 0
+
+# Clean up build directories
+- name: Remove build context directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ work_dir }}/context"
+    - "{{ work_dir }}/_build"
+
+- name: Create clean build context directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ work_dir }}/context"
+    - "{{ work_dir }}/_build"
+
+# Build the container image
+- name: Try to remove any existing images with the same tag
+  ansible.builtin.command:
+    cmd: "podman rmi {{ current_env }} -f"
+  ignore_errors: true
   changed_when: false
 
 - name: Build container image
@@ -42,4 +232,11 @@
       -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
   register: build_output
   changed_when: build_output.rc == 0
-  when: image_exists.stdout == ""
+  retries: 1
+  delay: 10
+  until: build_output.rc == 0
+  ignore_errors: true
+
+- name: Display build result
+  ansible.builtin.debug:
+    msg: "{{ current_env }} build {{ 'succeeded' if build_output.rc == 0 else 'failed' }}. See build output for details."

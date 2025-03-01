@@ -50,7 +50,7 @@
   pre_tasks:
     - name: Include setup tasks
       ansible.builtin.include_tasks: tasks/setup.yml
-      ignore_errors: yes
+      register: setup_result
 
   tasks:
     - name: Ensure tmux is installed
@@ -73,12 +73,22 @@
       poll: 0
       changed_when: false
 
-    - name: Log in to container registries
+    - name: Check if already logged in to container registries
+      ansible.builtin.command:
+        cmd: "podman login --get-login {{ item }}"
+      loop: "{{ container_registries }}"
+      register: login_check_result
+      failed_when: false
+      changed_when: false
+
+    - name: Log in to container registries if not already logged in
       ansible.builtin.shell: "echo {{ rh_password }} | podman login -u {{ rh_username }} --password-stdin {{ item }}"
       loop: "{{ container_registries }}"
+      when: login_check_result.results[loop.index0].rc != 0 and login_check_result.results[loop.index0].stdout != rh_username
       register: login_result
       no_log: true
       failed_when: login_result.rc != 0
+      changed_when: login_result.rc == 0
       ignore_errors: true
 
     - name: Check if required container images exist
@@ -129,19 +139,29 @@
       ansible.builtin.pip:
         requirements: /tmp/ee-containers/files/requirements.txt
       when: requirements_txt.stat.exists
-      ignore_errors: true
+      register: pip_install_result
+      failed_when: pip_install_result is failed
 
     - name: Check if requirements.yml exists
       ansible.builtin.stat:
         path: /tmp/ee-containers/files/requirements.yml
       register: requirements_yml
 
-    - name: Install ansible-galaxy collections from requirements.yml if it exists
+    - name: Check if ansible-galaxy collections are already installed
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection list -r /tmp/ee-containers/files/requirements.yml
+      when: requirements_yml.stat.exists
+      register: galaxy_list_result
+      failed_when: false
+      changed_when: false
+
+    - name: Install ansible-galaxy collections from requirements.yml if not already installed
       ansible.builtin.command:
         cmd: ansible-galaxy collection install -r /tmp/ee-containers/files/requirements.yml
-      when: requirements_yml.stat.exists
-      args:
-        creates: /tmp/ee-containers/files/requirements.yml
+      when: requirements_yml.stat.exists and galaxy_list_result.stdout.find('No collections found') != -1
+      register: galaxy_install_result
+      changed_when: galaxy_install_result.stdout.find('No collections found') != -1
+      failed_when: galaxy_install_result.rc != 0
       ignore_errors: true
 
     - name: Ensure /tmp/ee-containers/_build/configs directory exists
@@ -183,7 +203,7 @@
 
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
-      ignore_errors: yes
+      register: environment_menu_result
 
     - name: Process each selected environment
       block:
@@ -229,10 +249,10 @@
             - "{{ work_dir }}/_build"
             - "{{ work_dir }}/context"
           failed_when: false
-  
+
     - name: Include build environment tasks
       ansible.builtin.include_tasks: tasks/build_environment.yml
       loop: "{{ selected_environments | default([]) }}"
       loop_control:
         loop_var: current_env
-      ignore_errors: yes
+        label: "{{ current_env }}"

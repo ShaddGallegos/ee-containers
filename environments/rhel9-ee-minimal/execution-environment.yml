@@ -24,7 +24,7 @@ options:
 
 additional_build_steps:
   prepend_final: |
-      RUN pip3 install --upgrade pip setuptools
+      RUN pip3 install --upgrade --ignore-installed pip setuptools
       RUN microdnf upgrade -y
       RUN microdnf clean all
       RUN pip3 cache purge    

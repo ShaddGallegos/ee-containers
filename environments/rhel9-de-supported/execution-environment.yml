@@ -33,7 +33,7 @@ additional_build_steps:
         echo "admin:redhat" | chpasswd && \
         echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
         chown -R admin:admin /home/admin && \
-        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install --upgrade --ignore-installed pip setuptools wheel
 
   prepend_final: |
     USER root

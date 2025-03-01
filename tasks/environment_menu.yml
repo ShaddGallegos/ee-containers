@@ -18,16 +18,20 @@
       {{ loop.index }}. {{ env }}
       {% endfor %}
 
-- name: Prompt for environment selection
-  ansible.builtin.pause:
-    prompt: |
+- name: Create combined prompt
+  ansible.builtin.set_fact:
+    combined_prompt: |
       
       **************************************************
-      Available environments:
-      
+            Available environments:
       {{ menu_text }}
       **************************************************
-      Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }}):
+      
+      Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }})
+
+- name: Prompt for environment selection
+  ansible.builtin.pause:
+    prompt: "{{ combined_prompt }}"
   register: user_selection
 
 - name: Parse selections
