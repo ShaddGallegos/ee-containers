@@ -6,3 +6,5 @@ collections:
     version: ">=1.5.4"
   - name: community.general
     version: ">=7.0.0"
+  - name: crowdstrike.falcon
+    version: ">=4.7.2"
