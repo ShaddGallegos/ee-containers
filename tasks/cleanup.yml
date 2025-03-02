@@ -1,0 +1,35 @@
+---
+- name: Create consolidated protected images list
+  ansible.builtin.set_fact:
+    protected_images: >-
+      {{
+        [
+          'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
+        ] + (selected_environments | default([]))
+      }}
+
+- name: Create cleanup script
+  ansible.builtin.template:
+    src: templates/image_cleanup.sh.j2
+    dest: /tmp/image_cleanup.sh
+    mode: '0755'
+    validate: bash -n %s
+
+- name: Execute image cleanup
+  ansible.builtin.command:
+    cmd: /tmp/image_cleanup.sh
+  register: cleanup_result
+  changed_when: cleanup_result.rc == 0
+
+- name: Remove cleanup script
+  ansible.builtin.file:
+    path: /tmp/image_cleanup.sh
+    state: absent
+  changed_when: cleanup_result.rc == 0

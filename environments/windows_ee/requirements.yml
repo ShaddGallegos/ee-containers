@@ -1,9 +1,0 @@
----
-collections:
-  - ansible.windows
-  - community.windows
-  - community.general
-  - ansible.utils
-  - ansible.posix
-  - chocolatey.chocolatey
-  - microsoft.ad

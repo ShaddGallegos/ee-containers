@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# List of protected images
+PROTECTED_IMAGES=(
+{% for image in protected_images %}
+"{{ image }}"
+{% endfor %}
+)
+
+# Find dangling images
+echo "Removing dangling images..."
+podman images --filter dangling=true -q | xargs -r podman rmi
+
+# Remove untagged images
+echo "Removing untagged images..."
+podman images | grep "<none>" | awk '{print $3}' | xargs -r podman rmi
+
+# List all images and filter out protected ones
+echo "Cleaning up old and unused images..."
+ALL_IMAGES=$(podman images --format "{{.Repository}}:{{.Tag}}")
+
+for image in $ALL_IMAGES; do
+  # Skip if image is in protected list
+  skip=false
+  for protected in "${PROTECTED_IMAGES[@]}"; do
+    if [[ "$image" == *"$protected"* ]]; then
+      skip=true
+      break
+    fi
+  done
+  
+  if [ "$skip" = false ]; then
+    echo "Removing $image"
+    podman rmi -f "$image" || true
+  else
+    echo "Keeping protected image: $image"
+  fi
+done
+
+echo "Image cleanup completed!"

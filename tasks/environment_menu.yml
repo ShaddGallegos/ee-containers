@@ -1,0 +1,67 @@
+---
+- name: Find environment directories
+  ansible.builtin.find:
+    paths: "environments/"
+    patterns: "*-*e-*"  # Matches both ee and de
+    recurse: false
+    file_type: directory
+  register: found_dirs
+
+- name: Sort environment directories
+  ansible.builtin.set_fact:
+    environment_mapping: "{{ found_dirs.files | map(attribute='path') | map('basename') | list | sort }}"
+
+- name: Create menu text
+  ansible.builtin.set_fact:
+    menu_text: |
+      {% for env in environment_mapping %}
+      {{ loop.index }}. {{ env }}
+      {% endfor %}
+
+- name: Create combined prompt
+  ansible.builtin.set_fact:
+    combined_prompt: |
+      
+      **************************************************
+            Available environments:
+      {{ menu_text }}
+      **************************************************
+      
+      Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }})
+
+- name: Prompt for environment selection
+  ansible.builtin.pause:
+    prompt: "{{ combined_prompt }}"
+  register: user_selection
+
+- name: Parse selections
+  ansible.builtin.set_fact:
+    selection_numbers: "{{ user_selection.user_input.split(',') | map('trim') | map('int') | list }}"
+
+- name: Map selections to environments
+  ansible.builtin.set_fact:
+    selected_environments: >-
+      {%- set result = [] -%}
+      {%- for num in selection_numbers -%}
+        {%- set index = (num | int) - 1 -%}
+        {%- if index >= 0 and index < environment_mapping | length -%}
+          {{- result.append(environment_mapping[index]) -}}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ result }}
+
+- name: Validate selections
+  ansible.builtin.assert:
+    that:
+      - "selection_numbers | length > 0"
+      - "selection_numbers | min > 0"
+      - "selection_numbers | max <= environment_mapping | length"
+    fail_msg: "Invalid selection. Choose numbers between 1 and {{ environment_mapping | length }}"
+
+- name: Display selected environments
+  ansible.builtin.debug:
+    msg: |
+      Selected environments to build:
+      {% for env in selected_environments %}
+      - {{ env }}
+      {% endfor %}

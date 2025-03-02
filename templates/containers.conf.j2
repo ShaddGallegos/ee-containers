@@ -1,0 +1,14 @@
+[containers]
+dns_servers = [
+{% for server in dns_servers %}
+    "{{ server }}"{% if not loop.last %},{% endif %}
+{% endfor %}
+]
+
+[engine]
+cgroup_manager = "cgroupfs"
+events_logger = "file"
+runtime = "crun"
+
+[network]
+network_backend = "cni"

@@ -1,0 +1,52 @@
+---
+- name: Set build variables
+  ansible.builtin.set_fact:
+    current_env: "{{ env_name }}"
+    current_path: "{{ env_path }}"
+
+- name: Check if image exists
+  ansible.builtin.command:
+    cmd: "podman images -q {{ current_env }}"
+  register: image_exists
+  changed_when: false
+
+- name: Build environment
+  when: image_exists.stdout == ""
+  block:
+    - name: Copy execution environment file
+      ansible.builtin.copy:
+        src: "{{ current_path }}/execution-environment.yml"
+        dest: "{{ work_dir }}/context/execution-environment.yml"
+        mode: '0644'
+
+    - name: Build container image
+      ansible.builtin.command:
+        cmd: >-
+          ansible-builder build
+          --tag {{ current_env }}
+          --container-runtime podman
+          --verbosity 2
+          --prune-images
+          --context {{ work_dir }}/context
+          -f {{ current_path }}/execution-environment.yml
+      register: build_output
+      changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+
+  rescue:
+    - name: Display build error
+      ansible.builtin.debug:
+        msg: |
+          Build failed for {{ current_env }}:
+          STDOUT:
+          {{ build_output.stdout_lines | default([]) | to_nice_yaml }}
+          STDERR:
+          {{ build_output.stderr_lines | default([]) | to_nice_yaml }}
+
+    - name: Fail the build
+      ansible.builtin.fail:
+        msg: "Build failed for {{ current_env }}. See output above."
+
+  always:
+    - name: Display build status
+      ansible.builtin.debug:
+        msg: "Build Status for {{ current_env }}: {{ 'Failed' if build_output.failed | default(false) else 'Success' }}"
