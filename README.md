@@ -4,7 +4,7 @@ A streamlined approach to building Ansible Execution Environments (EEs) with min
 
 ## Overview
 
-This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the `environments` folder.
+This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the environments folder.
 
 ## Prerequisites
 
@@ -22,31 +22,35 @@ This repository includes predefined execution environment configurations for bot
 
 ## Required Files for Each Environment
 
-Each environment in the `environments` directory must include:
+Each environment in the environments directory must include:
 
 1. `execution-environment.yml` - The main configuration file
 2. Any dependency files referenced in the execution-environment.yml:
-   - `requirements.txt` - Python package requirements
-   - `requirements.yml` - Ansible collection requirements
+   - requirements.txt - Python package requirements
+   - requirements.yml - Ansible collection requirements
    - `bindep.txt` - Binary dependencies
 
 ## Running the Playbook
 
 Execute the playbook with:
+
+```bash
 ansible-playbook Ansible_Automation_Platform-ee_builder.yml
+```
 
 Open a terminal and watch your build progress:
+
+```bash
 watch -n .5 podman images
+```
 
-You can select multiple environments, comma-separated:
+You can select multiple environments, comma-separated from the menu that appears during execution.
 
-And poof, you have the latest and greatest based on the definitions provided.
-
-After you run this once, all of the examples and base images are local in "scripts/", so you don't need a connection other than for UBI updates for your image.
+After you run this once, all of the examples and base images are local in the work directory, so you don't need a connection other than for UBI updates for your image.
 
 ## Playbook Overview
 
-This playbook automates the process of building an Ansible execution environment (EE) container using `ansible-builder`. It handles:
+This playbook automates the process of building Ansible execution environment (EE) containers using `ansible-builder`. It handles:
 
 1. **Environment Preparation**: Sets up build directories and dependencies
 2. **Configuration Validation**: Checks and fixes common issues in configuration files
@@ -55,20 +59,43 @@ This playbook automates the process of building an Ansible execution environment
 
 ### Task Explanations
 
-1. **Verify internet connection**: Checks if the system has an active internet connection by pinging Google.
-2. **Ensure python3-pip and ansible-core are installed**: Installs required packages using dnf.
-3. **Clone GitHub repository**: Clones the "ee-containers" repository to the `/tmp` directory.
-4. **Login to registry.redhat.io**: Logs in to the Red Hat registry using provided credentials.
-5. **Check if requirements.txt exists**: Verifies the existence of Python requirements.
-6. **Install Python requirements**: Installs packages from requirements.txt using pip3.
-7. **Check if requirements.yml exists**: Verifies the existence of Ansible collections.
-8. **Install Ansible collections**: Installs collections from requirements.yml.
-9. **List available environments**: Shows environments available for building.
-10. **Environment selection**: Prompts user to select which environments to build.
-     - Environments pulled from: the `environments` directory.       - [https://github.com/nickarellano/ee-containers](https://github.com/nickarellano/ee-containers)
-       - [https://github.com/cloin/ee-builds](https://github.com/cloin/ee-builds)rellano/ee-containers)
-11. **Set selected environment**: This task sets the selected environment and its base name based on the user's input.
-12. **Build image using ansible-builder based on user's selection**: This task builds the Ansible execution environment image using `ansible-builder` and the selected environment's `execution-environment.yaml` file.
-13. **Tag the image with the new name**: This task tags the newly built image with a new name based on the selected environment's base name.-builder` and the selected environment's `execution-environment.yaml` file.
-14. **Show build output**: This task displays the build output to the user.ge with a new name based on the selected environment's base name.
-15. **Show build output**: This task displays the build output to the user.
+1. **Environment Validation**: Verifies execution environment files exist and are properly formatted
+2. **Registry Authentication**: Logs in to Red Hat and other container registries using provided credentials
+3. **Dependency Management**: Installs Python packages and Ansible collections required for building
+4. **Container Image Management**: Pulls required base images from registries and manages local images
+5. **Environment Selection**: Presents a menu of available environments and processes user selections
+6. **Configuration Cleanup**: Automatically fixes common issues in configuration files:
+   - Corrects deprecated property names (prepend → prepend_builder, append → append_builder)
+   - Updates package references for RHEL 9 compatibility (python39- → python3-)
+   - Removes problematic collection references (ansible.builtin)
+   - Replaces deprecated collections (infra.ansible → infra.ee_utilities + infra.aap_utilities)
+7. **Resource Cleanup**: Removes existing containers and images related to the current build
+8. **Container Building**: Runs ansible-builder with appropriate options to build the container image
+9. **Build Verification**: Confirms successful image creation and provides detailed build output
+10. **Error Handling**: Provides clear error messages and continues processing multiple environments
+
+## Environment Examples
+
+This repository includes examples from:
+- [https://github.com/nickarellano/ee-containers](https://github.com/nickarellano/ee-containers)
+- [https://github.com/cloin/ee-builds](https://github.com/cloin/ee-builds)
+
+## Troubleshooting
+
+If builds fail, check:
+1. Registry authentication - ensure your Red Hat credentials are correct
+2. Internet connectivity - verify you can reach required registries
+3. Base image availability - confirm you have access to the required base images
+4. Build logs - review the detailed output for specific errors
+
+To clean up failed builds:
+```bash
+podman image prune -f
+```
+
+## Contributing
+
+To add new execution environments:
+1. Create a new directory under environments with a descriptive name
+2. Add the required files (execution-environment.yml, requirements.txt, requirements.yml, and bindep.txt.)
+3. Test your environment with the playbook Ansible_Automation_Platform-ee_builder.yml
