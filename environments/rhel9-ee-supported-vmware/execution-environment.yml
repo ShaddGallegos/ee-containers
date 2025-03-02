@@ -2,7 +2,7 @@
 version: 3
 
 build_arg_defaults:
-  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force --no-deps'
   ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
   PKGMGR_PRESERVE_CACHE: 'false'
 
@@ -15,6 +15,8 @@ images:
 
 options:
   package_manager_path: /usr/bin/microdnf
+  # Only valid options in this version:
+  # package_manager_path, user, workdir, relax_passwd_permissions, skip_ansible_check
 
 additional_build_files:
   - src: /tmp/ee-containers/_build/configs/ansible.cfg
@@ -40,9 +42,16 @@ additional_build_steps:
 
   prepend_builder: |
     # Install extra dependencies for problematic packages
-    # Use --ignore-installed to prevent attempts to uninstall system packages
     RUN microdnf install -y krb5-devel krb5-libs krb5-workstation && \
-        pip3 install --upgrade --ignore-installed pip setuptools wheel packaging
+        pip3 install --upgrade --ignore-installed pip setuptools wheel && \
+        # Create empty requirements-test.txt file to fix ncclient installation issues
+        touch /requirements-test.txt
+    
+    # Install VMware dependencies with --ignore-installed flag
+    RUN pip3 install --no-cache-dir --ignore-installed pyvmomi vapi-client-bindings
+    
+    # Pre-install cloud.common collection
+    RUN ansible-galaxy collection install cloud.common:2.0.0 -f
 
   append_builder: |
     # Check for any package issues but don't fail the build
@@ -52,7 +61,7 @@ additional_build_steps:
     USER root
     RUN microdnf upgrade -y && \
         microdnf install -y python3-pip python3-devel gcc krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel packaging && \
+        python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel && \
         python3 -m pip install --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
 
   append_final: |

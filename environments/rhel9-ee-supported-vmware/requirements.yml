@@ -1,0 +1,23 @@
+---
+collections:
+  # VMware collections
+  - name: vmware.vmware_rest
+    version: ">=2.2.0"
+  - name: community.vmware
+    version: ">=3.6.0"
+  - name: cloud.common
+    version: ">=2.0.0,<3.0.0"
+  # cloud.vmware_ops collection is problematic - keep it commented out
+  # - name: cloud.vmware_ops
+  
+  # Standard collections
+  - name: ansible.posix
+    version: ">=1.5.4"
+  - name: ansible.utils
+    version: ">=2.10.0"
+  - name: community.general
+    version: ">=7.0.0"
+  
+  # Infrastructure collections
+  - name: infra.aap_utilities
+  - name: infra.ee_utilities

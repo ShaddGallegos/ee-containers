@@ -1,0 +1,49 @@
+---
+- name: Process environment {{ current_env }}
+  block:
+    - name: Ensure build directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ work_dir }}/files"
+        - "{{ work_dir }}/_build"
+        - "{{ work_dir }}/context"
+
+    - name: Set correct ownership for build directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        recurse: true
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+      loop:
+        - "{{ work_dir }}/files"
+        - "{{ work_dir }}/_build"
+        - "{{ work_dir }}/context"
+      become: true
+
+    # Include all the build environment tasks
+    - name: Include build environment tasks
+      ansible.builtin.include_tasks: tasks/build_environment.yml
+
+  rescue:
+    - name: Display build error
+      ansible.builtin.debug:
+        msg: |
+          Build failed for {{ current_env | default('unknown') }}:
+          STDOUT:
+          {{ build_output.stdout_lines | default([]) | to_nice_yaml }}
+          STDERR:
+          {{ build_output.stderr_lines | default([]) | to_nice_yaml }}
+
+  always:
+    - name: Clean up build directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ work_dir }}/_build"
+        - "{{ work_dir }}/context"
+      failed_when: false
