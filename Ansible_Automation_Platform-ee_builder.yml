@@ -1,6 +1,7 @@
-- name: Automatically build Execution Environments for Ansible Automation Platform
+- name: Build Execution Environments for Ansible Automation Platform
   hosts: localhost
   become: true
+  gather_facts: true  # Ensure we have facts for ansible_env variables
 
   vars:
     container_registries:
@@ -31,6 +32,15 @@
       # - url: 'https://github.com/nickarellano/ee-container.git'
       #   dest: 'scripts/ee-container'
     work_dir: '/tmp/ee-containers'
+    required_images:
+      - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
+      - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
+      - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
+      - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
+      - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
+      - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
+      - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
+      - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
 
   vars_prompt:
     - name: rh_username
@@ -53,6 +63,7 @@
       register: setup_result
 
   tasks:
+    # Monitor podman activity via tmux
     - name: Ensure tmux is installed
       ansible.builtin.package:
         name: tmux
@@ -65,14 +76,15 @@
       failed_when: false
       changed_when: false
 
-    - name: Start tmux session and run watch command
+    - name: Start tmux session for monitoring podman images
       ansible.builtin.command:
         cmd: tmux new-session -d -s podman_watch 'watch -n .5 podman images'
       when: tmux_session_check.rc != 0
+      changed_when: true
       async: 1
       poll: 0
-      changed_when: false
 
+    # Registry authentication
     - name: Check if already logged in to container registries
       ansible.builtin.command:
         cmd: "podman login --get-login {{ item }}"
@@ -80,32 +92,29 @@
       register: login_check_result
       failed_when: false
       changed_when: false
+#      no_log: true  # Avoid leaking credentials in output
 
-    - name: Log in to container registries if not already logged in
-      ansible.builtin.shell: "echo {{ rh_password }} | podman login -u {{ rh_username }} --password-stdin {{ item }}"
-      loop: "{{ container_registries }}"
-      when: login_check_result.results[loop.index0].rc != 0 and login_check_result.results[loop.index0].stdout != rh_username
-      register: login_result
-      no_log: true
-      failed_when: login_result.rc != 0
-      changed_when: login_result.rc == 0
-      ignore_errors: true
+    - name: Verify registry authentication
+      ansible.builtin.debug:
+        msg: "Registry {{ item.0 }} authentication status: {{ 'Successful' if item.1.rc == 0 else 'Failed' }}"
+      loop: "{{ container_registries | zip(login_check_result.results) | list }}"
+      loop_control:
+        label: "{{ item.0 }}"
 
+    # Log in to registries that need authentication
+    - name: Ensure registry login is working
+      ansible.builtin.include_tasks: tasks/login_registry.yml
+
+    # Image management - Check what we have and get what we need
     - name: Check if required container images exist
       ansible.builtin.command:
         cmd: "podman image exists {{ item }}"
-      loop:
-        - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
-        - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
-        - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
-        - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
-        - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
-        - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
-        - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
-        - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
+      loop: "{{ required_images }}"
       register: image_check_results
       changed_when: false
       failed_when: false
+      loop_control:
+        label: "{{ item }}"
 
     - name: Pull missing container images
       ansible.builtin.command:
@@ -113,14 +122,40 @@
       loop: "{{ image_check_results.results }}"
       when: item.rc is defined and item.rc != 0
       register: pull_results
-      changed_when: "'Downloaded newer image' in pull_results.stdout | default('')"
+      changed_when: pull_results.rc == 0
       retries: 3
       delay: 5
-      until: pull_results is succeeded
+      until: pull_results is succeeded or pull_results is failed
       ignore_errors: true
       loop_control:
         loop_var: item
+        label: "{{ item.item }}"
 
+    - name: Verify container images were pulled
+      ansible.builtin.command:
+        cmd: "podman image exists {{ item }}"
+      loop: "{{ required_images }}"
+      register: image_verify_results
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Warning about missing container images
+      ansible.builtin.debug:
+        msg: |
+          WARNING: Some required container images are missing. This will cause builds to fail.
+          Missing images: {{ image_verify_results.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list | join(', ') }}
+
+          Please check your Red Hat Registry credentials and ensure you have access to these images.
+          You may need to:
+          1. Register with subscription-manager
+          2. Attach a valid subscription
+          3. Verify your registry service account at https://access.redhat.com/terms-based-registry/
+      when: image_verify_results.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+    # Cleanup unused/old resources
     - name: Clean up unused images and build artifacts
       block:
         - name: Include cleanup tasks
@@ -130,60 +165,69 @@
           ansible.builtin.debug:
             msg: "Image cleanup failed: {{ ansible_failed_result.stderr | default('Unknown error') }}"
 
+    # Dependency management
     - name: Check if requirements.txt exists
       ansible.builtin.stat:
-        path: /tmp/ee-containers/files/requirements.txt
+        path: "{{ work_dir }}/files/requirements.txt"
       register: requirements_txt
 
-    - name: Install Python packages from requirements.txt if it exists
+    - name: Install Python packages from requirements.txt
       ansible.builtin.pip:
-        requirements: /tmp/ee-containers/files/requirements.txt
+        requirements: "{{ work_dir }}/files/requirements.txt"
+        extra_args: "--upgrade"
       when: requirements_txt.stat.exists
       register: pip_install_result
-      failed_when: pip_install_result is failed
+      retries: 3
+      delay: 5
+      until: pip_install_result is succeeded
+      failed_when: false
 
     - name: Check if requirements.yml exists
       ansible.builtin.stat:
-        path: /tmp/ee-containers/files/requirements.yml
+        path: "{{ work_dir }}/files/requirements.yml"
       register: requirements_yml
 
-    - name: Check if ansible-galaxy collections are already installed
+    - name: Check if ansible-galaxy collections need to be installed
       ansible.builtin.command:
-        cmd: ansible-galaxy collection list -r /tmp/ee-containers/files/requirements.yml
+        cmd: ansible-galaxy collection list -r {{ work_dir }}/files/requirements.yml
       when: requirements_yml.stat.exists
       register: galaxy_list_result
       failed_when: false
       changed_when: false
 
-    - name: Install ansible-galaxy collections from requirements.yml if not already installed
+    - name: Install ansible-galaxy collections
       ansible.builtin.command:
-        cmd: ansible-galaxy collection install -r /tmp/ee-containers/files/requirements.yml
-      when: requirements_yml.stat.exists and galaxy_list_result.stdout.find('No collections found') != -1
+        cmd: ansible-galaxy collection install -r {{ work_dir }}/files/requirements.yml
+      when: >
+        requirements_yml.stat.exists and
+        (galaxy_list_result.stdout.find('No collections found') != -1 or galaxy_install_force | default(false))
       register: galaxy_install_result
-      changed_when: galaxy_install_result.stdout.find('No collections found') != -1
+      changed_when: galaxy_install_result.rc == 0
       failed_when: galaxy_install_result.rc != 0
       ignore_errors: true
 
-    - name: Ensure /tmp/ee-containers/_build/configs directory exists
+    # Configuration setup
+    - name: Ensure build configs directory exists
       ansible.builtin.file:
-        path: /tmp/ee-containers/_build/configs
+        path: "{{ work_dir }}/_build/configs"
         state: directory
         mode: '0755'
 
-    - name: Create ansible.cfg in /tmp/ee-containers/_build/configs
+    - name: Create ansible.cfg in build context
       ansible.builtin.copy:
-        src: /home/sgallego/ee-containers/ansible.cfg
-        dest: /tmp/ee-containers/_build/configs/ansible.cfg
+        src: "{{ playbook_dir }}/ansible.cfg"
+        dest: "{{ work_dir }}/_build/configs/ansible.cfg"
         mode: '0644'
 
-    - name: Copy ansible.cfg to build context
+    - name: Copy ansible.cfg to system location
       ansible.builtin.copy:
-        src: /tmp/ee-containers/_build/configs/ansible.cfg
+        src: "{{ work_dir }}/_build/configs/ansible.cfg"
         dest: /etc/ansible/ansible.cfg
         mode: '0644'
         remote_src: true
       become: true
 
+    # DNS and connectivity checks
     - name: Verify DNS resolution
       ansible.builtin.command:
         cmd: "nslookup {{ item }}"
@@ -194,65 +238,46 @@
       register: dns_checks
       changed_when: false
       failed_when: false
+      loop_control:
+        label: "{{ item }}"
 
     - name: Set DNS servers for Podman
       ansible.builtin.template:
         src: templates/registries.conf.j2
         dest: /etc/containers/registries.conf
         mode: '0644'
+        backup: true
 
+    # Environment selection and building
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
       register: environment_menu_result
 
+    - name: Debug selected environments
+      ansible.builtin.debug:
+        msg: "Selected environments to process: {{ selected_environments | join(', ') }}"
+      when: selected_environments | default([]) | length > 0
+
     - name: Process each selected environment
-      block:
-        - name: Ensure build directories exist
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: directory
-            mode: '0755'
-          loop:
-            - "{{ work_dir }}/files"
-            - "{{ work_dir }}/_build"
-            - "{{ work_dir }}/context"
-
-        - name: Set correct ownership for build directories
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: directory
-            recurse: true
-            owner: "{{ ansible_user_id }}"
-            group: "{{ ansible_user_id }}"
-          loop:
-            - "{{ work_dir }}/files"
-            - "{{ work_dir }}/_build"
-            - "{{ work_dir }}/context"
-          become: true
-
-      rescue:
-        - name: Display build error
-          ansible.builtin.debug:
-            msg: |
-              Build failed for {{ current_env | default('unknown') }}:
-              STDOUT:
-              {{ build_output.stdout_lines | default([]) | to_nice_yaml }}
-              STDERR:
-              {{ build_output.stderr_lines | default([]) | to_nice_yaml }}
-
-      always:
-        - name: Clean up build directories
-          ansible.builtin.file:
-            path: "{{ item }}"
-            state: absent
-          loop:
-            - "{{ work_dir }}/_build"
-            - "{{ work_dir }}/context"
-          failed_when: false
-
-    - name: Include build environment tasks
       ansible.builtin.include_tasks: tasks/build_environment.yml
       loop: "{{ selected_environments | default([]) }}"
       loop_control:
         loop_var: current_env
         label: "{{ current_env }}"
+      when: selected_environments | default([]) | length > 0
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          ✅ Finished processing all selected environments.
+          To use these environments, run: podman images | grep -E '(rhel8|rhel9)'
+          To clean up unused images, run: podman image prune -f
+
+  handlers:
+    - name: Build container image
+      ansible.builtin.debug:
+        msg: "Container image {{ current_env }} has been built successfully"
+
+    - name: Handle infra ansible fix
+      ansible.builtin.debug:
+        msg: "Fixed infra.ansible reference in requirements.yml for {{ current_env }}"

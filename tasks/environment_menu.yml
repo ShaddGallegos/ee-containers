@@ -1,67 +1,70 @@
 ---
-- name: Find environment directories
+- name: Find execution environment directories
   ansible.builtin.find:
-    paths: "environments/"
-    patterns: "*-*e-*"  # Matches both ee and de
-    recurse: false
+    paths: "{{ playbook_dir }}/environments"
     file_type: directory
-  register: found_dirs
+  register: environment_dirs
 
-- name: Sort environment directories
+- name: Extract environment names
   ansible.builtin.set_fact:
-    environment_mapping: "{{ found_dirs.files | map(attribute='path') | map('basename') | list | sort }}"
+    all_environments: "{{ environment_dirs.files | map(attribute='path') | map('basename') | list | sort }}"
 
-- name: Create menu text
+- name: Filter environments based on naming patterns
   ansible.builtin.set_fact:
-    menu_text: |
-      {% for env in environment_mapping %}
-      {{ loop.index }}. {{ env }}
-      {% endfor %}
+    filtered_environments: "{{ all_environments | select('match', '.*rhel*.*(ee|de).*|(ee|de).*rhel*.*') | list | sort }}"
 
 - name: Create combined prompt
   ansible.builtin.set_fact:
-    combined_prompt: |
-      
+    environment_prompt: |
       **************************************************
             Available environments:
-      {{ menu_text }}
+      {% for env_name in filtered_environments %}
+      {{ loop.index }}. {{ env_name }}
+      {% endfor %}
+
       **************************************************
-      
-      Enter numbers for environments to build (comma-separated, max {{ environment_mapping | length }})
+
+      Enter numbers for environments to build (comma-separated, max {{ filtered_environments | length }})
 
 - name: Prompt for environment selection
   ansible.builtin.pause:
-    prompt: "{{ combined_prompt }}"
-  register: user_selection
+    prompt: "{{ environment_prompt }}"
+  register: environment_selection
 
-- name: Parse selections
+- name: Handle environment selection
   ansible.builtin.set_fact:
-    selection_numbers: "{{ user_selection.user_input.split(',') | map('trim') | map('int') | list }}"
+    selection_is_all: "{{ environment_selection.user_input | trim | lower == 'all' }}"
+    selection_string: "{{ environment_selection.user_input | trim }}"
+
+- name: Set selected environments when 'all' is chosen
+  ansible.builtin.set_fact:
+    selected_environments: "{{ filtered_environments }}"
+  when: selection_is_all | bool
+
+- name: Parse selections for numeric input
+  ansible.builtin.set_fact:
+    selection_numbers: "{{ selection_string.split(',') | map('trim') | map('int') | list }}"
+  when: not selection_is_all | bool
 
 - name: Map selections to environments
   ansible.builtin.set_fact:
-    selected_environments: >-
-      {%- set result = [] -%}
-      {%- for num in selection_numbers -%}
-        {%- set index = (num | int) - 1 -%}
-        {%- if index >= 0 and index < environment_mapping | length -%}
-          {{- result.append(environment_mapping[index]) -}}
-        {%- endif -%}
-      {%- endfor -%}
-      {{ result }}
+    selected_environments: "{{ filtered_environments | list_indexer(selection_numbers) }}"
+  when: not selection_is_all | bool
 
 - name: Validate selections
   ansible.builtin.assert:
     that:
-      - "selection_numbers | length > 0"
-      - "selection_numbers | min > 0"
-      - "selection_numbers | max <= environment_mapping | length"
-    fail_msg: "Invalid selection. Choose numbers between 1 and {{ environment_mapping | length }}"
+      - selection_is_all | bool or (selection_numbers | min > 0 and selection_numbers | max <= filtered_environments | length)
+    fail_msg: "Invalid selection. Choose numbers between 1 and {{ filtered_environments | length }} or 'all'"
+    success_msg: "Valid selection: {{ selected_environments | join(', ') }}"
+  when: selection_string != ""
 
-- name: Display selected environments
+- name: Show selected environments
   ansible.builtin.debug:
-    msg: |
-      Selected environments to build:
-      {% for env in selected_environments %}
-      - {{ env }}
-      {% endfor %}
+    msg: "Selected environments: {{ selected_environments | join(', ') }}"
+  when: selected_environments is defined and selected_environments | length > 0
+
+- name: Debug selected environments
+  ansible.builtin.debug:
+    var: selected_environments
+    verbosity: 0

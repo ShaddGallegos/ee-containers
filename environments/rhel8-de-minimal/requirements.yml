@@ -1,4 +1,5 @@
 ---
 collections:
-  - name: infra.aap_configuration
-  
+  - name: ansible.utils
+  - name: ansible.posix
+  - name: community.general
