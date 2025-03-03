@@ -28,7 +28,7 @@ for image in $ALL_IMAGES; do
       break
     fi
   done
-
+  
   if [ "$skip" = false ]; then
     echo "Removing $image"
     podman rmi -f "$image" || true

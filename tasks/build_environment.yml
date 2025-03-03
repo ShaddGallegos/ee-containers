@@ -272,7 +272,7 @@
     msg: "ansible-builder command not found. Please install it with: pip install ansible-builder"
   when: builder_check.rc != 0
 
-- name: Build cntainer image
+- name: Build container image
   ansible.builtin.command:
     cmd: >-
       ansible-builder build
@@ -281,6 +281,7 @@
       --verbosity 3
       --prune-images
       --context {{ work_dir }}/context
+      --build-arg AH_TOKEN={{ automation_hub_token }}
       -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
   register: build_output
   changed_when: build_output.rc == 0
