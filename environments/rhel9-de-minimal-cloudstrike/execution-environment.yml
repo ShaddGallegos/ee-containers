@@ -57,6 +57,8 @@ additional_build_steps:
     # Create empty requirements-test.txt file to fix ncclient installation
     # Create empty requirements-test.txt file to fix ncclient installation
     # Create empty requirements-test.txt file to fix ncclient installation
+    # Create empty requirements-test.txt file to fix ncclient installation
+    # Create empty requirements-test.txt file to fix ncclient installation
     RUN touch /requirements-test.txt
 
   append_builder: |
