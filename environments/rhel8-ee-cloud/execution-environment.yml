@@ -1,0 +1,24 @@
+---
+version: 3
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform/ee-minimal-rhel9@sha256:c6617b6b711eeab20b4b31a5259eac58d5244cd8f7b8ccb149847719677ee18f
+
+dependencies:
+  galaxy:
+    collections:
+      - { name: amazon.aws, version: 9.2.0 }
+      - { name: azure.azcollection, version: 3.2.0 }
+      - { name: community.aws, version: 6.3.0 }
+      - { name: community.digitalocean, version: 1.27.0 }
+      - { name: google.cloud, version: 1.5.1 }
+      - { name: hetzner.hcloud, version: 4.0.1 }
+      - { name: vultr.cloud, version: 1.10.0 }
+  python:
+    - awscli>=1.16.312
+    - botocore>=1.34.0
+    - boto3>=1.34.0
+
+options:
+  package_manager_path: /usr/bin/microdnf

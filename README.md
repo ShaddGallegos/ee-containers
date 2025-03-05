@@ -1,4 +1,21 @@
 # EE-Containers
+                                                                                                                                    
+                                                                                                        ..:-=*##*=-:..              
+                                                                                                      .*%@@@@@@@@@@@@%*.            
+                                                                                                   .:#@@@@@@@@@@@@@@@@@@#:.         
+                                                                                                  .*@@@@@@@@@@*-@@@@@@@@@@*.        
+                                                                                                 .#@@@@@@@@@@*. =@@@@@@@@@@#.       
+                                                                                                .%@@@@@@@@@@@ .# +@@@@@@@@@@%.      
+                                                                                                -%@@@@@@@@@@..#%-.*@@@@@@@@@%-      
+          "A Streamlined Approach to Building Ansible Execution Environments"                  .+@@@@@@@@@@= =@@@.:#@@@@@@@@@+.     
+                                                                                               .+@@@@@@@@@# ..:+@%.-@@@@@@@@@+.     
+                                                                                               .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=      
+                                                                                                .%@@@@@@@:.*@@@@%.  .+@@@@@@%.      
+                                                                                                 .@@@@@@= =@@@@@@@%=.:%@@@@@.       
+                                                                                                  :%@@@@@@@@@@@@@@@@@@@@@@%:        
+                                                                                                   .*@@@@@@@@@@@@@@@@@@@@*.         
+                                                                                                     .+@@@@@@@@@@@@@@@@+..          
+                                                                                                       ..+*%@@@@@@%*+..              
 
 A streamlined approach to building Ansible Execution Environments (EEs) with minimal effort. This repository automates the process of building EEs for different scenarios and platforms.
 
@@ -47,6 +64,7 @@ After you run this once, all of the examples and base images are local in "scrip
 ## Playbook Overview
 
 This playbook automates the process of building an Ansible execution environment (EE) container using `ansible-builder`. It handles:
+
 1. **Environment Preparation**: Sets up build directories and dependencies
 2. **Configuration Validation**: Checks and fixes common issues in configuration files
 3. **Build Process**: Runs ansible-builder with appropriate options
@@ -70,4 +88,4 @@ This playbook automates the process of building an Ansible execution environment
 12. **Build image using ansible-builder based on user's selection**: This task builds the Ansible execution environment image using `ansible-builder` and the selected environment's `execution-environment.yaml` file.
 13. **Tag the image with the new name**: This task tags the newly built image with a new name based on the selected environment's base name.-builder` and the selected environment's `execution-environment.yaml` file.
 14. **Show build output**: This task displays the build output to the user.ge with a new name based on the selected environment's base name.
-14. **Show build output**: This task displays the build output to the user.
+15. **Show build output**: This task displays the build output to the user.

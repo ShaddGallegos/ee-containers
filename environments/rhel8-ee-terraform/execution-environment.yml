@@ -1,0 +1,20 @@
+---
+version: 3
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel9:latest
+
+dependencies:
+  galaxy:
+    collections:
+      - { name: cloud.terraform, version: 3.0.0 }
+
+additional_build_steps:
+  prepend_final:
+    - RUN /usr/bin/microdnf install -y yum-utils
+    - RUN yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
+    - RUN /usr/bin/microdnf install -y terraform
+
+options:
+  package_manager_path: /usr/bin/microdnf
