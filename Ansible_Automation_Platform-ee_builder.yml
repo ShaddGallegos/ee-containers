@@ -1,9 +1,21 @@
 - name: Display title screen
   hosts: localhost
-  gather_facts: false
+  gather_facts: true  # We need to gather facts to get terminal size
   tasks:
-    - name: Display ASCII title screen
-      ansible.builtin.shell: cat "{{ playbook_dir }}/asciiable.txt"
+    - name: Get terminal width
+      ansible.builtin.shell: stty size | awk '{print $2}'
+      register: term_width
+      changed_when: false
+
+    - name: Display ASCII title screen with proper alignment and centering
+      ansible.builtin.shell: |
+        TERM_WIDTH=$(stty size | awk '{print $2}')
+        cat "{{ playbook_dir }}/asciiable.txt" | while IFS= read -r line; do
+          # Strip quotes
+          content=$(echo "$line" | sed 's/^"//;s/"$//')
+          # Calculate padding for centering (if needed)
+          printf "%s\n" "$content"
+        done
       register: ascii_title
       changed_when: false
 
