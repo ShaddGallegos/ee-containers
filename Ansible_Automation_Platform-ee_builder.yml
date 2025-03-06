@@ -1,3 +1,21 @@
+- name: Display title screen
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Display ASCII title screen
+      ansible.builtin.shell: cat "{{ playbook_dir }}/asciiable.txt"
+      register: ascii_title
+      changed_when: false
+
+    - name: Show title
+      ansible.builtin.debug:
+        msg: "{{ ascii_title.stdout_lines }}"
+
+    - name: Pause for title screen
+      ansible.builtin.pause:
+        seconds: 7
+        prompt: "Starting Execution Environment Builder..."
+
 - name: Build Execution Environments for Ansible Automation Platform
   hosts: localhost
   become: true
@@ -19,8 +37,6 @@
       - git
       - podman
       - podman-docker
-      - podman-compose
-      - podman-remote
       - tmux
       - yum-utils
     git_repos:

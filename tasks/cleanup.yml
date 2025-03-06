@@ -15,21 +15,3 @@
         ] + (selected_environments | default([]))
       }}
 
-- name: Create cleanup script
-  ansible.builtin.template:
-    src: templates/image_cleanup.sh.j2
-    dest: /tmp/image_cleanup.sh
-    mode: '0755'
-    validate: bash -n %s
-
-- name: Execute image cleanup
-  ansible.builtin.command:
-    cmd: /tmp/image_cleanup.sh
-  register: cleanup_result
-  changed_when: cleanup_result.rc == 0
-
-- name: Remove cleanup script
-  ansible.builtin.file:
-    path: /tmp/image_cleanup.sh
-    state: absent
-  changed_when: cleanup_result.rc == 0

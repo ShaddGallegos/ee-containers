@@ -22,7 +22,7 @@ additional_build_files:
   - src: /tmp/ee-containers/_build/configs/ansible.cfg
     dest: configs/ansible.cfg
   # Add a custom fix script
-  - src: /home/sgallego/ee-containers/environments/rhel9-ee-supported-vmware/fix-packaging.sh
+  - src: fix-packaging.sh
     dest: fix-packaging.sh
 
 dependencies:
