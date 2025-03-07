@@ -1,5 +1,6 @@
 - name: Display title screen
   hosts: localhost
+  connection: local  # Add this line to prevent SSH connection attempt
   gather_facts: false
   environment:
     ANSIBLE_LOCALHOST_WARNING: "False" 
