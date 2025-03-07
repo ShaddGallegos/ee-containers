@@ -25,8 +25,8 @@ This repository includes predefined execution environment configurations for bot
 It is a wrapper for Ansible-Builder that automates the el-manuel parts and makes life a little easier 
 
 Current Direct Contributors:
-Shadd Gallegos Shadd@redhat.com
-Mark Lowcher 
+- Shadd Gallegos Shadd@redhat.com
+- Mark Lowcher 
 
 ## Prerequisites
 
