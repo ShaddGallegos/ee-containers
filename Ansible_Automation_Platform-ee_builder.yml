@@ -56,6 +56,7 @@
       - '8.8.4.4'
     required_packages:
       - python3-pip
+      - ansible-builder
       - ansible-core
       - git
       - podman
@@ -65,9 +66,7 @@
     git_repos:
       - url: 'https://github.com/cloin/ee-builds.git'
         dest: 'scripts/ee-builds'
-      # This repository does not exist, let's comment it out to avoid errors
-      # - url: 'https://github.com/nickarellano/ee-container.git'
-      #   dest: 'scripts/ee-container'
+
     work_dir: '/tmp/ee-containers'
     required_images:
       - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
@@ -167,7 +166,6 @@
           register: tmux_created
           changed_when: tmux_created.rc == 0
 
-        # This will open a new Windows terminal window for WSL users
         - name: Open new terminal window with tmux session (WSL)
           ansible.builtin.shell: |
             # Run in background to prevent blocking
@@ -182,7 +180,6 @@
           ignore_errors: true
           changed_when: true
 
-        # This handles Linux desktop environments
         - name: Open new terminal window with tmux session (Linux Desktop)
           ansible.builtin.shell: |
             if command -v gnome-terminal &>/dev/null; then
@@ -201,7 +198,6 @@
           ignore_errors: true
           changed_when: true
 
-        # This will open a new terminal window for RHEL users
         - name: Open new terminal window with tmux session (RHEL)
           ansible.builtin.shell: |
             if command -v gnome-terminal &>/dev/null; then
@@ -244,6 +240,41 @@
           ansible.builtin.debug:
             msg: "Failed to set up podman monitoring. Continuing with build..."
 
+    - name: Open new terminal window with tmux session
+      block:
+        - name: Check if running in graphical environment
+          ansible.builtin.shell: |
+            if [ -n "$DISPLAY" ] && command -v xdpyinfo >/dev/null 2>&1; then
+              echo "has_display=true"
+            else
+              echo "has_display=false"
+            fi
+          register: display_check
+          changed_when: false
+
+        # Try to open a terminal only if we have a display
+        - name: Open terminal with appropriate method
+          ansible.builtin.shell: |
+            if command -v gnome-terminal >/dev/null 2>&1; then
+              # Try with --disable-factory option to avoid D-Bus issues
+              gnome-terminal --disable-factory -- bash -c "tmux attach -t podman-monitor" || true
+            elif command -v konsole >/dev/null 2>&1; then
+              konsole -e "tmux attach -t podman-monitor" || true
+            elif command -v xterm >/dev/null 2>&1; then
+              xterm -e "tmux attach -t podman-monitor" || true
+            elif [ -n "$WSL_DISTRO_NAME" ] || [ -n "$WSLENV" ]; then
+              # For WSL, try to use cmd.exe approach
+              (cmd.exe /c start wsl.exe -e bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1) || true
+            else
+              echo "No graphical terminal available. Use 'tmux attach -t podman-monitor' manually."
+            fi
+          when: "'has_display=true' in display_check.stdout"
+          ignore_errors: true
+      rescue:
+        - name: Show manual tmux instructions
+          ansible.builtin.debug:
+            msg: "To view podman monitor, run: tmux attach -t podman-monitor"
+
     # Registry authentication
     - name: Check if already logged in to container registries
       ansible.builtin.command:
@@ -252,7 +283,7 @@
       register: login_check_result
       failed_when: false
       changed_when: false
-#      no_log: true  # Avoid leaking credentials in output
+      no_log: true  # Avoid leaking credentials in output
 
     - name: Verify registry authentication
       ansible.builtin.debug:

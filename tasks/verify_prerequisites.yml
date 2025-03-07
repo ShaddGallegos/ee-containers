@@ -12,6 +12,7 @@
     name: "{{ required_packages }}"
     state: latest
     tags: [setup, packages]
+    ignore_errors: true
       
 - name: Upgrade system packages
   ansible.builtin.dnf:
@@ -23,10 +24,12 @@
     name:
       - python3-pip
       - ansible-core
+      - ansible-builder
       - podman
       - git
     state: present
   become: true
+  ignore_errors: true
 
 - name: Verify podman is running
   ansible.builtin.service:
