@@ -397,6 +397,18 @@
       failed_when: galaxy_install_result.rc != 0
       ignore_errors: true
 
+    - name: Check if ansible-builder is already installed
+      ansible.builtin.shell: which ansible-builder || echo "not found"
+      register: ansible_builder_check
+      changed_when: false
+
+    - name: Install ansible-builder via pip if not found
+      ansible.builtin.pip:
+        name: ansible-builder
+        state: present
+        extra_args: "--user"
+      when: "'not found' in ansible_builder_check.stdout"
+
     # Configuration setup
     - name: Ensure build configs directory exists
       ansible.builtin.file:
@@ -417,6 +429,14 @@
         mode: '0644'
         remote_src: true
       become: true
+
+    - name: Update ansible.cfg with Automation Hub token
+      ansible.builtin.template:
+        src: templates/ansible.cfg.j2
+        dest: "{{ work_dir }}/_build/configs/ansible.cfg"
+        mode: '0644'
+      vars:
+        automation_hub_token: "{{ automation_hub_token | default('') }}"
 
     # DNS and connectivity checks
     - name: Verify DNS resolution
