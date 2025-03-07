@@ -1,7 +1,16 @@
 - name: Display title screen
   hosts: localhost
   gather_facts: false
+  environment:
+    ANSIBLE_LOCALHOST_WARNING: "False" 
+    ANSIBLE_DEPRECATION_WARNINGS: "False"
+    ANSIBLE_COMMAND_WARNINGS: "False"
+    ANSIBLE_SYSTEM_WARNINGS: "False"
   tasks:
+    - name: Clear screen before showing title
+      ansible.builtin.shell: clear
+      changed_when: false
+      
     - name: Show title
       ansible.builtin.debug:
         msg: |
@@ -91,25 +100,148 @@
 
   tasks:
     # Monitor podman activity via tmux
-    - name: Ensure tmux is installed
-      ansible.builtin.package:
-        name: tmux
-        state: present
+    - name: Setup podman monitoring in tmux
+      block:
+        - name: Ensure tmux is installed
+          ansible.builtin.package:
+            name: tmux
+            state: present
+          become: true
 
-    - name: Check if tmux session exists
-      ansible.builtin.command:
-        cmd: tmux has-session -t podman_watch
-      register: tmux_session_check
-      failed_when: false
-      changed_when: false
+        - name: Check if tmux is already running
+          ansible.builtin.shell: tmux ls 2>/dev/null || echo "no sessions"
+          register: tmux_status
+          changed_when: false
 
-    - name: Start tmux session for monitoring podman images
-      ansible.builtin.command:
-        cmd: tmux new-session -d -s podman_watch 'watch -n .5 podman images'
-      when: tmux_session_check.rc != 0
-      changed_when: true
-      async: 1
-      poll: 0
+        - name: Kill existing podman-monitor session if it exists
+          ansible.builtin.shell: tmux kill-session -t podman-monitor
+          when: "'podman-monitor' in tmux_status.stdout"
+          ignore_errors: true
+          changed_when: true
+
+        - name: Create new tmux session for podman monitoring
+          ansible.builtin.shell: |
+            # Create a temporary file with our ASCII art
+            cat > /tmp/tmux_header.txt << 'EOF'
+              ┌──────────────────────┐ 
+              │       *%@@@@%=       │ 
+              │    @@@@@@@@@@@@@*    │ 
+              │  *@@@@@@@. @@@@@@@:  │ 
+              │ @@@@@@@@-  :@@@@@@@= │ 
+              │-@@@@@@@% +# #@@@@@@@ │ 
+              │*@@@@@@@  @@. @@@@@@@-│       Ansible and Podman: Watch your containers build here
+              │*@@@@@@  +  =  @@@@@@:│ 
+              │ @@@@@. %@@@    @@@@@ │ 
+              │ -@@@@ *@@@@@@= @@@@  │ 
+              │   @@@@@@@@@@@@@@@%   │ 
+              │     @@@@@@@@@@@*     │ 
+              │         .--          │ 
+              └──────────────────────┘ 
+            EOF
+
+            # Create a new tmux session
+            tmux new-session -d -s podman-monitor
+
+            # First clear the screen
+            tmux send-keys -t podman-monitor "clear" C-m
+            
+            # Set environment variables to suppress warnings
+            tmux send-keys -t podman-monitor "export ANSIBLE_DEPRECATION_WARNINGS=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_LOCALHOST_WARNING=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_SYSTEM_WARNINGS=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_COMMAND_WARNINGS=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_CONFIG=/etc/ansible/ansible.cfg" C-m
+            tmux send-keys -t podman-monitor "export TERM=xterm" C-m
+            
+            # Display the header with red @ symbols
+            tmux send-keys -t podman-monitor "cat /tmp/tmux_header.txt" C-m
+            
+            # Add a small delay to ensure header is displayed
+            tmux send-keys -t podman-monitor "sleep 1" C-m
+            
+            # Now set up the monitoring command with error redirection
+            tmux send-keys -t podman-monitor "watch --color -n 2 'clear && cat /tmp/tmux_header.txt && echo -e \"\\n\\033[1;36mPODMAN IMAGES\\033[0m - Updated every 2 seconds\\n-------------------------------------------\" && podman images 2>/dev/null | grep -v REPOSITORY | grep -v \"registry.redhat.io/ansible-automation-platform-25\" | sort'" C-m
+            
+            echo "Podman monitor started in tmux session"
+          register: tmux_created
+          changed_when: tmux_created.rc == 0
+
+        # This will open a new Windows terminal window for WSL users
+        - name: Open new terminal window with tmux session (WSL)
+          ansible.builtin.shell: |
+            # Run in background to prevent blocking
+            nohup cmd.exe /c start wsl.exe -e bash -c "tmux attach -t podman-monitor" > /dev/null 2>&1 &
+            # Return immediately
+            exit 0
+          args:
+            executable: /bin/bash
+          async: 10  # Run asynchronously with 10 second timeout
+          poll: 0    # Don't wait for completion
+          when: ansible_env.WSL_DISTRO_NAME is defined or ansible_env.WSLENV is defined
+          ignore_errors: true
+          changed_when: true
+
+        # This handles Linux desktop environments
+        - name: Open new terminal window with tmux session (Linux Desktop)
+          ansible.builtin.shell: |
+            if command -v gnome-terminal &>/dev/null; then
+              gnome-terminal -- bash -c "tmux attach -t podman-monitor; exec bash"
+            elif command -v konsole &>/dev/null; then
+              konsole -e bash -c "tmux attach -t podman-monitor; exec bash"
+            elif command -v xterm &>/dev/null; then
+              xterm -e bash -c "tmux attach -t podman-monitor; exec bash"
+            else
+              echo "No supported terminal emulator found"
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          when: ansible_env.WSL_DISTRO_NAME is not defined and ansible_env.WSLENV is not defined and ansible_env.DISPLAY is defined
+          ignore_errors: true
+          changed_when: true
+
+        # This will open a new terminal window for RHEL users
+        - name: Open new terminal window with tmux session (RHEL)
+          ansible.builtin.shell: |
+            if command -v gnome-terminal &>/dev/null; then
+              nohup gnome-terminal -- bash -c "tmux attach -t podman-monitor" > /dev/null 2>&1 &
+            elif command -v konsole &>/dev/null; then
+              nohup konsole -e "tmux attach -t podman-monitor" > /dev/null 2>&1 &
+            elif command -v xfce4-terminal &>/dev/null; then
+              nohup xfce4-terminal -e "tmux attach -t podman-monitor" > /dev/null 2>&1 &
+            elif command -v xterm &>/dev/null; then
+              nohup xterm -e "tmux attach -t podman-monitor" > /dev/null 2>&1 &
+            else
+              # If no graphical terminal is available, just continue
+              echo "No graphical terminal found. Use 'tmux attach -t podman-monitor' manually."
+            fi
+            # Return immediately
+            exit 0
+          args:
+            executable: /bin/bash
+          async: 10  # Run asynchronously with 10 second timeout
+          poll: 0    # Don't wait for completion
+          register: terminal_open
+          changed_when: true  # Always mark as changed
+          ignore_errors: true  # Ensure playbook continues even if this fails
+          when: ansible_distribution == 'RedHat' or ansible_distribution == 'CentOS' or ansible_distribution == 'Fedora'
+
+        - name: Show instructions to view podman images (if automatic open failed)
+          ansible.builtin.debug:
+            msg: |
+              -------------------------------------------------------------
+              PODMAN MONITOR STARTED
+              -------------------------------------------------------------
+              If a new terminal window did not open automatically, manually run:
+              
+              tmux attach -t podman-monitor
+              
+              To detach from the session (leaving it running): press Ctrl+b, then d
+              -------------------------------------------------------------
+      rescue:
+        - name: Monitoring setup failed
+          ansible.builtin.debug:
+            msg: "Failed to set up podman monitoring. Continuing with build..."
 
     # Registry authentication
     - name: Check if already logged in to container registries
