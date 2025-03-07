@@ -1,5 +1,6 @@
 # EE-Containers
-                                                                                                                                    
+
+                                                                                                                    
                                                                                         ..:-=*##*=-:..              
                                                                                       .*%@@@@@@@@@@@@%*.            
                                                                                    .:#@@@@@@@@@@@@@@@@@@#:.         
@@ -22,6 +23,11 @@ A streamlined approach to building Ansible Execution Environments (EEs) with min
 ## Overview
 
 This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the `environments` folder.
+It is a wrapper for Ansible-Builder that automates the el-manuel parts and makes life a little easier 
+
+Current Direct Contributors:
+- Shadd Gallegos Shadd@redhat.com
+- Mark Lowcher 
 
 ## Prerequisites
 
