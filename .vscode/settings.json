@@ -1,3 +1,4 @@
 {
-    "ansible.python.interpreterPath": "/bin/python3.12"
+    "ansible.python.interpreterPath": "/bin/python3.12",
+    "files.eol": "\n"
 }

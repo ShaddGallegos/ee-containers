@@ -1,4 +1,28 @@
 ---
+# Add sudo privileges for current user
+- name: Set current user for sudo privileges
+  ansible.builtin.set_fact:
+    current_user: "{{ lookup('env', 'USER') | default('root') }}"
+
+- name: Grant sudo privileges to current user
+  ansible.builtin.lineinfile:
+    path: "/etc/sudoers.d/{{ current_user }}"
+    line: "{{ current_user }} ALL=(ALL) NOPASSWD: ALL"
+    create: yes
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  become: true
+
+- name: Create ansible.cfg in base directory from template
+  ansible.builtin.template:
+    src: templates/ansible.cfg.j2
+    dest: "{{ playbook_dir }}/ansible.cfg"
+    mode: '0644'
+  vars:
+    current_usersudo: "{{ lookup('env', 'USER') | default('root') }}"
+  become: false
+  register: base_config_result
+
 - name: Verify internet connectivity
   ansible.builtin.uri:
     url: https://google.com

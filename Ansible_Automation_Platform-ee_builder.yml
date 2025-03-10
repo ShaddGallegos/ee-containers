@@ -1,3 +1,23 @@
+- name: Verify root privileges
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check if running as root or with sudo
+      ansible.builtin.command: id -u
+      register: user_id
+      changed_when: false
+
+    - name: Fail if not running with proper privileges
+      ansible.builtin.fail:
+        msg: |
+          This playbook must be run as root or with sudo privileges.
+          Please run again using the -K flag to be prompted for the sudo password:
+          
+          sudo ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
+          
+      when: user_id.stdout != "0"
+
 - name: Display title screen
   hosts: localhost
   connection: local  # Add this line to prevent SSH connection attempt
@@ -65,7 +85,7 @@
       - yum-utils
     git_repos:
       - url: 'https://github.com/cloin/ee-builds.git'
-        dest: 'scripts/ee-builds'
+        dest: 'examples/ee-builds'
 
     work_dir: '/tmp/ee-containers'
     required_images:
@@ -437,6 +457,14 @@
         mode: '0644'
       vars:
         automation_hub_token: "{{ automation_hub_token | default('') }}"
+
+    - name: Create ansible.cfg with current user
+      ansible.builtin.template:
+        src: templates/ansible.cfg.j2
+        dest: "{{ work_dir }}/ansible.cfg"
+        mode: '0644'
+      vars:
+        ansible_user_id: "{{ ansible_user_id | default(lookup('env', 'USER')) }}"
 
     # DNS and connectivity checks
     - name: Verify DNS resolution
