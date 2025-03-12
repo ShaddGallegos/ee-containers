@@ -1,0 +1,7 @@
+---
+# Default protected images (will not be deleted unless specifically selected)
+# Last updated: {{ ansible_date_time.iso8601 }}
+protected_images:
+{% for image in ((protected_images | default([])) + (selected_environments | default([])) + (required_images | default([]))) | unique | sort %}
+  - "{{ image }}"
+{% endfor %}

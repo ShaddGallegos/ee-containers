@@ -29,7 +29,7 @@ options:
 additional_build_steps:
   prepend_final: |
     RUN microdnf upgrade -y \
-        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+        && python3 -m pip install --user --user --no-cache-dir --upgrade pip setuptools wheel
 
   append_final: |
     RUN microdnf clean all \

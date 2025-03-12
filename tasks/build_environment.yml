@@ -57,6 +57,7 @@
   ansible.builtin.stat:
     path: "{{ playbook_dir }}/environments/{{ current_env }}/{{ item }}"
   loop:
+    - execution-environment.yml
     - requirements.txt
     - requirements.yml
     - bindep.txt
@@ -238,20 +239,37 @@
         path: "{{ work_dir }}/context"
         state: absent
 
-    - name: Check if image exists with current tag
+    - name: Find all existing tagged images
+      ansible.builtin.shell: |
+        podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}' | grep -v "<none>:<none>" | sort
+      register: all_tagged_images
+      changed_when: false
+      args:
+        executable: /bin/bash
+
+    - name: Build initial protected images list
+      ansible.builtin.set_fact:
+        protected_images: "{{ all_tagged_images.stdout_lines | default([]) }}"
+      
+    - name: Check if current image exists with tag
       ansible.builtin.command:
         cmd: "podman image exists {{ current_env }}"
       register: image_check
       changed_when: false
       failed_when: false
-      
-    - name: Remove existing image if found
-      ansible.builtin.command:
-        cmd: "podman rmi {{ current_env }}"
+
+    # Ensure current_env is in protected list if it exists
+    - name: Add current environment image to protected list if not already there
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images | default([]) + [current_env] | unique }}"
       when: image_check.rc == 0
-      register: image_removed
-      changed_when: image_removed.rc == 0
-      failed_when: image_removed.rc not in [0, 1]
+      
+    - name: Display protected images
+      ansible.builtin.debug:
+        msg: 
+          - "Protected images that won't be deleted unless selected from menu:"
+          - "{{ protected_images }}"
+        verbosity: 2
   rescue:
     - name: Report cleanup failure
       ansible.builtin.debug:
@@ -267,10 +285,17 @@
   changed_when: false
   failed_when: false
 
-- name: Fail if ansible-builder is not available
-  ansible.builtin.fail:
-    msg: "ansible-builder command not found. Please install it with: pip install ansible-builder"
-  when: builder_check.rc != 0
+- name: Check if rebuild was specifically requested
+  ansible.builtin.set_fact:
+    force_rebuild: "{{ force_rebuild | default(false) | bool or (selected_environments is defined and current_env in selected_environments) }}"
+
+- name: Skip build for existing images unless forced
+  ansible.builtin.debug:
+    msg: "Image {{ current_env }} already exists. Skipping build. Use menu option to force rebuild."
+  when: 
+    - image_check is defined
+    - image_check.rc == 0
+    - not force_rebuild
 
 - name: Build container image
   ansible.builtin.command:
@@ -288,6 +313,9 @@
   failed_when: build_output.rc not in [0, 1]
   environment:
     PODMAN_IGNORE_CGROUPSV1_WARNING: "1"  # Suppress podman warnings
+  when: 
+    - image_check is defined
+    - (image_check.rc != 0 or force_rebuild)
 
 - name: Display build result summary
   ansible.builtin.debug:
@@ -322,3 +350,20 @@
   ansible.builtin.debug:
     msg: "Fixed infra.ansible reference in requirements.yml for {{ current_env }}"
   when: infra_ansible_fixed.changed | default(false)
+
+- name: Update protected images in cleanup.yml 
+  ansible.builtin.blockinfile:
+    path: "{{ playbook_dir }}/tasks/cleanup.yml"
+    block: |
+      # This list is automatically generated from existing images
+      # Images will NOT be deleted unless specifically selected from menu
+      protected_images:
+      {% for image in protected_images | default([]) %}
+        - "{{ image }}"
+      {% endfor %}
+    marker: "# {mark} ANSIBLE MANAGED PROTECTED IMAGES"
+    create: yes
+    mode: '0644'
+  when: 
+    - protected_images is defined 
+    - protected_images | length > 0

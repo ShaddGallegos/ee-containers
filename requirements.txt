@@ -1,5 +1,4 @@
 ansible-builder>=3.0.0
-ansible-compat>=4.1.0
 ansible-core>=2.15.0,<2.16
 ansible-creator>=1.0.0
 ansible-lint>=24.0.0

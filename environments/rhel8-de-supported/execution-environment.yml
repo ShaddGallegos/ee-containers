@@ -34,19 +34,19 @@ additional_build_steps:
     RUN microdnf upgrade -y && \
         microdnf install -y gcc make pkg-config python3-devel systemd-devel \
         libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --upgrade --ignore-installed pip setuptools wheel packaging
+        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel packaging
 
   prepend_builder: |
     # Tell pip not to overwrite system packages
     ENV PIP_BREAK_SYSTEM_PACKAGES=0
     # Use --no-deps to prevent pip from attempting to upgrade dependencies
-    RUN pip3 install --upgrade --ignore-installed --no-deps packaging wheel setuptools pip
+    RUN pip3 install --user --upgrade --ignore-installed --no-deps packaging wheel setuptools pip
 
   prepend_final: |
     RUN microdnf upgrade -y \
         && microdnf install -y python39-pip python39-devel gcc \
-        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --no-cache-dir ansible-core>=2.13.10 ansible-runner
+        && python3 -m pip install --user --user --no-cache-dir --upgrade pip setuptools wheel \
+        && python3 -m pip install --user --user --no-cache-dir ansible-core>=2.13.10 ansible-runner
 
   append_final: |
     RUN microdnf clean all \

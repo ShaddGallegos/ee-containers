@@ -36,13 +36,13 @@ additional_build_steps:
     RUN microdnf upgrade -y && \
         microdnf install -y gcc make pkg-config python3-devel systemd-devel \
         libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --upgrade --ignore-installed pip setuptools wheel
+        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel
 
   prepend_builder: |
     # Install extra dependencies for problematic packages
     # Use --ignore-installed to prevent attempts to uninstall system packages
     RUN microdnf install -y krb5-devel krb5-libs krb5-workstation && \
-        pip3 install --upgrade --ignore-installed pip setuptools wheel packaging
+        pip3 install --user --upgrade --ignore-installed pip setuptools wheel packaging
 
   append_builder: |
     # Check for any package issues but don't fail the build
@@ -52,8 +52,8 @@ additional_build_steps:
     USER root
     RUN microdnf upgrade -y && \
         microdnf install -y python3-pip python3-devel gcc krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel packaging && \
-        python3 -m pip install --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
+        python3 -m pip install --user --user --no-cache-dir --upgrade --ignore-installed pip setuptools wheel packaging && \
+        python3 -m pip install --user --user --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
 
   append_final: |
     USER root

@@ -93,6 +93,9 @@
       - xdg-utils
       - yum-utils
     
+    # Always update the protected_images list in defaults/main.yml
+    update_protected_list: true
+    
     # Repository variables  
     git_repos:
       - url: 'https://github.com/cloin/ee-builds.git'
@@ -438,7 +441,7 @@
                       ║    @@@@@@@@            @@@@@@                                               ║  
                       ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
                       ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
-                      ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & Podman                            ║  
+                      ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
                       ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
                       @@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║  
                      @@@@@@@══════════════════@@@@@@@@@@@@@═════════════════════════════════════════╝  
