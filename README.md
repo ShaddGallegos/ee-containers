@@ -1,47 +1,61 @@
 # EE-Containers
 
                                                                                                                     
-                                                                                        ..:-=*##*=-:..              
-                                                                                      .*%@@@@@@@@@@@@%*.            
-                                                                                   .:#@@@@@@@@@@@@@@@@@@#:.         
-                                                                                  .*@@@@@@@@@@*-@@@@@@@@@@*.        
-                                                                                 .#@@@@@@@@@@*. =@@@@@@@@@@#.       
-                                                                                .%@@@@@@@@@@@ .# +@@@@@@@@@@%.      
-                                                                                -%@@@@@@@@@@..#%-.*@@@@@@@@@%-      
-       "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:#@@@@@@@@@+.     
-                                                                               .+@@@@@@@@@# ..:+@%.-@@@@@@@@@+.     
-                                                                               .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=      
-                                                                                .%@@@@@@@:.*@@@@%.  .+@@@@@@%.      
-                                                                                 .@@@@@@= =@@@@@@@%=.:%@@@@@.       
-                                                                                  :%@@@@@@@@@@@@@@@@@@@@@@%:        
-                                                                                   .*@@@@@@@@@@@@@@@@@@@@*.         
-                                                                                     .+@@@@@@@@@@@@@@@@+..          
-                                                                                       ..+*%@@@@@@%*+..              
+                                                                                     ..:-=*##*=-:..              
+                                                                                   .*%@@@@@@@@@@@@%*.            
+                                                                                .:#@@@@@@@@@@@@@@@@@@#:.         
+                                                                               .*@@@@@@@@@@*-@@@@@@@@@@*.        
+                                                                              .#@@@@@@@@@@*. =@@@@@@@@@@#.       
+                                                                             .%@@@@@@@@@@@ .# +@@@@@@@@@@%.      
+                                                                             -%@@@@@@@@@@..#%-.*@@@@@@@@@%-      
+    "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:#@@@@@@@@@+.     
+                                                                            .+@@@@@@@@@# ..:+@%.-@@@@@@@@@+.     
+                                                                            .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=      
+                                                                             .%@@@@@@@:.*@@@@%.  .+@@@@@@%.      
+                                                                              .@@@@@@= =@@@@@@@%=.:%@@@@@.       
+                                                                               :%@@@@@@@@@@@@@@@@@@@@@@%:        
+                                                                                .*@@@@@@@@@@@@@@@@@@@@*.         
+                                                                                  .+@@@@@@@@@@@@@@@@+..          
+                                                                                    ..+*%@@@@@@%*+..              
 
 A streamlined approach to building Ansible Execution Environments (EEs) with minimal effort. This repository automates the process of building EEs for different scenarios and platforms.
+
+## Current Direct/Active Contributors:
+- Shadd Gallegos (Shadd@redhat.com)
+- Alexon Oliveira
+- Brady Thompson
+- Christopher Norville
+- Faith Chua
+- Mark Lowcher 
 
 ## Overview
 
 This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the `environments` folder.
-It is a wrapper for Ansible-Builder that automates the el-manuel parts and makes life a little easier 
-
-Current Direct Contributors:
-- Shadd Gallegos Shadd@redhat.com
-- Mark Lowcher 
+It is a wrapper for Ansible-Builder that automates the manual parts and makes life a little easier.
 
 ## Prerequisites
 
-- Red Hat subscription
+### Required Accounts and Tokens
+- Red Hat Subscription
 - Red Hat CDN username and password
-- Tokens from:
+- Authentication tokens from:
   - [Automation Hub](https://console.redhat.com/ansible/automation-hub/token)
   - [Ansible Galaxy](https://galaxy.ansible.com/ui/token) (optional)
-- Installed packages:
-  - ansible-core
-  - python3-pip
-  - podman
-  - git
-  - ansible-builder
+- Note: reccomend adding your CDN username password and tokens to your ansible.cfg and templates/ansible.cfg.j2 and using ansible vault to encrypt so you dont have to add the info each time. 
+
+### Required Packages on your Development Node/Machine/Workstation
+#### Needs to be pre installed
+- ansible-core
+
+#### Installed by the Ansible_Automation_Platform-ee_builder.yml
+- python3-pip
+- ansible-builder
+- git
+- podman
+- podman-docker
+- tmux
+- xdg-utils
+- yum-utils
 
 ## Required Files for Each Environment
 
@@ -53,45 +67,87 @@ Each environment in the `environments` directory must include:
    - `requirements.yml` - Ansible collection requirements
    - `bindep.txt` - Binary dependencies
 
+## Current Working EE/DE Definitions 
+
+```
+# RHEL 8 Environments
+rhel8-de-minimal-general
+rhel8-de-supported
+rhel8-ee-minimal
+rhel8-ee-minimal-terraform
+
+# RHEL 9 Environments
+rhel9-de-minimal-cloudstrike
+rhel9-de-supported
+rhel9-ee-minimal
+rhel9-ee-minimal-vmware
+rhel9-ee-minimal-windows
+```
+
 ## Running the Playbook
 
-Execute the playbook with:
-ansible-playbook Ansible_Automation_Platform-ee_builder.yml
+### Basic Execution
+Run the playbook with:
+```
+ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
+```
+The `-K` parameter will prompt for sudo password since the playbook requires root privileges.
 
-Open a terminal and watch your build progress:
-watch -n .5 podman images
+### Build Monitoring
+The playbook automatically creates a tmux session to monitor build progress. You can:
 
-You can select multiple environments, comma-separated:
+1. View the monitoring session with:
+   ```
+   tmux attach -t podman-monitor
+   ```
 
-And poof, you have the latest and greatest based on the definitions provided.
+2. Or use the script created during playbook execution:
+   ```
+   /tmp/podman-monitor.sh
+   ```
 
-After you run this once, all of the examples and base images are local in "scripts/", so you don't need a connection other than for UBI updates for your image.
+3. Alternative monitoring method:
+   ```
+   watch -n 2 "podman images | grep -v 'registry.redhat.io'"
+   ```
+
+### Environment Selection
+When prompted, you can:
+- Enter specific environment names (e.g., `rhel9-ee-minimal-windows`)
+- Select multiple environments by separating with commas
+- Type "all" to build all available environments
+
+## Common Issues and Solutions
+
+### Windows Kerberos Authentication
+If building Windows-related execution environments fails with Kerberos errors, ensure you have installed:
+```
+sudo dnf install -y krb5-devel krb5-libs krb5-workstation gcc
+```
+
+### Registry Authentication Issues
+If experiencing registry connection issues, ensure:
+- Your Red Hat credentials are correct
+- Your system can resolve and connect to registry.redhat.io
 
 ## Playbook Overview
 
-This playbook automates the process of building an Ansible execution environment (EE) container using `ansible-builder`. It handles:
+This playbook automates the process of building Ansible execution environment (EE) containers using `ansible-builder`. It handles:
 
 1. **Environment Preparation**: Sets up build directories and dependencies
 2. **Configuration Validation**: Checks and fixes common issues in configuration files
 3. **Build Process**: Runs ansible-builder with appropriate options
 4. **Error Handling**: Provides helpful messages when builds fail
 
-### Task Explanations
+After first run, all definition examples of definitions are cloned and stored at "examples/",
+the base images are stored localy
+- "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8"
+- "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9"
+- "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8"
+- "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9"
+- "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8"
+- "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9"
+- "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8"
+- "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9"
 
-1. **Verify internet connection**: Checks if the system has an active internet connection by pinging Google.
-2. **Ensure python3-pip and ansible-core are installed**: Installs required packages using dnf.
-3. **Clone GitHub repository**: Clones the "ee-containers" repository to the `/tmp` directory.
-4. **Login to registry.redhat.io**: Logs in to the Red Hat registry using provided credentials.
-5. **Check if requirements.txt exists**: Verifies the existence of Python requirements.
-6. **Install Python requirements**: Installs packages from requirements.txt using pip3.
-7. **Check if requirements.yml exists**: Verifies the existence of Ansible collections.
-8. **Install Ansible collections**: Installs collections from requirements.yml.
-9. **List available environments**: Shows environments available for building.
-10. **Environment selection**: Prompts user to select which environments to build.
-     - Environments pulled from: the `environments` directory.       - [https://github.com/nickarellano/ee-containers](https://github.com/nickarellano/ee-containers)
-       - [https://github.com/cloin/ee-builds](https://github.com/cloin/ee-builds)rellano/ee-containers)
-11. **Set selected environment**: This task sets the selected environment and its base name based on the user's input.
-12. **Build image using ansible-builder based on user's selection**: This task builds the Ansible execution environment image using `ansible-builder` and the selected environment's `execution-environment.yaml` file.
-13. **Tag the image with the new name**: This task tags the newly built image with a new name based on the selected environment's base name.-builder` and the selected environment's `execution-environment.yaml` file.
-14. **Show build output**: This task displays the build output to the user.ge with a new name based on the selected environment's base name.
-15. **Show build output**: This task displays the build output to the user.
+so you don't need a connection other than for UBI updates for your image builds.
