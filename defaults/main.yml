@@ -1,6 +1,6 @@
 ---
 # Default protected images (will not be deleted unless specifically selected)
-# Last updated: 2025-03-12T14:17:45Z
+# Last updated: 2025-03-12T15:44:42Z
 protected_images:
   - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8"
   - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
