@@ -65,6 +65,15 @@
       register: cleanup_result
       changed_when: cleanup_result.stdout is search('Removing')
 
+- name: Include protected images from defaults
+  ansible.builtin.include_vars:
+    file: "defaults/main.yml"
+    name: protected_images_var
+    
+- name: Set protected images variable
+  ansible.builtin.set_fact:
+    protected_images: "{{ protected_images_var.protected_images }}"
+
 # BEGIN ANSIBLE MANAGED PROTECTED IMAGES
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
