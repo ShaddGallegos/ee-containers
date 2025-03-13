@@ -64,7 +64,6 @@
       when: cleanup_all | default(false) | bool
       register: cleanup_result
       changed_when: cleanup_result.stdout is search('Removing')
-      
 # BEGIN ANSIBLE MANAGED PROTECTED IMAGES
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
@@ -89,5 +88,4 @@ protected_images:
   - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
   - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
-  - "rhel9-de-minimal-cloudstrike"
 # END ANSIBLE MANAGED PROTECTED IMAGES

@@ -145,6 +145,33 @@
         state: present
       become: true
       
+    - name: Create directory for ee-containers defaults
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/defaults"
+        state: directory
+        mode: '0755'
+      
+    - name: Ensure templates directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/templates"
+        state: directory
+        mode: '0755'
+        
+    - name: Create protected_images.j2 template if it doesn't exist
+      ansible.builtin.copy:
+        content: |
+          # BEGIN ANSIBLE MANAGED PROTECTED IMAGES
+          # This list is automatically generated from existing images
+          # Images will NOT be deleted unless specifically selected from menu
+          protected_images:
+          {% raw %}{% for image in consolidated_images | default([]) %}
+            - "{{ image }}"
+          {% endfor %}{% endraw %}
+          # END ANSIBLE MANAGED PROTECTED IMAGES
+        dest: "{{ playbook_dir }}/templates/protected_images.j2"
+        mode: '0644'
+        force: false
+      
     - name: Include setup tasks
       ansible.builtin.include_tasks: tasks/setup.yml
       register: setup_result

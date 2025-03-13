@@ -3,7 +3,7 @@
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
 protected_images:
-{% for image in consolidated_images | default([]) | sort %}
+{% for image in consolidated_images | default([]) %}
   - "{{ image }}"
 {% endfor %}
 # END ANSIBLE MANAGED PROTECTED IMAGES
