@@ -343,6 +343,13 @@
           failed_when: galaxy_install_result.rc != 0
           ignore_errors: true
 
+    - name: Write updated protected images to defaults/main.yml
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/defaults/main.yml"
+      delegate_to: localhost
+      when: update_protected_list | default(false) | bool
+
     #
     # SECTION 6: Clean Up Old Resources
     #
