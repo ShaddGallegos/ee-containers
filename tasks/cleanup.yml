@@ -64,4 +64,4 @@
       when: cleanup_all | default(false) | bool
       register: cleanup_result
       changed_when: cleanup_result.stdout is search('Removing')
-
+      
