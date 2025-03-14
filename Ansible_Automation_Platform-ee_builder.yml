@@ -168,7 +168,7 @@
             - "{{ image }}"
           {% endfor %}{% endraw %}
           # END ANSIBLE MANAGED PROTECTED IMAGES
-        dest: "{{ playbook_dir }}/templates/protected_images.j2"
+        dest: "templates/protected_images.j2"
         mode: '0644'
         force: false
       
@@ -228,41 +228,7 @@
       ansible.builtin.include_tasks: tasks/login_registry.yml
 
     #
-    # SECTION 3: Image Management
-    #
-    - name: Check and pull required container images
-      block:
-        - name: Check if required container images exist
-          ansible.builtin.command:
-            cmd: "podman image exists {{ item }}"
-          loop: "{{ required_images }}"
-          register: image_check_results
-          changed_when: false
-          failed_when: false
-          loop_control:
-            label: "{{ item }}"
-
-        - name: Pull missing container images
-          ansible.builtin.command:
-            cmd: "podman pull {{ item.item }}"
-          loop: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
-          register: pull_results
-          changed_when: pull_results.rc == 0
-          retries: 2
-          delay: 3
-          until: pull_results is succeeded or pull_results is failed
-          ignore_errors: true
-          loop_control:
-            loop_var: item
-            label: "{{ item.item }}"
-            pause: 0.5
-      rescue:
-        - name: Warning about failed image pulls
-          ansible.builtin.debug:
-            msg: "Failed to pull some container images. Continuing with available images."
-
-    #
-    # SECTION 4: Builder & Configuration Setup
+    # SECTION 3: Builder & Configuration Setup
     #
     - name: Configure builder
       block:
@@ -309,6 +275,40 @@
             current_user: "{{ ansible_user_id | default(lookup('env', 'USER')) }}"
 
     #
+    # SECTION 4: Image Management
+    #
+    - name: Check and pull required container images
+      block:
+        - name: Check if required container images exist
+          ansible.builtin.command:
+            cmd: "podman image exists {{ item }}"
+          loop: "{{ required_images }}"
+          register: image_check_results
+          changed_when: false
+          failed_when: false
+          loop_control:
+            label: "{{ item }}"
+
+        - name: Pull missing container images
+          ansible.builtin.command:
+            cmd: "podman pull {{ item.item }}"
+          loop: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
+          register: pull_results
+          changed_when: pull_results.rc == 0
+          retries: 2
+          delay: 3
+          until: pull_results is succeeded or pull_results is failed
+          ignore_errors: true
+          loop_control:
+            loop_var: item
+            label: "{{ item.item }}"
+            pause: 0.5
+      rescue:
+        - name: Warning about failed image pulls
+          ansible.builtin.debug:
+            msg: "Failed to pull some container images. Continuing with available images."
+
+    #
     # SECTION 5: Dependencies Management
     #
     - name: Manage dependencies
@@ -343,27 +343,8 @@
           failed_when: galaxy_install_result.rc != 0
           ignore_errors: true
 
-    - name: Write updated protected images to defaults/main.yml
-      ansible.builtin.template:
-        src: templates/protected_images.j2
-        dest: "{{ playbook_dir }}/defaults/main.yml"
-      delegate_to: localhost
-      when: update_protected_list | default(false) | bool
-
     #
-    # SECTION 6: Clean Up Old Resources
-    #
-    - name: Clean up unused images and build artifacts
-      block:
-        - name: Include cleanup tasks
-          ansible.builtin.include_tasks: tasks/cleanup.yml
-      rescue:
-        - name: Handle cleanup failure
-          ansible.builtin.debug:
-            msg: "Image cleanup failed: {{ ansible_failed_result.stderr | default('Unknown error') }}"
-
-    #
-    # SECTION 7: Environment Selection
+    # SECTION 6: Environment Selection
     #
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
@@ -382,7 +363,7 @@
              selected_environments|join(', ') }}
 
     #
-    # SECTION 8: Monitoring Setup
+    # SECTION 7: Monitoring Setup
     #
     - name: Setup podman monitoring in tmux
       block:
@@ -599,7 +580,7 @@
       tags: [tmux_monitor]
 
     #
-    # SECTION 9: Environment Building
+    # SECTION 8: Environment Building
     #
     - name: Process each selected environment
       ansible.builtin.include_tasks: tasks/build_environment.yml
@@ -610,7 +591,30 @@
       when: selected_environments | default([]) | length > 0
 
     #
-    # SECTION 10: Completion
+    # SECTION 9: Clean Up Old Resources
+    #
+    - name: Clean up unused images and build artifacts
+      block:
+        - name: Include cleanup tasks
+          ansible.builtin.include_tasks: tasks/cleanup.yml
+      rescue:
+        - name: Handle cleanup failure
+          ansible.builtin.debug:
+            msg: "Image cleanup failed: {{ ansible_failed_result.stderr | default('Unknown error') }}"
+      when: cleanup_after | default(false) | bool
+
+    #
+    # SECTION 10: Write Updated Protected Images
+    #
+    - name: Write updated protected images to defaults/main.yml
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/defaults/main.yml"
+      delegate_to: localhost
+      when: update_protected_list | default(false) | bool
+
+    #
+    # SECTION 11: Completion
     #
     - name: Display completion message
       ansible.builtin.debug:

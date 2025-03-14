@@ -3,20 +3,4 @@
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
 protected_images:
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8"
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9"
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
 # END ANSIBLE MANAGED PROTECTED IMAGES
