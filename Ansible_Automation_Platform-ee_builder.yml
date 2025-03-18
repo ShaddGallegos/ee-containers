@@ -39,15 +39,15 @@
       ansible.builtin.debug:
         msg: |
           ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-          │                                                                                      ..:-=*##*=-:..          │
+          │                                                                                      ..:-=@@@@=-:..          │
           │                                                                                    .*%@@@@@@@@@@@@%*.        │
-          │                                                                                 .:#@@@@@@@@@@@@@@@@@@#:.     │
+          │                                                                                 .:@@@@@@@@@@@@@@@@@@@@:.     │
           │                                                                                .*@@@@@@@@@@*-@@@@@@@@@@*.    │
-          │                                                                               .#@@@@@@@@@@*. =@@@@@@@@@@#.   │
-          │                                                                              .%@@@@@@@@@@@ .# +@@@@@@@@@@%.  │
-          │                                                                              -%@@@@@@@@@@..#%-.*@@@@@@@@@%-  │
-          │     "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:#@@@@@@@@@+. │
-          │                                                                             .+@@@@@@@@@# ..:+@%.-@@@@@@@@@+. │
+          │                                                                               .@@@@@@@@@@@*. =@@@@@@@@@@@.   │
+          │                                                                              .%@@@@@@@@@@@ .@ +@@@@@@@@@@%.  │
+          │                                                                              -%@@@@@@@@@@..@%-.*@@@@@@@@@%-  │
+          │     "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:@@@@@@@@@@+. │
+          │                                                                             .+@@@@@@@@@@ ..:+@%.-@@@@@@@@@+. │
           │                                                                             .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=  │
           │                                                                              .%@@@@@@@:.*@@@@%.  .+@@@@@@%.  │
           │                                                                               .@@@@@@= =@@@@@@@%=.:%@@@@@.   │
@@ -289,20 +289,54 @@
           loop_control:
             label: "{{ item }}"
 
+        - name: Show image check status
+          ansible.builtin.debug:
+            msg: "Image {{ item.item }} exists: {{ item.rc == 0 }}"
+          loop: "{{ image_check_results.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Create list of missing images
+          ansible.builtin.set_fact:
+            missing_images: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+
+        - name: Display missing images count
+          ansible.builtin.debug:
+            msg: "Found {{ missing_images | length }} images that need to be pulled"
+          when: missing_images | length > 0
+
         - name: Pull missing container images
           ansible.builtin.command:
-            cmd: "podman pull {{ item.item }}"
-          loop: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
+            cmd: "podman pull {{ item }}"
+          loop: "{{ missing_images }}"
           register: pull_results
           changed_when: pull_results.rc == 0
-          retries: 2
-          delay: 3
-          until: pull_results is succeeded or pull_results is failed
-          ignore_errors: true
+          retries: 3
+          delay: 5
+          until: pull_results is succeeded
+          failed_when: false
           loop_control:
-            loop_var: item
-            label: "{{ item.item }}"
-            pause: 0.5
+            label: "{{ item }}"
+            pause: 1.0
+          when: missing_images | length > 0
+
+        - name: Summarize image pull results
+          ansible.builtin.debug:
+            msg: |
+              Successfully pulled images:
+              {% for result in pull_results.results | default([]) %}
+              {% if result.rc == 0 %}
+              - {{ result.item }}
+              {% endif %}
+              {% endfor %}
+              
+              Failed to pull images:
+              {% for result in pull_results.results | default([]) %}
+              {% if result.rc != 0 %}
+              - {{ result.item }} (error: {{ result.stderr | default('unknown error') | regex_replace('\n', ' ') }})
+              {% endif %}
+              {% endfor %}
+          when: pull_results.results is defined and pull_results.results | length > 0
       rescue:
         - name: Warning about failed image pulls
           ansible.builtin.debug:

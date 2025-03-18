@@ -1,6 +1,37 @@
 ---
+
+- name: Create consolidated protected images list
+  ansible.builtin.set_fact:
+    protected_images: >-
+      {{
+        [
+          'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest',
+          'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
+        ] + (selected_environments | default([]))
+      }}
+  when: update_protected_list | default(false) | bool
+
+- name: Include protected images from defaults
+  ansible.builtin.include_vars:
+    file: "defaults/main.yml"
+
+- name: defaults_vars
+  ansible.builtin.include_vars:
+    file: "defaults/main.yml"
+  when: protected_images_var is not defined
+
+- name: Set protected images variable
+  ansible.builtin.set_fact:
+    protected_images: "{{ defaults_vars.protected_images | default([]) }}"
+  when: protected_images_var is not defined
+
 # BEGIN ANSIBLE MANAGED PROTECTED IMAGES
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
-protected_images:
 # END ANSIBLE MANAGED PROTECTED IMAGES

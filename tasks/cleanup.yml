@@ -79,6 +79,7 @@
 # Images will NOT be deleted unless specifically selected from menu
 protected_images:
   - "ghcr.io/ansible/community-ansible-dev-tools:latest"
+  - "localhost/rhel9-ee-minimal:latest"
   - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
   - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
