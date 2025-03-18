@@ -1,13 +1,25 @@
 ---
-- name: Find execution environment directories
-  ansible.builtin.find:
-    paths: "{{ playbook_dir }}/environments"
-    file_type: directory
-  register: environment_dirs
+- name: Set environment paths based on filtered list or discover
+  ansible.builtin.set_fact:
+    _environment_paths: "{{ environment_paths | default([]) }}"
+  when: environment_paths is defined and environment_paths | length > 0
+
+- name: Discover environments if no filtered list available
+  block:
+    - name: Find environment directories
+      ansible.builtin.find:
+        paths: "{{ work_dir }}/environments"
+        file_type: directory
+      register: found_environments
+      
+    - name: Set environment paths from discovery
+      ansible.builtin.set_fact:
+        _environment_paths: "{{ found_environments.files | map(attribute='path') | list }}"
+  when: environment_paths is not defined or environment_paths | length == 0
 
 - name: Extract environment names
   ansible.builtin.set_fact:
-    all_environments: "{{ environment_dirs.files | map(attribute='path') | map('basename') | list | sort }}"
+    all_environments: "{{ _environment_paths | map('basename') | list | sort }}"
 
 - name: Filter environments based on naming patterns
   ansible.builtin.set_fact:

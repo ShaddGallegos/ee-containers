@@ -121,6 +121,10 @@
     - name: rh_password
       prompt: "Enter your Red Hat CDN password"
       private: true
+    - name: distribution_selection
+      prompt: "Select distribution to build images for (8/9/both)"
+      private: false
+      default: "both"
     - name: automation_hub_token
       prompt: "Enter your Automation Hub token (or press enter to skip)"
       private: true
@@ -131,32 +135,138 @@
 
   # Setup tasks
   pre_tasks:
-    - name: Install tmux build dependencies
-      ansible.builtin.command:
-        cmd: yum-builddep -y tmux
-      become: true
-      register: tmux_deps_result
-      changed_when: tmux_deps_result.rc == 0
-      failed_when: false
-      
-    - name: Install tmux package
-      ansible.builtin.package:
-        name: tmux
-        state: present
-      become: true
-      
-    - name: Create directory for ee-containers defaults
-      ansible.builtin.file:
-        path: "{{ playbook_dir }}/defaults"
-        state: directory
-        mode: '0755'
-      
-    - name: Ensure templates directory exists
-      ansible.builtin.file:
-        path: "{{ playbook_dir }}/templates"
-        state: directory
-        mode: '0755'
+    #
+    # SECTION 0: User Distribution Selection Processing
+    #
+    - name: Process distribution selection
+      ansible.builtin.set_fact:
+        build_rhel8: "{{ distribution_selection == '8' or distribution_selection == 'both' }}"
+        build_rhel9: "{{ distribution_selection == '9' or distribution_selection == 'both' }}"
         
+    - name: Show selected distributions
+      ansible.builtin.debug:
+        msg: "Building images for: {{ (build_rhel8 | bool) | ternary('RHEL 8', '') }}{{ (build_rhel8 and build_rhel9) | ternary(' and ', '') }}{{ (build_rhel9 | bool) | ternary('RHEL 9', '') }}"
+    
+    - name: Filter required images based on distribution selection
+      ansible.builtin.set_fact:
+        rhel8_images: "{{ required_images | select('search', 'rhel8') | list }}"
+        rhel9_images: "{{ required_images | select('search', 'rhel9') | list }}"
+        filtered_images: "{{ 
+            (build_rhel8 | bool) | ternary(rhel8_images, []) + 
+            (build_rhel9 | bool) | ternary(rhel9_images, [])
+          }}"
+        
+    - name: Show filtered image list
+      ansible.builtin.debug:
+        msg: |
+          Images selected for download:
+          {% for image in filtered_images %}
+          - {{ image }}
+          {% endfor %}
+      when: filtered_images | length > 0
+        
+    - name: Update required_images with filtered list
+      ansible.builtin.set_fact:
+        required_images: "{{ filtered_images }}"
+      when: filtered_images is defined and filtered_images | length > 0
+
+    #
+    # SECTION 1: Base system configuration
+    #
+    - name: Detect RHEL version
+      ansible.builtin.set_fact:
+        rhel_version: "{{ ansible_distribution_major_version | default('9') }}"
+      
+    - name: Enable required RHEL repositories based on version
+      block:
+        - name: Enable RHEL 8 repositories
+          ansible.builtin.command:
+            cmd: "subscription-manager repos --enable={{ item }}"
+          loop:
+            - rhel-8-for-x86_64-supplementary-rpms
+            - rhel-8-for-x86_64-appstream-rpms
+            - rhel-8-for-x86_64-baseos-rpms
+            - codeready-builder-for-rhel-8-x86_64-rpms
+          register: repo_enable_rhel8
+          changed_when: repo_enable_rhel8.rc == 0
+          failed_when: false
+          loop_control:
+            label: "{{ item }}"
+          when: rhel_version == '8' and build_rhel8 | bool
+          
+        - name: Enable RHEL 9 repositories
+          ansible.builtin.command:
+            cmd: "subscription-manager repos --enable={{ item }}"
+          loop:
+            - rhel-9-for-x86_64-supplementary-rpms
+            - rhel-9-for-x86_64-appstream-rpms
+            - rhel-9-for-x86_64-baseos-rpms
+            - codeready-builder-for-rhel-9-x86_64-rpms
+          register: repo_enable_rhel9
+          changed_when: repo_enable_rhel9.rc == 0
+          failed_when: false
+          loop_control:
+            label: "{{ item }}"
+          when: rhel_version == '9' and build_rhel9 | bool
+          
+        - name: Check enabled repositories
+          ansible.builtin.command:
+            cmd: "subscription-manager repos --list-enabled"
+          register: enabled_repos
+          changed_when: false
+          failed_when: false
+          
+        - name: Display enabled repositories
+          ansible.builtin.debug:
+            msg: |
+              Currently enabled repositories for RHEL {{ rhel_version }}:
+              {% for line in enabled_repos.stdout_lines %}
+              {% if 'Repo ID:' in line %}
+              - {{ line | regex_replace('^Repo ID:\\s+', '') }}
+              {% endif %}
+              {% endfor %}
+          when: enabled_repos.rc == 0
+      rescue:
+        - name: Handle repository configuration failure
+          ansible.builtin.debug:
+            msg: "Warning: Failed to enable some repositories. Continuing with available repositories."
+    
+    #
+    # SECTION 2: Package Installation and Verification
+    #
+    - name: Gather package facts 
+      ansible.builtin.package_facts:
+        manager: auto
+      throttle: 1
+
+    - name: Install build dependencies for required packages first
+      ansible.builtin.command:
+        cmd: "yum-builddep -y {{ item }}"
+      loop: "{{ required_packages }}"
+      register: builddep_results
+      changed_when: builddep_results.rc == 0
+      failed_when: false
+      ignore_errors: true
+      loop_control:
+        label: "{{ item }}"
+    
+    - name: Install missing packages 
+      ansible.builtin.package:
+        name: "{{ required_packages | difference(ansible_facts.packages.keys() | list) }}"
+        state: present
+      when: (required_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
+
+    - name: Create directory structure
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      with_items:
+        - "{{ playbook_dir }}/defaults"
+        - "{{ playbook_dir }}/templates"
+        - "{{ playbook_dir }}/scripts"
+        - "{{ work_dir }}/_build/configs"
+      
     - name: Create protected_images.j2 template if it doesn't exist
       ansible.builtin.copy:
         content: |
@@ -171,7 +281,7 @@
         dest: "templates/protected_images.j2"
         mode: '0644'
         force: false
-      
+    
     - name: Include setup tasks
       ansible.builtin.include_tasks: tasks/setup.yml
       register: setup_result
@@ -179,19 +289,8 @@
   # Main tasks 
   tasks:
     #
-    # SECTION 1: Environment Verification
+    # SECTION 3: DNS and Network Setup
     #
-    - name: Gather package facts 
-      ansible.builtin.package_facts:
-        manager: auto
-      throttle: 1
-
-    - name: Install missing packages 
-      ansible.builtin.package:
-        name: "{{ required_packages | difference(ansible_facts.packages.keys() | list) }}"
-        state: present
-      when: (required_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
-
     - name: Verify DNS resolution
       ansible.builtin.command:
         cmd: "nslookup {{ item }}"
@@ -213,24 +312,182 @@
         backup: true
 
     #
-    # SECTION 2: Registry Authentication
+    # SECTION 4: Podman Configuration Reset
     #
-    - name: Check if already logged in to container registries
-      ansible.builtin.command:
-        cmd: "podman login --get-login {{ item }}"
-      loop: "{{ container_registries }}"
-      register: login_check_result
-      failed_when: false
-      changed_when: false
-      no_log: true
+    - name: Complete Podman storage system reset
+      block:
+        - name: Show critical error message
+          ansible.builtin.debug:
+            msg: |
+              Performing complete system reset of Podman storage.
+              This will delete all local container images and data!
 
-    - name: Ensure registry login is working
-      ansible.builtin.include_tasks: tasks/login_registry.yml
+        - name: Stop all Podman processes
+          ansible.builtin.shell: |
+            # Kill all running containers
+            podman ps -qa | xargs -r podman kill
+            podman ps -qa | xargs -r podman rm -f
+            
+            # Stop podman service
+            systemctl stop podman.service podman.socket || true
+            
+            # Kill any remaining podman processes
+            pkill -9 podman || true
+          changed_when: true
+          ignore_errors: true
+          
+        - name: Remove entire container configuration
+          ansible.builtin.shell: |
+            # Remove all container storage
+            rm -rf /var/lib/containers/*
+            rm -rf /run/containers/*
+            rm -rf /run/libpod/*
+            rm -rf /run/user/*/containers/*
+            
+            # Remove caches and temporary files
+            rm -rf /root/.local/share/containers/*
+            rm -rf /home/*/.local/share/containers/* || true
+            rm -rf /tmp/containers-*
+            rm -rf /tmp/libpod-*
+            
+            # Remove runtime files
+            rm -f /run/libpod/runc*
+          changed_when: true
+          ignore_errors: true
+          
+        - name: Create basic container configuration files
+          ansible.builtin.shell: |
+            mkdir -p /etc/containers/containers.conf.d
+            mkdir -p /etc/containers/storage.conf.d
+            
+            # Create base storage configuration
+            cat > /etc/containers/storage.conf << EOF
+            [storage]
+            driver = "overlay"
+            runroot = "/run/containers/storage"
+            graphroot = "/var/lib/containers/storage"
+            
+            [storage.options]
+            additionalimagestores = []
+            
+            [storage.options.overlay]
+            mountopt = "nodev,metacopy=on"
+            mount_program = "/usr/bin/fuse-overlayfs"
+            ignore_chown_errors = "false"
+            EOF
+            
+            # Create minimal registries configuration
+            cat > /etc/containers/registries.conf << EOF
+            [registries.search]
+            registries = ['docker.io', 'registry.fedoraproject.org', 'registry.access.redhat.com', 'quay.io']
+            
+            [registries.insecure]
+            registries = []
+            
+            [registries.block]
+            registries = []
+            EOF
+          changed_when: true
+          ignore_errors: true
+          
+        - name: Create container directory structure from scratch
+          ansible.builtin.shell: |
+            # Create essential directories with proper permissions
+            mkdir -p /var/lib/containers/storage/overlay
+            mkdir -p /var/lib/containers/storage/overlay-layers
+            mkdir -p /var/lib/containers/storage/overlay-images
+            mkdir -p /var/lib/containers/storage/vfs
+            mkdir -p /var/lib/containers/storage/vfs-containers
+            mkdir -p /var/lib/containers/storage/vfs-images
+            mkdir -p /var/lib/containers/storage/vfs-layers
+            mkdir -p /run/containers/storage
+            
+            # Set proper ownership
+            chown -R root:root /var/lib/containers
+            chown -R root:root /run/containers
+          changed_when: true
+          
+        - name: Export environment variables to disable warnings
+          ansible.builtin.shell: |
+            # Add to environment
+            export PODMAN_IGNORE_CGROUPSV1_WARNING=1
+            
+            # Add to current shell and .bashrc
+            echo 'export PODMAN_IGNORE_CGROUPSV1_WARNING=1' >> ~/.bashrc
+            
+            # Create systemd override for podman service
+            mkdir -p /etc/systemd/system/podman.service.d/
+            cat > /etc/systemd/system/podman.service.d/environment.conf << EOF
+            [Service]
+            Environment=PODMAN_IGNORE_CGROUPSV1_WARNING=1
+            EOF
+            
+            # Reload systemd to pick up changes
+            systemctl daemon-reload
+            systemctl restart podman.socket podman.service || true
+          changed_when: true
+    
+    #
+    # SECTION 5: Registry Authentication
+    #
+    - name: Setup Red Hat registry authentication
+      block:
+        - name: Verify podman is working properly
+          ansible.builtin.command:
+            cmd: "podman info --format 'Driver: {{ '{{' }} .Store.GraphDriverName {{ '}}' }}'"
+          environment:
+            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+          register: podman_check
+          failed_when: podman_check.rc != 0
+        
+        - name: Initialize registry login tracking
+          ansible.builtin.set_fact:
+            registry_login_success: false
+            registry_login_results: {}
+        
+        - name: Login to container registries
+          ansible.builtin.command:
+            cmd: "podman login --username {{ rh_username }} --password {{ rh_password }} {{ item }}"
+          environment:
+            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+          loop: "{{ container_registries }}"
+          no_log: true
+          register: registry_logins
+          changed_when: registry_logins.rc == 0
+          failed_when: false
+          loop_control:
+            label: "{{ item }}"
+            
+        - name: Process registry login results
+          ansible.builtin.set_fact:
+            registry_login_success: >-
+              {{ registry_login_success or 
+                 (item.item != 'quay.io' and item.rc == 0) }}
+            registry_login_results: "{{ registry_login_results | combine({item.item: (item.rc == 0)}) }}"
+          loop: "{{ registry_logins.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+            
+        - name: Display registry login status
+          ansible.builtin.debug:
+            msg: |
+              Registry Authentication Results:
+              {% for registry, success in registry_login_results.items() %}
+              - {{ registry }}: {{ 'SUCCESS' if success else 'FAILED' }}
+              {% endfor %}
+              
+        - name: Fail if authentication failed for all critical registries
+          ansible.builtin.fail:
+            msg: |
+              CRITICAL ERROR: Failed to authenticate with any required container registries.
+              Authentication to at least one Red Hat registry is required for this playbook to function.
+              Please check your Red Hat credentials and network connectivity.
+          when: not registry_login_success
 
     #
-    # SECTION 3: Builder & Configuration Setup
+    # SECTION 6: Builder Configuration
     #
-    - name: Configure builder
+    - name: Configure ansible-builder
       block:
         - name: Check if ansible-builder is already installed
           ansible.builtin.shell: which ansible-builder || echo "not found"
@@ -244,12 +501,6 @@
             extra_args: "--user"
           when: "'not found' in ansible_builder_check.stdout"
           
-        - name: Ensure build configs directory exists
-          ansible.builtin.file:
-            path: "{{ work_dir }}/_build/configs"
-            state: directory
-            mode: '0755'
-
         - name: Create ansible.cfg in build context
           ansible.builtin.template:
             src: templates/ansible.cfg.j2
@@ -259,29 +510,26 @@
             automation_hub_token: "{{ automation_hub_token | default('') }}"
             current_user: "{{ ansible_user_id | default('root') }}"
 
-        - name: Copy ansible.cfg to system location
+        - name: Copy ansible.cfg to system locations
           ansible.builtin.copy:
             src: "{{ work_dir }}/_build/configs/ansible.cfg"
-            dest: /etc/ansible/ansible.cfg
+            dest: "{{ item }}"
             mode: '0644'
             remote_src: true
-
-        - name: Create ansible.cfg in current directory
-          ansible.builtin.template:
-            src: templates/ansible.cfg.j2
-            dest: "{{ playbook_dir }}/ansible.cfg"
-            mode: '0644'
-          vars:
-            current_user: "{{ ansible_user_id | default(lookup('env', 'USER')) }}"
+          with_items:
+            - /etc/ansible/ansible.cfg
+            - "{{ playbook_dir }}/ansible.cfg"
 
     #
-    # SECTION 4: Image Management
+    # SECTION 7: Image Management
     #
     - name: Check and pull required container images
       block:
         - name: Check if required container images exist
           ansible.builtin.command:
             cmd: "podman image exists {{ item }}"
+          environment:
+            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
           loop: "{{ required_images }}"
           register: image_check_results
           changed_when: false
@@ -289,61 +537,74 @@
           loop_control:
             label: "{{ item }}"
 
-        - name: Show image check status
-          ansible.builtin.debug:
-            msg: "Image {{ item.item }} exists: {{ item.rc == 0 }}"
-          loop: "{{ image_check_results.results }}"
-          loop_control:
-            label: "{{ item.item }}"
-
-        - name: Create list of missing images
+        - name: Display missing images to pull
           ansible.builtin.set_fact:
             missing_images: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
-
-        - name: Display missing images count
-          ansible.builtin.debug:
-            msg: "Found {{ missing_images | length }} images that need to be pulled"
-          when: missing_images | length > 0
 
         - name: Pull missing container images
           ansible.builtin.command:
             cmd: "podman pull {{ item }}"
+          environment:
+            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
           loop: "{{ missing_images }}"
           register: pull_results
           changed_when: pull_results.rc == 0
+          failed_when: false
           retries: 3
           delay: 5
           until: pull_results is succeeded
-          failed_when: false
           loop_control:
             label: "{{ item }}"
             pause: 1.0
+          when: missing_images | length > 0
+
+        - name: Process image pull results
+          ansible.builtin.set_fact:
+            successful_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | map(attribute='item') | list }}"
+            failed_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
           when: missing_images | length > 0
 
         - name: Summarize image pull results
           ansible.builtin.debug:
             msg: |
               Successfully pulled images:
-              {% for result in pull_results.results | default([]) %}
-              {% if result.rc == 0 %}
-              - {{ result.item }}
-              {% endif %}
+              {% for image in successful_pulls | default([]) %}
+              - {{ image }}
               {% endfor %}
               
               Failed to pull images:
-              {% for result in pull_results.results | default([]) %}
-              {% if result.rc != 0 %}
-              - {{ result.item }} (error: {{ result.stderr | default('unknown error') | regex_replace('\n', ' ') }})
-              {% endif %}
+              {% for image in failed_pulls | default([]) %}
+              - {{ image }}
               {% endfor %}
-          when: pull_results.results is defined and pull_results.results | length > 0
+          when: missing_images | length > 0
+
+        - name: Fail if any required images could not be pulled
+          ansible.builtin.fail:
+            msg: |
+              CRITICAL ERROR: Failed to pull the following required images:
+              {% for image in failed_pulls | default([]) %}
+              - {{ image }}
+              {% endfor %}
+              
+              These images are required for execution environment building.
+              Please check your network connection, registry authentication,
+              and ensure these images are accessible.
+          when: failed_pulls is defined and failed_pulls | length > 0
+          
       rescue:
-        - name: Warning about failed image pulls
-          ansible.builtin.debug:
-            msg: "Failed to pull some container images. Continuing with available images."
+        - name: Critical failure in image pulling
+          ansible.builtin.fail:
+            msg: |
+              CRITICAL ERROR: Failed to pull required container images.
+              This playbook cannot continue without the necessary base images.
+              
+              Please verify:
+              1. Registry authentication is working (podman login)
+              2. Network connectivity to container registries
+              3. The required images exist and are accessible
 
     #
-    # SECTION 5: Dependencies Management
+    # SECTION 8: Dependencies Management
     #
     - name: Manage dependencies
       block:
@@ -377,8 +638,43 @@
           failed_when: galaxy_install_result.rc != 0
           ignore_errors: true
 
+    # 
+    # SECTION 8.5: Environment Selection Filtering
     #
-    # SECTION 6: Environment Selection
+    - name: Filter available environments based on distribution selection
+      block:
+        - name: Get all available environments
+          ansible.builtin.find:
+            paths: "{{ work_dir }}/environments"
+            file_type: directory
+          register: all_environments
+          
+        - name: Process environments for filtering
+          ansible.builtin.set_fact:
+            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | list }}"
+            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | list }}"
+            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | map(attribute='path') | list }}"
+            
+        - name: Set available environments based on distribution selection
+          ansible.builtin.set_fact:
+            available_environments: "{{ 
+                neutral_environments + 
+                (build_rhel8 | bool) | ternary(rhel8_environments, []) + 
+                (build_rhel9 | bool) | ternary(rhel9_environments, [])
+              }}"
+              
+        - name: Debug available environments
+          ansible.builtin.debug:
+            msg: "Available environments based on distribution selection: {{ available_environments | map('basename') | list }}"
+            
+        # Pass the filtered environment list to the environment_menu.yml
+        - name: Set environment_paths for menu
+          ansible.builtin.set_fact:
+            environment_paths: "{{ available_environments }}"
+      when: build_rhel8 is defined or build_rhel9 is defined
+
+    # 
+    # Continue with environment selection, monitoring setup, etc.
     #
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
@@ -389,283 +685,26 @@
         msg: "Selected environments to process: {{ selected_environments | join(', ') }}"
       when: selected_environments | default([]) | length > 0
 
-    - name: Set environment display name
-      ansible.builtin.set_fact:
-        environment_display_name: >-
-          {{ "All Environments" if "all" in selected_environments or
-             selected_environments|length >= (required_images|length - 2) else
-             selected_environments|join(', ') }}
-
-    #
-    # SECTION 7: Monitoring Setup
-    #
-    - name: Setup podman monitoring in tmux
+    - name: Build execution environments
       block:
-        - name: Ensure scripts directory exists
-          ansible.builtin.file:
-            path: "{{ playbook_dir }}/scripts"
-            state: directory
-            mode: '0755'
-
-        - name: Create open_tmux_session.sh script
-          ansible.builtin.copy:
-            dest: "{{ playbook_dir }}/scripts/open_tmux_session.sh"
-            mode: '0755'
-            content: |
-              #!/bin/bash
-              # open_tmux_session.sh - Opens a terminal window with tmux session attached
-              
-              # Function to try opening a terminal with tmux
-              open_terminal_with_tmux() {
-                # If we're already in tmux, create a new window
-                if [ -n "$TMUX" ]; then
-                  tmux new-window "tmux attach -t podman-monitor"
-                  return 0
-                fi
-              
-                # Try different terminal emulators in order of preference
-                for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal xterm; do
-                  if command -v $terminal >/dev/null 2>&1; then
-                    case $terminal in
-                      gnome-terminal)
-                        nohup $terminal -- tmux attach -t podman-monitor >/dev/null 2>&1 &
-                        ;;
-                      *)
-                        nohup $terminal -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                        ;;
-                    esac
-                    echo "Opened tmux session in $terminal"
-                    return 0
-                  fi
-                done
-                
-                # If none of the above worked, try X-terminal-emulator alternative
-                if command -v x-terminal-emulator >/dev/null 2>&1; then
-                  nohup x-terminal-emulator -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                  echo "Opened tmux session in x-terminal-emulator"
-                  return 0
-                fi
-                
-                return 1
-              }
-              
-              # Main script execution
-              main() {
-                # Verify tmux session exists
-                if ! tmux has-session -t podman-monitor 2>/dev/null; then
-                  echo "Error: podman-monitor tmux session doesn't exist."
-                  exit 1
-                fi
-              
-                # Try to open terminal with tmux
-                if ! open_terminal_with_tmux; then
-                  echo "Could not open a terminal window automatically."
-                  echo "To view podman monitor, run: tmux attach -t podman-monitor"
-                  exit 1
-                fi
-                
-                exit 0
-              }
-              
-              # Run main function
-              main
-
-        - name: Kill existing podman-monitor session if it exists
-          ansible.builtin.shell: tmux kill-session -t podman-monitor 2>/dev/null || true
-          ignore_errors: true
-
-        - name: Create tmux header file
-          ansible.builtin.shell: |
-            cat > /tmp/tmux_header.txt << 'EOFHEADER'
-                                      @@@@                                                             
-                                    @@@@@@@                                                            
-                                   @@@@@@@@@@                                                          
-                                  @@@@@@@@@@@                                                          
-                                 @@@@@@  @@@@@@                                                        
-                      ╔═════════@@@@@@════@@@@@═════════════════════════════════════════════════════╗  
-                      ║        @@@@@@      @@@@@@                                                   ║  
-                      ║       @@@@@@        @@@@@@                                                  ║  
-                      ║      @@@@@@          @@@@@@                                                 ║  
-                      ║     @@@@@@            @@@@@                                                 ║  
-                      ║    @@@@@@@@            @@@@@@                                               ║  
-                      ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
-                      ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
-                      ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
-                      ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
-                      @@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║  
-                     @@@@@@@══════════════════@@@@@@@@@@@@@═════════════════════════════════════════╝  
-                    @@@@@@@                      @@@@@@@@@@@                                           
-                   @@@@@@@                          @@@@@@@@                                           
-                  @@@@@@                                @@@@
-            EOFHEADER
-            chmod 0644 /tmp/tmux_header.txt
-          changed_when: false
-
-        - name: Create new tmux session for monitoring
-          ansible.builtin.shell: |
-            # Create the base session
-            tmux new-session -d -s podman-monitor
-            
-            # Set environment variables
-            tmux send-keys -t podman-monitor "export ANSIBLE_DEPRECATION_WARNINGS=False" C-m
-            tmux send-keys -t podman-monitor "export ANSIBLE_LOCALHOST_WARNING=False" C-m
-            tmux send-keys -t podman-monitor "export ANSIBLE_SYSTEM_WARNINGS=False" C-m
-            tmux send-keys -t podman-monitor "export ANSIBLE_COMMAND_WARNINGS=False" C-m
-            tmux send-keys -t podman-monitor "export TERM=xterm-256color" C-m
-            
-            # Clear and show header
-            tmux send-keys -t podman-monitor "clear" C-m
-            tmux send-keys -t podman-monitor "echo -e \"\$(cat /tmp/tmux_header.txt)\"" C-m
-            
-            # Add monitoring command with environment name in title
-            display_name="{{ environment_display_name }}"
-            tmux send-keys -t podman-monitor "watch --color -n 2 'clear && echo -e \"\$(cat /tmp/tmux_header.txt)\" && echo -e \"\\n\\033[1;32m>>> MONITORING: \\033[1;33m$display_name \\033[1;32m<<<\\033[0m\\n\\033[38;5;39m═══════════════════════════════════════════════════════════════════════════════\\033[0m\" && podman images 2>/dev/null | grep -v REPOSITORY | grep -v \"registry.redhat.io/ansible-automation-platform-25\" | sort'" C-m
-            
-            # Name the window according to selected environment(s)
-            tmux rename-window -t podman-monitor:0 "{{ 'all' if 'all' in selected_environments else selected_environments[0] | default('monitor') }}"
-            
-            # Create simple access script for convenience
-            echo '#!/bin/bash' > /tmp/podman-monitor.sh
-            echo 'echo -e "\033[1;32mConnecting to podman monitoring session...\033[0m"' >> /tmp/podman-monitor.sh
-            echo 'tmux attach -t podman-monitor' >> /tmp/podman-monitor.sh
-            chmod +x /tmp/podman-monitor.sh
-            
-            echo "Podman monitoring session created"
-          register: tmux_session_created
-          changed_when: tmux_session_created.rc == 0
-
-        - name: Get tmux info for debug
-          ansible.builtin.shell: |
-            echo "Current user: $(whoami)"
-            echo "DISPLAY: $DISPLAY"
-            echo "In tmux: ${TMUX:-no}"
-            echo "Current TTY: $(tty)"
-            tmux ls || echo "No tmux sessions"
-          changed_when: false
-          register: tmux_debug
-          
-        - name: Debug tmux info
+        - name: Skip message if environment is not compatible with selected distributions
           ansible.builtin.debug:
-            msg: "{{ tmux_debug.stdout_lines }}"
-
-        - name: Try direct terminal opening
-          ansible.builtin.shell: |
-            if [ -n "$TMUX" ]; then
-              # Already in tmux - just spawn a window
-              tmux new-window -d "tmux attach -t podman-monitor" || true
-              echo "Created new tmux window"
-              exit 0
-            fi
+            msg: "Skipping environment '{{ item }}' as it's not compatible with selected distributions."
+          loop: "{{ selected_environments | default([]) }}"
+          when: >
+            (not build_rhel8 and 'rhel8' in item) or
+            (not build_rhel9 and 'rhel9' in item)
+          loop_control:
+            label: "{{ item }}"
             
-            # Find first available terminal with proper dimensions
-            for term in gnome-terminal x-terminal-emulator konsole xfce4-terminal terminator xterm; do
-              if command -v $term > /dev/null 2>&1; then
-                # Try to launch with proper dimensions for each terminal type
-                case $term in
-                  gnome-terminal)
-                    DISPLAY=:0 $term --geometry=117x35 -- tmux attach -t podman-monitor &
-                    ;;
-                  xterm)
-                    DISPLAY=:0 $term -geometry 117x35 -e "tmux attach -t podman-monitor" &
-                    ;;
-                  konsole)
-                    DISPLAY=:0 $term --geometry 117x35 -e "tmux attach -t podman-monitor" &
-                    ;;
-                  terminator)
-                    DISPLAY=:0 $term --geometry=117x35 -e "tmux attach -t podman-monitor" &
-                    ;;
-                  *)
-                    # Default for other terminals
-                    DISPLAY=:0 $term -e "tmux attach -t podman-monitor" &
-                    ;;
-                esac
-                echo "Launched $term with larger dimensions (117x35)"
-                exit 0
-              fi
-            done
-            
-            if grep -q Microsoft /proc/version 2>/dev/null; then
-              # WSL environment, use Windows terminal with size parameters
-              cmd.exe /c start wt.exe --width 117 --height 35 -d . wsl.exe -e bash -c "tmux attach -t podman-monitor" &
-              echo "Launched WSL terminal with larger dimensions"
-              exit 0
-            fi
-            
-            echo "Could not find a suitable terminal. Use 'tmux attach -t podman-monitor' to connect manually"
-            exit 0
-          args:
-            executable: /bin/bash
-          register: term_launch
-          changed_when: false
-          
-        - name: Show terminal opening results
-          ansible.builtin.debug:
-            msg: "{{ term_launch.stdout_lines }}"
-
-        - name: Show instructions for accessing monitor
-          ansible.builtin.debug:
-            msg: |
-              🔍 Podman monitoring session created for {{ environment_display_name }}
-              
-              To view the monitoring session:
-              1. Run in any terminal: tmux attach -t podman-monitor
-              2. Or run: /tmp/podman-monitor.sh
-      when: selected_environments | default([]) | length > 0
-      tags: [tmux_monitor]
-
-    #
-    # SECTION 8: Environment Building
-    #
-    - name: Process each selected environment
-      ansible.builtin.include_tasks: tasks/build_environment.yml
-      loop: "{{ selected_environments | default([]) }}"
-      loop_control:
-        loop_var: current_env
-        label: "{{ current_env }}"
-      when: selected_environments | default([]) | length > 0
-
-    #
-    # SECTION 9: Clean Up Old Resources
-    #
-    - name: Clean up unused images and build artifacts
-      block:
-        - name: Include cleanup tasks
-          ansible.builtin.include_tasks: tasks/cleanup.yml
-      rescue:
-        - name: Handle cleanup failure
-          ansible.builtin.debug:
-            msg: "Image cleanup failed: {{ ansible_failed_result.stderr | default('Unknown error') }}"
-      when: cleanup_after | default(false) | bool
-
-    #
-    # SECTION 10: Write Updated Protected Images
-    #
-    - name: Write updated protected images to defaults/main.yml
-      ansible.builtin.template:
-        src: templates/protected_images.j2
-        dest: "{{ playbook_dir }}/defaults/main.yml"
-      delegate_to: localhost
-      when: update_protected_list | default(false) | bool
-
-    #
-    # SECTION 11: Completion
-    #
-    - name: Display completion message
-      ansible.builtin.debug:
-        msg: |
-          ✅ Finished processing all selected environments.
-          ✅ To use these environments, run: podman images | grep -E '(rhel8|rhel9)'
-          ✅ To clean up unused images, run: podman image prune -f
-      when: selected_environments | default([]) | length > 0
-
-  #
-  # HANDLERS
-  #
-  handlers:
-    - name: Build container image
-      ansible.builtin.debug:
-        msg: "Container image {{ current_env }} has been built successfully"
-
-    - name: Handle infra ansible fix
-      ansible.builtin.debug:
-        msg: "Fixed infra.ansible reference in requirements.yml for {{ current_env }}"
+        - name: Build compatible selected environments
+          ansible.builtin.include_tasks: tasks/build_environment.yml
+          vars:
+            environment_name: "{{ item }}"
+          loop: "{{ selected_environments | default([]) }}"
+          when: >
+            (build_rhel8 and 'rhel8' in item) or
+            (build_rhel9 and 'rhel9' in item) or
+            ('rhel8' not in item and 'rhel9' not in item)
+          loop_control:
+            label: "{{ item }}"
