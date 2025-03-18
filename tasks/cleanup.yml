@@ -1,4 +1,15 @@
 ---
+# Add a task to check for existing images first
+- name: Check for existing images
+  ansible.builtin.command:
+    cmd: "podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}'"
+  register: existing_images
+  changed_when: false
+
+- name: Set existing images fact
+  ansible.builtin.set_fact:
+    existing_image_list: "{{ existing_images.stdout_lines | default([]) }}"
+
 - name: Create consolidated protected images list
   ansible.builtin.set_fact:
     protected_images: >-
@@ -12,12 +23,12 @@
           'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest',
           'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest',
           'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
-        ] + (selected_environments | default([]))
+        ] + (existing_image_list | default([]))
       }}
 
 - name: Update protected images list with any new entries
   ansible.builtin.set_fact:
-    consolidated_images: "{{ ((protected_images | default([])) + (selected_environments | default([])) + (required_images | default([]))) | unique | sort }}"
+    consolidated_images: "{{ ((protected_images | default([])) + (selected_environments | default([])) + (required_images | default([])) + (existing_image_list | default([]))) | unique | sort }}"
 
 - name: Write updated protected images to defaults/main.yml
   ansible.builtin.template:
@@ -35,18 +46,14 @@
 
     - name: Clean up unprotected images
       ansible.builtin.shell: |
-        images_to_check=$(podman images --format '{{ .Repository }}:{{ .Tag }}' | grep -v "<none>:<none>")
+        images_to_check=$(podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}' | grep -v "<none>:<none>")
         images_to_remove=""
         for image in $images_to_check; do
           is_protected=false
           {% for protected in consolidated_images | default([]) %}
           if [[ "$image" == "{{ protected }}" ]]; then
             is_protected=true
-            {% if selected_environments is defined %}
-            if [[ "{{ selected_environments | join(' ') }}" == *"$image"* ]]; then
-              is_protected=false
-            fi
-            {% endif %}
+            break
           fi
           {% endfor %}
           if [[ "$is_protected" == "false" ]]; then
@@ -54,8 +61,14 @@
           fi
         done
         if [[ -n "$images_to_remove" ]]; then
-          podman rmi -f $images_to_remove
-          echo "Removing unprotected images: $images_to_remove"
+          echo "Would remove these unprotected images: $images_to_remove"
+          # Only actually remove if CONFIRM_CLEANUP is set
+          if [[ "${CONFIRM_CLEANUP:-no}" == "yes" ]]; then
+            podman rmi -f $images_to_remove
+            echo "Removed unprotected images"
+          else
+            echo "Dry run - no images removed. Set CONFIRM_CLEANUP=yes to remove."
+          fi
         else
           echo "No unprotected images to remove"
         fi
@@ -63,7 +76,9 @@
         executable: /bin/bash
       when: cleanup_all | default(false) | bool
       register: cleanup_result
-      changed_when: cleanup_result.stdout is search('Removing')
+      changed_when: cleanup_result.stdout is search('Removed')
+      environment:
+        CONFIRM_CLEANUP: "{{ confirm_cleanup | default('no') }}"
 
 - name: Include protected images from defaults
   ansible.builtin.include_vars:
@@ -78,14 +93,8 @@
 # This list is automatically generated from existing images
 # Images will NOT be deleted unless specifically selected from menu
 protected_images:
-  - "ghcr.io/ansible/community-ansible-dev-tools:latest"
-  - "localhost/rhel9-ee-minimal:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
   - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
 # END ANSIBLE MANAGED PROTECTED IMAGES

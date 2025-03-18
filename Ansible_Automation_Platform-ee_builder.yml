@@ -136,6 +136,38 @@
   # Setup tasks
   pre_tasks:
     #
+    # SECTION 0: Global Environment Configuration
+    #
+    - name: Set Podman warning suppression environment variable
+      ansible.builtin.set_fact:
+        podman_env:
+          PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+      
+    - name: Add Podman warning suppression to environment files
+      ansible.builtin.lineinfile:
+        path: "{{ item }}"
+        regexp: '^export PODMAN_IGNORE_CGROUPSV1_WARNING='
+        line: 'export PODMAN_IGNORE_CGROUPSV1_WARNING=1'
+        create: true
+        mode: '0644'
+      with_items:
+        - /etc/environment
+        - /etc/profile.d/podman.sh
+      
+    - name: Create systemd environment override for podman
+      ansible.builtin.copy:
+        content: |
+          [Service]
+          Environment=PODMAN_IGNORE_CGROUPSV1_WARNING=1
+        dest: /etc/systemd/system/podman.service.d/environment.conf
+        mode: '0644'
+        create: true
+      
+    - name: Reload systemd configuration
+      ansible.builtin.systemd:
+        daemon_reload: true
+    
+    #
     # SECTION 0: User Distribution Selection Processing
     #
     - name: Process distribution selection
@@ -149,13 +181,12 @@
     
     - name: Filter required images based on distribution selection
       ansible.builtin.set_fact:
-        rhel8_images: "{{ required_images | select('search', 'rhel8') | list }}"
-        rhel9_images: "{{ required_images | select('search', 'rhel9') | list }}"
-        filtered_images: "{{ 
-            (build_rhel8 | bool) | ternary(rhel8_images, []) + 
-            (build_rhel9 | bool) | ternary(rhel9_images, [])
-          }}"
-        
+        filtered_images: >-
+          {{
+            (build_rhel8 | bool) | ternary(required_images | select('search', 'rhel8') | list, []) +
+            (build_rhel9 | bool) | ternary(required_images | select('search', 'rhel9') | list, [])
+          }}
+
     - name: Show filtered image list
       ansible.builtin.debug:
         msg: |
@@ -448,13 +479,12 @@
         - name: Login to container registries
           ansible.builtin.command:
             cmd: "podman login --username {{ rh_username }} --password {{ rh_password }} {{ item }}"
-          environment:
-            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
-          loop: "{{ container_registries }}"
+          environment: "{{ podman_env }}"
           no_log: true
           register: registry_logins
           changed_when: registry_logins.rc == 0
           failed_when: false
+          loop: "{{ container_registries }}"
           loop_control:
             label: "{{ item }}"
             
@@ -528,8 +558,7 @@
         - name: Check if required container images exist
           ansible.builtin.command:
             cmd: "podman image exists {{ item }}"
-          environment:
-            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+          environment: "{{ podman_env }}"
           loop: "{{ required_images }}"
           register: image_check_results
           changed_when: false
@@ -544,8 +573,7 @@
         - name: Pull missing container images
           ansible.builtin.command:
             cmd: "podman pull {{ item }}"
-          environment:
-            PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+          environment: "{{ podman_env }}"
           loop: "{{ missing_images }}"
           register: pull_results
           changed_when: pull_results.rc == 0
@@ -684,6 +712,156 @@
       ansible.builtin.debug:
         msg: "Selected environments to process: {{ selected_environments | join(', ') }}"
       when: selected_environments | default([]) | length > 0
+      
+    # SECTION 8: Monitoring Setup
+    #
+    - name: Setup podman monitoring in tmux
+      block:
+        - name: Create open_tmux_session.sh script
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/scripts/open_tmux_session.sh"
+            mode: '0755'
+            content: |
+              #!/bin/bash
+              # open_tmux_session.sh - Opens a terminal window with tmux session attached
+              
+              # Function to try opening a terminal with tmux
+              open_terminal_with_tmux() {
+                # If we're already in tmux, create a new window
+                if [ -n "$TMUX" ]; then
+                  tmux new-window "tmux attach -t podman-monitor"
+                  return 0
+                fi
+              
+                # Try different terminal emulators in order of preference
+                for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal xterm; do
+                  if command -v $terminal >/dev/null 2>&1; then
+                    case $terminal in
+                      gnome-terminal)
+                        nohup $terminal -- tmux attach -t podman-monitor >/dev/null 2>&1 &
+                        ;;
+                      *)
+                        nohup $terminal -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                        ;;
+                    esac
+                    echo "Opened tmux session in $terminal"
+                    return 0
+                  fi
+                done
+                
+                # If none of the above worked, try X-terminal-emulator alternative
+                if command -v x-terminal-emulator >/dev/null 2>&1; then
+                  nohup x-terminal-emulator -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                  echo "Opened tmux session in x-terminal-emulator"
+                  return 0
+                fi
+                
+                return 1
+              }
+              
+              # Main script execution
+              main() {
+                # Verify tmux session exists
+                if ! tmux has-session -t podman-monitor 2>/dev/null; then
+                  echo "Error: podman-monitor tmux session doesn't exist."
+                  exit 1
+                fi
+              
+                # Try to open terminal with tmux
+                if ! open_terminal_with_tmux; then
+                  echo "Could not open a terminal window automatically."
+                  echo "To view podman monitor, run: tmux attach -t podman-monitor"
+                  exit 1
+                fi
+                
+                exit 0
+              }
+              
+              # Run main function
+              main
+
+        - name: Kill existing podman-monitor session if it exists
+          ansible.builtin.shell: tmux kill-session -t podman-monitor 2>/dev/null || true
+          ignore_errors: true
+
+        - name: Create tmux header file
+          ansible.builtin.shell: |
+            cat > /tmp/tmux_header.txt << 'EOFHEADER'
+                                      @@@@                                                             
+                                    @@@@@@@                                                            
+                                   @@@@@@@@@@                                                          
+                                  @@@@@@@@@@@                                                          
+                                 @@@@@@  @@@@@@                                                        
+                      ╔═════════@@@@@@════@@@@@═════════════════════════════════════════════════════╗  
+                      ║        @@@@@@      @@@@@@                                                   ║  
+                      ║       @@@@@@        @@@@@@                                                  ║  
+                      ║      @@@@@@          @@@@@@                                                 ║  
+                      ║     @@@@@@            @@@@@                                                 ║  
+                      ║    @@@@@@@@            @@@@@@                                               ║  
+                      ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
+                      ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
+                      ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
+                      ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
+                      @@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║  
+                     @@@@@@@══════════════════@@@@@@@@@@@@@═════════════════════════════════════════╝  
+                    @@@@@@@                      @@@@@@@@@@@                                           
+                   @@@@@@@                          @@@@@@@@                                           
+                  @@@@@@                                @@@@
+            EOFHEADER
+            chmod 0644 /tmp/tmux_header.txt
+          changed_when: false
+
+        - name: Create new tmux session for monitoring
+          ansible.builtin.shell: |
+            # Create the base session
+            tmux new-session -d -s podman-monitor
+            
+            # Set environment variables
+            tmux send-keys -t podman-monitor "export ANSIBLE_DEPRECATION_WARNINGS=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_LOCALHOST_WARNING=False" C-m
+            tmux send-keys -t podman-monitor "export ANSIBLE_SYSTEM_WARNINGS=False" C-m
+            
+            # Configure tmux appearance
+            tmux set -g -t podman-monitor status-style bg=black,fg=white
+            
+            # Show the header banner
+            tmux send-keys -t podman-monitor "clear" C-m
+            tmux send-keys -t podman-monitor "cat /tmp/tmux_header.txt" C-m
+            tmux send-keys -t podman-monitor "echo" C-m
+            
+            # Create monitoring panes
+            tmux split-window -t podman-monitor -v
+            tmux select-pane -t podman-monitor:0.1
+            tmux send-keys -t podman-monitor:0.1 "watch -n 2 'podman ps'" C-m
+            
+            tmux split-window -t podman-monitor:0.1 -h
+            tmux send-keys -t podman-monitor:0.2 "watch -n 5 'podman image ls | head -20'" C-m
+            
+            # Return to main pane
+            tmux select-pane -t podman-monitor:0.0
+            tmux send-keys -t podman-monitor:0.0 "echo 'Build process starting soon...'" C-m
+          changed_when: true
+
+        - name: Attempt to open tmux monitor in new terminal window
+          ansible.builtin.shell: "{{ playbook_dir }}/scripts/open_tmux_session.sh"
+          ignore_errors: true
+          changed_when: false
+          register: tmux_open_result
+          
+        - name: Provide tmux attach instructions if automatic window failed
+          ansible.builtin.debug:
+            msg: |
+              ┌────────────────────────────────────────────────────────────────┐
+              │                  BUILD MONITORING AVAILABLE                    │
+              ├────────────────────────────────────────────────────────────────┤
+              │ To monitor build progress, run:                                │
+              │   tmux attach -t podman-monitor                                │
+              └────────────────────────────────────────────────────────────────┘
+          when: tmux_open_result is failed
+
+    - name: Set build_ready flag
+      ansible.builtin.set_fact:
+        build_ready: "{{ selected_environments | default([]) | length > 0 }}"
 
     - name: Build execution environments
       block:
@@ -698,13 +876,84 @@
             label: "{{ item }}"
             
         - name: Build compatible selected environments
-          ansible.builtin.include_tasks: tasks/build_environment.yml
+          include_tasks: tasks/build_environment.yml
           vars:
-            environment_name: "{{ item }}"
-          loop: "{{ selected_environments | default([]) }}"
+            current_env: "{{ item }}"  # Set current_env to the environment name
+          loop: "{{ selected_environments }}"
           when: >
             (build_rhel8 and 'rhel8' in item) or
             (build_rhel9 and 'rhel9' in item) or
             ('rhel8' not in item and 'rhel9' not in item)
           loop_control:
             label: "{{ item }}"
+      when: build_ready | default(false) | bool
+
+    #
+    # SECTION 10: Create Sample Environments
+    #
+    - name: Check for existing environments
+      ansible.builtin.find:
+        paths: "{{ work_dir }}/environments"
+        file_type: directory
+      register: existing_env_dirs
+      
+    - name: Create sample environment directories with clear RHEL version indicators
+      ansible.builtin.file:
+        path: "{{ work_dir }}/environments/{{ item }}"
+        state: directory
+        mode: '0755'
+      with_items:
+        - "rhel8"
+        - "rhel9"
+      when: existing_env_dirs.files | length == 0
+
+    #
+    # SECTION 11: Environment Filtering and Selection
+    #
+    - name: Filter available environments based on distribution selection
+      block:
+        - name: Get all available environments
+          ansible.builtin.find:
+            paths: "{{ work_dir }}/environments"
+            file_type: directory
+          register: all_environments
+          
+        - name: Display all discovered environments before filtering
+          ansible.builtin.debug:
+            msg: |
+              All available environments before filtering:
+              {% for env in all_environments.files %}
+              - {{ env.path | basename }}
+              {% endfor %}
+        
+        - name: Process environments for filtering
+          ansible.builtin.set_fact:
+            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | list }}"
+            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | list }}"
+            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | map(attribute='path') | list }}"
+
+        - name: Display filtered environment lists
+          ansible.builtin.debug:
+            msg: |
+              RHEL 8 environments: {{ rhel8_environments | map('basename') | list }}
+              RHEL 9 environments: {{ rhel9_environments | map('basename') | list }}
+              Neutral environments: {{ neutral_environments | map('basename') | list }}
+            
+        - name: Set available environments based on distribution selection
+          ansible.builtin.set_fact:
+            available_environments: "{{ 
+                neutral_environments + 
+                (build_rhel8 | bool) | ternary(rhel8_environments, []) + 
+                (build_rhel9 | bool) | ternary(rhel9_environments, [])
+              }}"
+            environment_paths: "{{ 
+                neutral_environments + 
+                (build_rhel8 | bool) | ternary(rhel8_environments, []) + 
+                (build_rhel9 | bool) | ternary(rhel9_environments, [])
+              }}"
+              
+        - name: Display final filtered environment list
+          ansible.builtin.debug:
+            msg: |
+              Final environment list for {{ (build_rhel8 | bool) | ternary('RHEL 8', '') }}{{ (build_rhel8 and build_rhel9) | ternary(' and ', '') }}{{ (build_rhel9 | bool) | ternary('RHEL 9', '') }}:
+              {{ environment_paths | map('basename') | list }}

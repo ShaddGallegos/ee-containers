@@ -1,8 +1,11 @@
-python3-devel [platform:rpm]
+# System dependencies for Python packages
 gcc [platform:rpm]
-python3-pip [platform:rpm]
-shadow-utils [platform:rpm]
-sudo [platform:rpm]
-systemd-devel [platform:rpm]
-pkgconfig [platform:rpm]
 make [platform:rpm]
+libxml2-devel [platform:rpm]
+openssl-devel [platform:rpm]
+python3-devel [platform:rpm]
+rpm-build [platform:rpm]
+# Kerberos dependencies
+krb5-devel [platform:rpm]
+krb5-libs [platform:rpm]
+krb5-workstation [platform:rpm]

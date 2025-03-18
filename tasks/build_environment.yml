@@ -297,25 +297,47 @@
     - image_check.rc == 0
     - not force_rebuild
 
+- name: Pre-build cleanup for Podman storage issues
+  ansible.builtin.shell: |
+    # Report info on the specific image we're building
+    echo "Preparing to build image: {{ current_env }}"
+    
+    # Try to remove the image if it exists
+    podman image exists {{ current_env }} && podman rmi -f {{ current_env }} || true
+    
+    # Clear builder cache for this specific image
+    rm -rf /var/lib/containers/storage/overlay-layers/*/rhel9*
+    rm -rf /var/lib/containers/storage/overlay-images/*/rhel9*
+    
+    # Send a message to tmux monitor if it exists
+    if tmux has-session -t podman-monitor 2>/dev/null; then
+      tmux send-keys -t podman-monitor:0.0 "echo 'Cleaning storage for {{ current_env }} build...'" C-m
+    fi
+  changed_when: true
+  ignore_errors: true
+  register: pre_build_cleanup
+  when: "'rhel9' in current_env"
+
 - name: Build container image
   ansible.builtin.command:
     cmd: >-
-      ansible-builder build
-      --tag {{ current_env }}
-      --container-runtime podman
+      ansible-builder build 
+      --tag {{ current_env }} 
+      --container-runtime podman 
       --verbosity 3
       --prune-images
       --context {{ work_dir }}/context
-      --build-arg AH_TOKEN={{ automation_hub_token }}
-      -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
-  register: build_output
-  changed_when: build_output.rc == 0
-  failed_when: build_output.rc not in [0, 1]
+      --build-arg AH_TOKEN={{ automation_hub_token | default('') }}
+      --builder-image registry.access.redhat.com/ubi9/buildah:latest
+      -f {{ environment_dir }}/execution-environment.yml
   environment:
-    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"  # Suppress podman warnings
-  when: 
-    - image_check is defined
-    - (image_check.rc != 0 or force_rebuild)
+    BUILDAH_FORMAT: docker
+    STORAGE_DRIVER: vfs
+    BUILDAH_ISOLATION: chroot
+    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+  register: build_result
+  failed_when: false
+  changed_when: build_result.rc == 0
 
 - name: Display build result summary
   ansible.builtin.debug:
