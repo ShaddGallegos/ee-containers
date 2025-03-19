@@ -2,23 +2,194 @@
 # Ansible Automation Platform - Execution Environment Builder
 # This playbook builds customized execution environments based on Red Hat AAP base images
 
-# Play 1: Verify prerequisites
-- name: Verify root privileges
+# Play 1: Verify or collect credentials
+- name: Setup and store credentials
   hosts: localhost
   connection: local
-  gather_facts: false
+  gather_facts: true
   tasks:
-    - name: Check if running as root or with sudo
-      ansible.builtin.command: id -u
-      register: user_id
+    # Improved user detection logic
+    - name: Get effective and real user info
+      ansible.builtin.shell: |
+        echo "EUID=$(id -u)"
+        if [ -n "$SUDO_USER" ]; then
+          echo "SUDO_USER=$SUDO_USER"
+          echo "SUDO_UID=$(id -u $SUDO_USER)"
+          echo "SUDO_HOME=$(eval echo ~$SUDO_USER)"
+        else
+          echo "SUDO_USER="
+          echo "SUDO_UID="
+          echo "SUDO_HOME="
+        fi
+        echo "USER=$(whoami)"
+        echo "HOME=$HOME"
+      register: user_info_output
       changed_when: false
+      tags: [always]
+    
+    - name: Parse user info
+      ansible.builtin.set_fact:
+        parsed_user_info: "{{ dict(user_info_output.stdout_lines | map('regex_replace', '^([^=]+)=(.*)$', '\\1:\\2') | map('split', ':') | list) }}"
+      tags: [always]
+    
+    - name: Set user facts
+      ansible.builtin.set_fact:
+        is_root: "{{ parsed_user_info.EUID == '0' }}"
+        actual_user: "{{ parsed_user_info.SUDO_USER | default(parsed_user_info.USER) }}"
+        user_home: "{{ parsed_user_info.SUDO_HOME | default(parsed_user_info.HOME) }}"
+      tags: [always]
+    
+    - name: Debug user detection
+      ansible.builtin.debug:
+        msg: |
+          User detection results:
+          - Effective UID: {{ parsed_user_info.EUID }}
+          - Running as root: {{ is_root }}
+          - Original user: {{ actual_user }}
+          - User home: {{ user_home }}
+      tags: [always]
 
-    - name: Fail if not running with proper privileges
+    # Skip credential setup if running as root directly (not via sudo)
+    - name: Skip credential setup if running as root directly
+      ansible.builtin.set_fact:
+        skip_credential_setup: "{{ ansible_user_id == 'root' and lookup('env', 'SUDO_USER') == '' }}"
+      tags: [always]
+
+    - name: Show credential setup status
+      ansible.builtin.debug:
+        msg: "{{ skip_credential_setup | ternary('Running as direct root user - skipping credential setup', 'Setting up credentials for user ' + actual_user) }}"
+      tags: [always]
+
+    # Only run credential setup if not skipping
+    - name: Setup user credentials
+      when: not skip_credential_setup
+      block:
+        - name: Ensure ansible vars directory exists in user's home
+          ansible.builtin.file:
+            path: "{{ user_home }}/.ansible/vars"
+            state: directory
+            mode: '0700'
+          tags: [setup, credential_setup]
+    
+        - name: Check if credentials file exists
+          ansible.builtin.stat:
+            path: "{{ user_home }}/.ansible/vars/config"
+          register: config_file
+          tags: [always]
+    
+        - name: Set first run flag 
+          ansible.builtin.set_fact:
+            first_run: "{{ not config_file.stat.exists }}"
+          tags: [always]
+    
+        - name: Load stored credentials if they exist
+          ansible.builtin.include_vars:
+            file: "{{ user_home }}/.ansible/vars/config"
+            name: stored_credentials
+          when: config_file.stat.exists
+          tags: [always]
+    
+        - name: Request credentials if needed
+          block:
+            - name: Collect Red Hat CDN username
+              ansible.builtin.pause:
+                prompt: "Enter your Red Hat CDN username"
+                echo: true
+              register: rh_username_input
+              when: stored_credentials is not defined or stored_credentials.rh_username is not defined
+              
+            - name: Collect Red Hat CDN password
+              ansible.builtin.pause:
+                prompt: "Enter your Red Hat CDN password"
+                echo: false
+              register: rh_password_input
+              when: stored_credentials is not defined or stored_credentials.rh_password is not defined
+              
+            - name: Collect Automation Hub token
+              ansible.builtin.pause:
+                prompt: "Enter your Automation Hub token (or press enter to skip)"
+                echo: false
+              register: automation_hub_token_input
+              when: stored_credentials is not defined or stored_credentials.automation_hub_token is not defined
+              
+            - name: Collect Galaxy token
+              ansible.builtin.pause:
+                prompt: "Enter your Galaxy token (or press enter to skip)"
+                echo: false
+              register: galaxy_token_input
+              when: stored_credentials is not defined or stored_credentials.galaxy_token is not defined
+              
+            - name: Set collected credential facts
+              ansible.builtin.set_fact:
+                rh_username: "{{ rh_username_input.user_input | default(stored_credentials.rh_username | default('')) }}"
+                rh_password: "{{ rh_password_input.user_input | default(stored_credentials.rh_password | default('')) }}"
+                automation_hub_token: "{{ automation_hub_token_input.user_input | default(stored_credentials.automation_hub_token | default('')) }}"
+                galaxy_token: "{{ galaxy_token_input.user_input | default(stored_credentials.galaxy_token | default('')) }}"
+              no_log: true
+              
+            - name: Create credentials file
+              ansible.builtin.copy:
+                dest: "{{ user_home }}/.ansible/vars/config"
+                content: |
+                  ---
+                  # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+                  rh_username: '{{ rh_username }}'
+                  rh_password: '{{ rh_password }}'
+                  automation_hub_token: '{{ automation_hub_token }}'
+                  galaxy_token: '{{ galaxy_token }}'
+                mode: '0600'
+                # Remove owner and group attributes when running as root
+              no_log: true
+              
+            - name: Set proper ownership on credentials file when needed
+              ansible.builtin.file:
+                path: "{{ user_home }}/.ansible/vars/config"
+                owner: "{{ actual_user }}"
+                group: "{{ actual_user }}"
+                mode: '0600'
+              when: actual_user != 'root' and actual_user != ''
+              no_log: true
+              
+            - name: Report stored credentials
+              ansible.builtin.debug:
+                msg: |
+                  ┌────────────────────────────────────────────────────────────────┐
+                  │                  CREDENTIALS STORED                            │
+                  ├────────────────────────────────────────────────────────────────┤
+                  │ Credentials have been stored at: {{ user_home }}/.ansible/vars/config │
+                  │ These will be used for future runs.                            │
+                  └────────────────────────────────────────────────────────────────┘
+          when: first_run or (stored_credentials is not defined)
+          tags: [always]
+    
+    - name: Fail if not running with sudo
       ansible.builtin.fail:
         msg: |
-          This playbook must be run as root or with sudo privileges.
-          Please run again using: sudo ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
-      when: user_id.stdout != "0"
+          This playbook must be run as root or with sudo privileges for full functionality.
+          
+          For a full run to build environments, use:
+            sudo ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
+      when: not is_root
+      tags: [always]
+      
+    - name: Show run mode
+      ansible.builtin.debug:
+        msg: |
+          ┌────────────────────────────────────────────────────────────────────┐
+          │                     RUN MODE INFORMATION                           │
+          ├────────────────────────────────────────────────────────────────────┤
+          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run else "SUBSEQUENT RUN: Using stored configuration" }} │
+          │                                                                    │
+          │ User: {{ actual_user }}                                            │
+          │ Credentials: {{ "New" if first_run else "Loaded from file" }}      │
+          └────────────────────────────────────────────────────────────────────┘
+      tags: [always]
+
+    # Use sudo_user's home directory for config in the main play
+    - name: Set config path for main play
+      ansible.builtin.set_fact:
+        config_path: "{{ user_home }}/.ansible/vars/config"
+      tags: [always]
 
 # Play 2: Display title and introduction
 - name: Display title screen
@@ -56,19 +227,23 @@
           │                                                                                   .+@@@@@@@@@@@@@@@@+..      │
           │                                                                                     ..+*%@@@@@@%*+..         │
           └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+      tags: [always]
 
     - name: Pause for title screen
       ansible.builtin.pause:
         seconds: 3
         prompt: "Starting Execution Environment Builder..."
+      tags: [always]
 
 # Play 3: Main execution environment building process
 - name: Build Execution Environments for Ansible Automation Platform
   hosts: localhost
   become: true
   gather_facts: true
+  vars_files:
+    - "{{ hostvars.localhost.config_path | default('~/.ansible/vars/config') }}"
 
-  # Variables definition section
+  # Variables definition section remains the same
   vars:
     # Connection variables
     container_registries:
@@ -113,35 +288,40 @@
       - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
       - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
 
-  # Interactive variables
+  # Interactive variables - now using defaults from config file
   vars_prompt:
-    - name: rh_username
-      prompt: "Enter your Red Hat CDN username"
-      private: false
-    - name: rh_password
-      prompt: "Enter your Red Hat CDN password"
-      private: true
     - name: distribution_selection
       prompt: "Select distribution to build images for (8/9/both)"
       private: false
       default: "both"
-    - name: automation_hub_token
-      prompt: "Enter your Automation Hub token (or press enter to skip)"
-      private: true
-    - name: galaxy_token
-      prompt: "Enter your Galaxy token (or press enter to skip)"
-      private: true
-      default: ""
 
-  # Setup tasks
   pre_tasks:
-    #
-    # SECTION 0: Global Environment Configuration
-    #
+    - name: Check root status
+      ansible.builtin.command: id -u
+      register: user_id
+      changed_when: false
+      tags: [always]
+
+    - name: Set root flag
+      ansible.builtin.set_fact:
+        is_root: "{{ user_id.stdout == '0' }}"
+      tags: [always]
+
+    - name: Warning if running as non-root
+      ansible.builtin.debug:
+        msg: |
+          Running in LIMITED MODE as non-root user.
+          Only setup tasks will be executed.
+          For full functionality, run with sudo.
+      when: not is_root
+      tags: [always]
+
+    # Rest of the tasks with proper conditional checks
     - name: Set Podman warning suppression environment variable
       ansible.builtin.set_fact:
         podman_env:
           PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+      tags: [setup, env_config, podman_warnings]
       
     - name: Add Podman warning suppression to environment files
       ansible.builtin.lineinfile:
@@ -153,6 +333,8 @@
       with_items:
         - /etc/environment
         - /etc/profile.d/podman.sh
+      when: is_root
+      tags: [setup, env_config, podman_env_files]
       
     - name: Create systemd environment override for podman
       ansible.builtin.copy:
@@ -162,22 +344,26 @@
         dest: /etc/systemd/system/podman.service.d/environment.conf
         mode: '0644'
         create: true
+      when: is_root
       
     - name: Reload systemd configuration
       ansible.builtin.systemd:
         daemon_reload: true
+      when: is_root
     
     #
-    # SECTION 0: User Distribution Selection Processing
+    # SECTION 1: Distribution Selection
     #
     - name: Process distribution selection
       ansible.builtin.set_fact:
         build_rhel8: "{{ distribution_selection == '8' or distribution_selection == 'both' }}"
         build_rhel9: "{{ distribution_selection == '9' or distribution_selection == 'both' }}"
+      tags: [setup, distribution, dist_selection]
         
     - name: Show selected distributions
       ansible.builtin.debug:
         msg: "Building images for: {{ (build_rhel8 | bool) | ternary('RHEL 8', '') }}{{ (build_rhel8 and build_rhel9) | ternary(' and ', '') }}{{ (build_rhel9 | bool) | ternary('RHEL 9', '') }}"
+      tags: [setup, distribution, dist_show_selected]
     
     - name: Filter required images based on distribution selection
       ansible.builtin.set_fact:
@@ -202,11 +388,12 @@
       when: filtered_images is defined and filtered_images | length > 0
 
     #
-    # SECTION 1: Base system configuration
+    # SECTION 2: Base System Configuration
     #
     - name: Detect RHEL version
       ansible.builtin.set_fact:
         rhel_version: "{{ ansible_distribution_major_version | default('9') }}"
+      tags: [setup, system_config, detect_rhel]
       
     - name: Enable required RHEL repositories based on version
       block:
@@ -223,7 +410,7 @@
           failed_when: false
           loop_control:
             label: "{{ item }}"
-          when: rhel_version == '8' and build_rhel8 | bool
+          when: rhel_version == '8' and build_rhel8 | bool and is_root
           
         - name: Enable RHEL 9 repositories
           ansible.builtin.command:
@@ -238,7 +425,7 @@
           failed_when: false
           loop_control:
             label: "{{ item }}"
-          when: rhel_version == '9' and build_rhel9 | bool
+          when: rhel_version == '9' and build_rhel9 | bool and is_root
           
         - name: Check enabled repositories
           ansible.builtin.command:
@@ -263,63 +450,6 @@
             msg: "Warning: Failed to enable some repositories. Continuing with available repositories."
     
     #
-    # SECTION 2: Package Installation and Verification
-    #
-    - name: Gather package facts 
-      ansible.builtin.package_facts:
-        manager: auto
-      throttle: 1
-
-    - name: Install build dependencies for required packages first
-      ansible.builtin.command:
-        cmd: "yum-builddep -y {{ item }}"
-      loop: "{{ required_packages }}"
-      register: builddep_results
-      changed_when: builddep_results.rc == 0
-      failed_when: false
-      ignore_errors: true
-      loop_control:
-        label: "{{ item }}"
-    
-    - name: Install missing packages 
-      ansible.builtin.package:
-        name: "{{ required_packages | difference(ansible_facts.packages.keys() | list) }}"
-        state: present
-      when: (required_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
-
-    - name: Create directory structure
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        mode: '0755'
-      with_items:
-        - "{{ playbook_dir }}/defaults"
-        - "{{ playbook_dir }}/templates"
-        - "{{ playbook_dir }}/scripts"
-        - "{{ work_dir }}/_build/configs"
-      
-    - name: Create protected_images.j2 template if it doesn't exist
-      ansible.builtin.copy:
-        content: |
-          # BEGIN ANSIBLE MANAGED PROTECTED IMAGES
-          # This list is automatically generated from existing images
-          # Images will NOT be deleted unless specifically selected from menu
-          protected_images:
-          {% raw %}{% for image in consolidated_images | default([]) %}
-            - "{{ image }}"
-          {% endfor %}{% endraw %}
-          # END ANSIBLE MANAGED PROTECTED IMAGES
-        dest: "templates/protected_images.j2"
-        mode: '0644'
-        force: false
-    
-    - name: Include setup tasks
-      ansible.builtin.include_tasks: tasks/setup.yml
-      register: setup_result
-
-  # Main tasks 
-  tasks:
-    #
     # SECTION 3: DNS and Network Setup
     #
     - name: Verify DNS resolution
@@ -341,6 +471,8 @@
         dest: /etc/containers/registries.conf
         mode: '0644'
         backup: true
+      when: is_root
+      tags: [setup, network_config, dns_servers]
 
     #
     # SECTION 4: Podman Configuration Reset
@@ -457,6 +589,7 @@
             systemctl daemon-reload
             systemctl restart podman.socket podman.service || true
           changed_when: true
+      when: is_root
     
     #
     # SECTION 5: Registry Authentication
@@ -487,6 +620,7 @@
           loop: "{{ container_registries }}"
           loop_control:
             label: "{{ item }}"
+          tags: [setup, registry, registry_login]
             
         - name: Process registry login results
           ansible.builtin.set_fact:
@@ -539,6 +673,7 @@
           vars:
             automation_hub_token: "{{ automation_hub_token | default('') }}"
             current_user: "{{ ansible_user_id | default('root') }}"
+          tags: [setup, builder_config, ansible_cfg]
 
         - name: Copy ansible.cfg to system locations
           ansible.builtin.copy:
@@ -585,6 +720,7 @@
             label: "{{ item }}"
             pause: 1.0
           when: missing_images | length > 0
+          tags: [setup, images, pull_images]
 
         - name: Process image pull results
           ansible.builtin.set_fact:
@@ -707,6 +843,7 @@
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
       register: environment_menu_result
+      tags: [environment, menu, env_selection]
 
     - name: Debug selected environments
       ansible.builtin.debug:
@@ -715,140 +852,98 @@
       
     # SECTION 8: Monitoring Setup
     #
-    - name: Setup podman monitoring in tmux
+    - name: Setup basic podman monitoring
       block:
-        - name: Create open_tmux_session.sh script
+        - name: Ensure scripts directory exists
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/scripts"
+            state: directory
+            mode: '0755'
+          tags: [monitoring, monitoring_dir]
+
+        - name: Create monitoring script
           ansible.builtin.copy:
-            dest: "{{ playbook_dir }}/scripts/open_tmux_session.sh"
+            dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
             mode: '0755'
             content: |
               #!/bin/bash
-              # open_tmux_session.sh - Opens a terminal window with tmux session attached
+              # Simple monitoring script for podman with auto-popup terminal
+
+              # Kill any existing session
+              tmux kill-session -t podman-monitor 2>/dev/null || true
               
-              # Function to try opening a terminal with tmux
-              open_terminal_with_tmux() {
+              # Create the basic session
+              tmux new-session -d -s podman-monitor
+              
+              # Configure the session
+              tmux set -g status-style bg=black,fg=white
+              
+              # Split into 3 panes
+              tmux split-window -v -p 30
+              tmux split-window -h
+              
+              # Put commands in each pane
+              tmux select-pane -t 0
+              tmux send-keys "echo '=== BUILD OUTPUT ===' && echo 'Waiting for builds to start...'" C-m
+
+              tmux select-pane -t 1
+              tmux send-keys "echo '=== CONTAINERS ===' && watch -n 2 'podman ps'" C-m
+              
+              tmux select-pane -t 2
+              tmux send-keys "echo '=== IMAGES ===' && watch -n 5 'podman image ls'" C-m
+              
+              # Return to main pane
+              tmux select-pane -t 0
+
+              # Auto-open terminal with tmux session attached
+              function open_terminal_with_tmux {
                 # If we're already in tmux, create a new window
                 if [ -n "$TMUX" ]; then
                   tmux new-window "tmux attach -t podman-monitor"
                   return 0
                 fi
-              
+                
                 # Try different terminal emulators in order of preference
-                for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal xterm; do
+                for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal x-terminal-emulator xterm; do
                   if command -v $terminal >/dev/null 2>&1; then
                     case $terminal in
                       gnome-terminal)
                         nohup $terminal -- tmux attach -t podman-monitor >/dev/null 2>&1 &
                         ;;
-                      *)
+                      konsole|xfce4-terminal|terminator|mate-terminal|x-terminal-emulator|xterm)
                         nohup $terminal -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
                         ;;
                     esac
-                    echo "Opened tmux session in $terminal"
+                    echo "Opened monitoring in $terminal"
                     return 0
                   fi
                 done
                 
-                # If none of the above worked, try X-terminal-emulator alternative
-                if command -v x-terminal-emulator >/dev/null 2>&1; then
-                  nohup x-terminal-emulator -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                  echo "Opened tmux session in x-terminal-emulator"
-                  return 0
+                # WSL-specific handling for Windows Terminal
+                if (grep -q Microsoft /proc/version 2>/dev/null); then
+                  nohup cmd.exe /c start wt.exe bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                  if [ $? -eq 0 ]; then
+                    echo "Opened monitoring in Windows Terminal"
+                    return 0
+                  fi
                 fi
                 
                 return 1
               }
-              
-              # Main script execution
-              main() {
-                # Verify tmux session exists
-                if ! tmux has-session -t podman-monitor 2>/dev/null; then
-                  echo "Error: podman-monitor tmux session doesn't exist."
-                  exit 1
-                fi
-              
-                # Try to open terminal with tmux
-                if ! open_terminal_with_tmux; then
-                  echo "Could not open a terminal window automatically."
-                  echo "To view podman monitor, run: tmux attach -t podman-monitor"
-                  exit 1
-                fi
-                
-                exit 0
-              }
-              
-              # Run main function
-              main
 
-        - name: Kill existing podman-monitor session if it exists
-          ansible.builtin.shell: tmux kill-session -t podman-monitor 2>/dev/null || true
-          ignore_errors: true
-
-        - name: Create tmux header file
-          ansible.builtin.shell: |
-            cat > /tmp/tmux_header.txt << 'EOFHEADER'
-                                      @@@@                                                             
-                                    @@@@@@@                                                            
-                                   @@@@@@@@@@                                                          
-                                  @@@@@@@@@@@                                                          
-                                 @@@@@@  @@@@@@                                                        
-                      ╔═════════@@@@@@════@@@@@═════════════════════════════════════════════════════╗  
-                      ║        @@@@@@      @@@@@@                                                   ║  
-                      ║       @@@@@@        @@@@@@                                                  ║  
-                      ║      @@@@@@          @@@@@@                                                 ║  
-                      ║     @@@@@@            @@@@@                                                 ║  
-                      ║    @@@@@@@@            @@@@@@                                               ║  
-                      ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
-                      ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
-                      ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
-                      ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
-                      @@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║  
-                     @@@@@@@══════════════════@@@@@@@@@@@@@═════════════════════════════════════════╝  
-                    @@@@@@@                      @@@@@@@@@@@                                           
-                   @@@@@@@                          @@@@@@@@                                           
-                  @@@@@@                                @@@@
-            EOFHEADER
-            chmod 0644 /tmp/tmux_header.txt
-          changed_when: false
-
-        - name: Create new tmux session for monitoring
-          ansible.builtin.shell: |
-            # Create the base session
-            tmux new-session -d -s podman-monitor
-            
-            # Set environment variables
-            tmux send-keys -t podman-monitor "export ANSIBLE_DEPRECATION_WARNINGS=False" C-m
-            tmux send-keys -t podman-monitor "export ANSIBLE_LOCALHOST_WARNING=False" C-m
-            tmux send-keys -t podman-monitor "export ANSIBLE_SYSTEM_WARNINGS=False" C-m
-            
-            # Configure tmux appearance
-            tmux set -g -t podman-monitor status-style bg=black,fg=white
-            
-            # Show the header banner
-            tmux send-keys -t podman-monitor "clear" C-m
-            tmux send-keys -t podman-monitor "cat /tmp/tmux_header.txt" C-m
-            tmux send-keys -t podman-monitor "echo" C-m
-            
-            # Create monitoring panes
-            tmux split-window -t podman-monitor -v
-            tmux select-pane -t podman-monitor:0.1
-            tmux send-keys -t podman-monitor:0.1 "watch -n 2 'podman ps'" C-m
-            
-            tmux split-window -t podman-monitor:0.1 -h
-            tmux send-keys -t podman-monitor:0.2 "watch -n 5 'podman image ls | head -20'" C-m
-            
-            # Return to main pane
-            tmux select-pane -t podman-monitor:0.0
-            tmux send-keys -t podman-monitor:0.0 "echo 'Build process starting soon...'" C-m
+              # Try to open terminal with tmux
+              if ! open_terminal_with_tmux; then
+                echo "Could not automatically open a terminal. Connect with: tmux attach -t podman-monitor"
+              fi
           changed_when: true
+          tags: [monitoring, monitoring_create_script]
 
-        - name: Attempt to open tmux monitor in new terminal window
-          ansible.builtin.shell: "{{ playbook_dir }}/scripts/open_tmux_session.sh"
-          ignore_errors: true
-          changed_when: false
-          register: tmux_open_result
-          
-        - name: Provide tmux attach instructions if automatic window failed
+        - name: Run monitoring script
+          ansible.builtin.command: "{{ playbook_dir }}/scripts/start_monitor.sh"
+          changed_when: true
+          tags: [monitoring, monitoring_start]
+
+        - name: Display monitoring instructions
           ansible.builtin.debug:
             msg: |
               ┌────────────────────────────────────────────────────────────────┐
@@ -857,11 +952,13 @@
               │ To monitor build progress, run:                                │
               │   tmux attach -t podman-monitor                                │
               └────────────────────────────────────────────────────────────────┘
-          when: tmux_open_result is failed
+          tags: [monitoring, monitoring_instructions]
+      tags: [monitoring]
 
     - name: Set build_ready flag
       ansible.builtin.set_fact:
         build_ready: "{{ selected_environments | default([]) | length > 0 }}"
+      tags: [build, build_set_ready_flag]
 
     - name: Build execution environments
       block:
@@ -874,6 +971,7 @@
             (not build_rhel9 and 'rhel9' in item)
           loop_control:
             label: "{{ item }}"
+          tags: [build, build_process, skip_incompatible]
             
         - name: Build compatible selected environments
           include_tasks: tasks/build_environment.yml
@@ -886,7 +984,9 @@
             ('rhel8' not in item and 'rhel9' not in item)
           loop_control:
             label: "{{ item }}"
-      when: build_ready | default(false) | bool
+          tags: [build, build_process, execute_environment]
+      when: is_root and build_ready | default(false) | bool
+      tags: [build]
 
     #
     # SECTION 10: Create Sample Environments

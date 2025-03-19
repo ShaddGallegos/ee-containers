@@ -297,26 +297,32 @@
     - image_check.rc == 0
     - not force_rebuild
 
-- name: Pre-build cleanup for Podman storage issues
+- name: Report info on build image
+  ansible.builtin.debug:
+    msg: "Preparing to build image: {{ current_env }}"
+  tags: [build, build_cleanup, pre_build_report]
+    
+- name: Remove existing image if it exists
   ansible.builtin.shell: |
-    # Report info on the specific image we're building
-    echo "Preparing to build image: {{ current_env }}"
-    
-    # Try to remove the image if it exists
     podman image exists {{ current_env }} && podman rmi -f {{ current_env }} || true
-    
-    # Clear builder cache for this specific image
+  changed_when: false
+  tags: [build, build_cleanup, pre_build_remove_image]
+  
+- name: Clear Podman cache for RHEL9 builds
+  ansible.builtin.shell: |
     rm -rf /var/lib/containers/storage/overlay-layers/*/rhel9*
     rm -rf /var/lib/containers/storage/overlay-images/*/rhel9*
-    
-    # Send a message to tmux monitor if it exists
+  changed_when: true
+  when: "'rhel9' in current_env"
+  tags: [build, build_cleanup, pre_build_clear_cache]
+  
+- name: Send message to tmux monitor
+  ansible.builtin.shell: |
     if tmux has-session -t podman-monitor 2>/dev/null; then
       tmux send-keys -t podman-monitor:0.0 "echo 'Cleaning storage for {{ current_env }} build...'" C-m
     fi
-  changed_when: true
-  ignore_errors: true
-  register: pre_build_cleanup
-  when: "'rhel9' in current_env"
+  changed_when: false
+  tags: [build, build_cleanup, pre_build_notify_tmux]
 
 - name: Build container image
   ansible.builtin.command:
