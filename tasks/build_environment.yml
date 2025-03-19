@@ -45,23 +45,29 @@
 #
 - name: Create required directories
   ansible.builtin.file:
-    path: "{{ item }}"
+    path: "{{ directory }}"
     state: directory
     mode: '0755'
   loop:
     - "{{ playbook_dir }}/environments/{{ current_env }}"
     - "{{ work_dir }}/context"
     - "{{ work_dir }}/_build"
+  loop_control:
+    loop_var: directory
+  tags: [build, setup, directories]
 
 - name: Check for required files
   ansible.builtin.stat:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/{{ item }}"
+    path: "{{ playbook_dir }}/environments/{{ current_env }}/{{ filename }}"
   loop:
     - execution-environment.yml
     - requirements.txt
     - requirements.yml
     - bindep.txt
   register: file_checks
+  loop_control:
+    loop_var: filename
+  tags: [build, setup, check_files]
 
 - name: Create empty requirements.txt if it doesn't exist
   ansible.builtin.file:
@@ -108,14 +114,15 @@
 #
 - name: Check for property issues in execution-environment.yml
   ansible.builtin.shell: |
-    grep -l '^[[:space:]]*{{ item.key }}[[:space:]]*:' "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml" || true
+    grep -l '^[[:space:]]*{{ property.key }}[[:space:]]*:' "{{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml" || true
   loop:
     - { key: "prepend", name: "prepend" }
     - { key: "append", name: "append" }
   register: property_checks
   changed_when: false
   loop_control:
-    label: "{{ item.name }}"
+    loop_var: property  # Added custom loop variable
+    label: "{{ property.name }}"  # Updated reference
   args:
     executable: /bin/bash
 
@@ -125,8 +132,8 @@
     regexp: '^(\s*)prepend(\s*):(\s*.*)$'
     replace: '\1prepend_builder\2:\3'
   when: >
-    property_checks.results | selectattr('item.key', 'eq', 'prepend') | list | length > 0 and
-    property_checks.results | selectattr('item.key', 'eq', 'prepend') | first | regex_search('prepend')
+    property_checks.results | selectattr('property.key', 'eq', 'prepend') | list | length > 0 and
+    property_checks.results | selectattr('property.key', 'eq', 'prepend') | first | regex_search('prepend')
   register: prepend_fixed
 
 - name: Fix invalid 'append' property
@@ -135,8 +142,8 @@
     regexp: '^(\s*)append(\s*):(\s*.*)$'
     replace: '\1append_builder\2:\3'
   when: >
-    property_checks.results | selectattr('item.key', 'eq', 'append') | list | length > 0 and
-    property_checks.results | selectattr('item.key', 'eq', 'append') | first | regex_search('append')
+    property_checks.results | selectattr('property.key', 'eq', 'append') | list | length > 0 and
+    property_checks.results | selectattr('property.key', 'eq', 'append') | first | regex_search('append')
   register: append_fixed
 
 - name: Display property fix status
@@ -166,14 +173,15 @@
 #
 - name: Check for issues in requirements.yml
   ansible.builtin.shell: |
-    grep -l '{{ item.pattern }}' "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml" || true
+    grep -l '{{ req_item.pattern }}' "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml" || true
   loop:
     - { pattern: 'ansible\.builtin', name: 'ansible.builtin' }
     - { pattern: 'infra\.ansible', name: 'infra.ansible' }
   register: req_checks
   changed_when: false
   loop_control:
-    label: "{{ item.name }}"
+    loop_var: req_item  # Added custom loop variable
+    label: "{{ req_item.name }}"  # Updated reference
   args:
     executable: /bin/bash
 
@@ -183,8 +191,8 @@
     regexp: '(\s+)- name: ansible.builtin(\s+.*)?'
     replace: '# The following line was removed as ansible.builtin is part of ansible-core and cannot be installed separately'
   when: >
-    req_checks.results | selectattr('item.name', 'eq', 'ansible.builtin') | list | length > 0 and
-    req_checks.results | selectattr('item.name', 'eq', 'ansible.builtin') | first | regex_search('ansible\.builtin')
+    req_checks.results | selectattr('req_item.name', 'eq', 'ansible.builtin') | list | length > 0 and
+    req_checks.results | selectattr('req_item.name', 'eq', 'ansible.builtin') | first | regex_search('ansible\.builtin')
   register: builtin_fixed
 
 - name: Fix infra.ansible reference in requirements.yml
@@ -193,18 +201,20 @@
     regexp: '(\s+)- name: infra\.ansible(\s+.*)?'
     replace: '\1- name: infra.ee_utilities\n\1- name: infra.aap_utilities'
   when: >
-    req_checks.results | selectattr('item.name', 'eq', 'infra.ansible') | list | length > 0 and
-    req_checks.results | selectattr('item.name', 'eq', 'infra.ansible') | first | regex_search('infra\.ansible')
+    req_checks.results | selectattr('req_item.name', 'eq', 'infra.ansible') | list | length > 0 and
+    req_checks.results | selectattr('req_item.name', 'eq', 'infra.ansible') | first | regex_search('infra\.ansible')
   register: infra_ansible_fixed
 
 - name: Display collection fixes
   ansible.builtin.debug:
-    msg: "Fixed {{ item.name }} reference in requirements.yml for {{ current_env }}"
+    msg: "Fixed {{ collection.name }} reference in requirements.yml for {{ current_env }}"
     verbosity: 3
   loop:
     - { name: "ansible.builtin", changed: "{{ builtin_fixed.changed | default(false) }}" }
     - { name: "infra.ansible", changed: "{{ infra_ansible_fixed.changed | default(false) }}" }
-  when: item.changed | bool
+  loop_control:
+    loop_var: collection  # Define a unique loop variable name
+  when: collection.changed | bool
 
 #
 # Clean up existing resources
@@ -307,7 +317,17 @@
     podman image exists {{ current_env }} && podman rmi -f {{ current_env }} || true
   changed_when: false
   tags: [build, build_cleanup, pre_build_remove_image]
-  
+
+- name: Clear Podman cache for RHEL8 builds
+  ansible.builtin.command:
+    cmd: |
+      rm -rf /var/lib/containers/storage/overlay-layers/*/rhel8*
+      rm -rf /var/lib/containers/storage/overlay-images/*/rhel8*
+  when: "'rhel8' in current_env"
+  ignore_errors: true
+  changed_when: true
+  tags: [build, build_cleanup]
+
 - name: Clear Podman cache for RHEL9 builds
   ansible.builtin.shell: |
     rm -rf /var/lib/containers/storage/overlay-layers/*/rhel9*
@@ -315,15 +335,30 @@
   changed_when: true
   when: "'rhel9' in current_env"
   tags: [build, build_cleanup, pre_build_clear_cache]
-  
-- name: Send message to tmux monitor
-  ansible.builtin.shell: |
-    if tmux has-session -t podman-monitor 2>/dev/null; then
-      tmux send-keys -t podman-monitor:0.0 "echo 'Cleaning storage for {{ current_env }} build...'" C-m
-    fi
-  changed_when: false
-  tags: [build, build_cleanup, pre_build_notify_tmux]
 
+# Add this task before the build to install the missing dependency
+- name: Install systemd development libraries
+  ansible.builtin.package:
+    name: "systemd-devel"
+    state: present
+  when: "'rhel9' in current_env"
+  ignore_errors: true
+  tags: [build, build_deps]
+
+- name: Install additional Python dependencies for RHEL builds
+  ansible.builtin.package:
+    name: "{{ dependency }}"  # Changed from item to dependency
+    state: present
+  loop:
+    - systemd-devel
+    - python3-devel
+    - gcc
+    - python3-pip
+  loop_control:
+    loop_var: dependency  # Define a unique loop variable name
+  ignore_errors: true
+  tags: [build, build_deps]
+  
 - name: Build container image
   ansible.builtin.command:
     cmd: >-
@@ -334,34 +369,120 @@
       --prune-images
       --context {{ work_dir }}/context
       --build-arg AH_TOKEN={{ automation_hub_token | default('') }}
-      --builder-image registry.access.redhat.com/ubi9/buildah:latest
-      -f {{ environment_dir }}/execution-environment.yml
+      -f {{ playbook_dir }}/environments/{{ current_env }}/execution-environment.yml
   environment:
     BUILDAH_FORMAT: docker
     STORAGE_DRIVER: vfs
     BUILDAH_ISOLATION: chroot
     PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
-  register: build_result
+  register: build_output
   failed_when: false
-  changed_when: build_result.rc == 0
+  changed_when: build_output.rc == 0
+  tags: [build, build_process]
+
+# Replace with this enhanced implementation
+- name: Send build output to log file
+  block:  # Just 'block:' instead of 'ansible.builtin.block:'
+    - name: Ensure log directory structure exists
+      ansible.builtin.file:
+        path: /var/log/ansible/ansible-builder
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user_id }}"
+        recurse: true
+      become: true
+      ignore_errors: true
+
+    - name: Get current timestamp
+      ansible.builtin.command:
+        cmd: "date '+%Y%m%d-%H%M%S'"
+      register: timestamp
+      changed_when: false
+      
+    - name: Send build output to log file and tmux
+      ansible.builtin.shell: |
+        # Create a timestamp for the log filename
+        TIMESTAMP="{{ timestamp.stdout }}"
+        LOG_FILE="/var/log/ansible/ansible-builder/{{ current_env }}-${TIMESTAMP}.log"
+        
+        # Create log content with extra details
+        {
+          echo "=== BUILD LOG: {{ current_env }} ==="
+          echo "Timestamp: $(date)"
+          echo "Environment: {{ current_env }}"
+          echo "Build result: {{ 'SUCCESS' if build_output.rc == 0 else 'FAILED' }} (Exit code: {{ build_output.rc }})"
+          echo "Ansible user: {{ ansible_user_id }}"
+          echo "Build command: ansible-builder build --tag {{ current_env }}"
+          echo "============================================="
+          echo ""
+          echo "STDOUT:"
+          echo "{{ build_output.stdout | default('No standard output captured') | replace('"', '\\"') }}"
+          echo ""
+          echo "STDERR:"
+          echo "{{ build_output.stderr | default('No error output') | replace('"', '\\"') }}"
+        } | tee "$LOG_FILE" >/dev/null
+        
+        # Update permissions on log file to ensure it's readable
+        chmod 644 "$LOG_FILE" || true
+        
+        # Update tmux if it's running
+        if tmux has-session -t podman-monitor 2>/dev/null; then
+          # Send build status with color based on result
+          if [ {{ build_output.rc }} -eq 0 ]; then
+            tmux send-keys -t podman-monitor:0.0 "echo -e '\e[1;32mBuild {{ current_env }} SUCCEEDED\e[0m'" C-m
+          else
+            tmux send-keys -t podman-monitor:0.0 "echo -e '\e[1;31mBuild {{ current_env }} FAILED (Exit code: {{ build_output.rc }})\e[0m'" C-m
+          fi
+          
+          # Tell tmux where the log file is located
+          tmux send-keys -t podman-monitor:0.0 "echo 'Log saved to: $LOG_FILE'" C-m
+          
+          # Create a temporary file for tmux display (with limited output to avoid overflow)
+          {
+            echo -e "=== Build output summary for {{ current_env }} ==="
+            echo ""
+            echo "STDOUT (last 20 lines):"
+            echo "{{ build_output.stdout | default('No standard output captured') | replace('"', '\\"') }}" | tail -20
+            echo ""
+            echo "STDERR (last 10 lines):"
+            echo "{{ build_output.stderr | default('No error output') | replace('"', '\\"') }}" | tail -10
+            echo ""
+            echo "Full log available at: $LOG_FILE"
+          } > /tmp/build_output.txt
+          
+          # Display the file contents in tmux
+          tmux send-keys -t podman-monitor:0.0 "cat /tmp/build_output.txt" C-m
+        fi
+        
+        echo "Build log saved to: $LOG_FILE"
+      changed_when: false
+      ignore_errors: true
+  rescue:
+    - name: Report logging failure
+      ansible.builtin.debug:
+        msg: "Warning: Failed to create log file, but build process will continue"
+  tags: [build, build_process, logging]
 
 - name: Display build result summary
   ansible.builtin.debug:
-    msg: "{{ current_env }} build {{ 'succeeded' if build_output.rc == 0 else 'failed' }}"
-
-- name: Show detailed build output
-  ansible.builtin.debug:
     msg: |
-      Build command output (last 20 lines):
-      {{ (build_output.stdout_lines | default([]))[-20:] | join('\n') }}
+      Build of {{ current_env }} {{ 'succeeded' if build_output.rc|default(1) == 0 else 'failed' }}
+      {{ 'Error output:' if build_output.rc|default(1) != 0 else 'Build output:' }}
+      {{ build_output.stderr | default(build_output.stdout) | default('No output captured') }}
+  tags: [build, build_process]
+
+- name: Fail if build failed and continue_on_error is not set
+  ansible.builtin.fail:
+    msg: |
+      Build of {{ current_env }} failed with return code {{ build_output.rc }}
       
-      Build command errors (if any):
-      {{ build_output.stderr_lines | default([]) | join('\n') }}
-  when: 
-    - build_output is defined
-    - (build_output.stdout_lines | default([]) | length > 0) or 
-      (build_output.stderr_lines | default([]) | length > 0)
-  failed_when: false
+      To continue despite build failures, run the playbook with:
+      ansible-playbook Ansible_Automation_Platform-ee_builder.yml -e "continue_on_error=true"
+      
+      Check the build logs for more details:
+      /var/log/ansible/ansible-builder/{{ current_env }}*.log
+  when: build_output.rc|default(1) != 0 and not continue_on_error|default(false)
+  tags: [build, build_process]
 
 - name: Verify image was built successfully
   ansible.builtin.command:
@@ -395,3 +516,5 @@
   when: 
     - protected_images is defined 
     - protected_images | length > 0
+
+

@@ -910,9 +910,8 @@
               # Set larger history limit for better scrollback
               tmux set -g history-limit 10000
               
-              # Split into 3 panes
+              # Split into 2 panes
               tmux split-window -v -p 30
-              tmux split-window -h
               
               # Put commands in each pane
               tmux select-pane -t 0
@@ -924,23 +923,16 @@
               if [ -f "{{ playbook_dir }}/tmux_header.txt" ]; then
                 # Display the header with proper coloring
                 tmux send-keys "cat {{ playbook_dir }}/tmux_header.txt" C-m
-                # Add a separator line
-                tmux send-keys "echo ''" C-m
-                # Add the waiting message beneath it
-                tmux send-keys "echo -e '\e[1;36mWaiting for builds to start...\e[0m'" C-m
               else
                 # Fallback if header file isn't found
                 tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m
                 tmux send-keys "echo 'Waiting for builds to start...'" C-m
               fi
 
+              # Configure second pane
               tmux select-pane -t 1
-              tmux send-keys "printf '\e[1;33m%s\e[0m\n' '=== CONTAINERS ==='" C-m
-              tmux send-keys "watch -n 2 'podman ps'" C-m
-              
-              tmux select-pane -t 2
               tmux send-keys "printf '\e[1;32m%s\e[0m\n' '=== IMAGES ==='" C-m
-              tmux send-keys "watch -n 5 'podman image ls'" C-m
+              tmux send-keys "watch -n .5 'podman images'" C-m
               
               # Return to main pane
               tmux select-pane -t 0
@@ -953,24 +945,14 @@
                   return 0
                 fi
                 
-                # Try different terminal emulators in order of preference
-                # Set appropriate geometry/size for best display
+                # Try different terminal emulators
                 for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal x-terminal-emulator xterm; do
                   if command -v $terminal >/dev/null 2>&1; then
                     case $terminal in
                       gnome-terminal)
                         nohup $terminal --geometry=120x40 -- tmux attach -t podman-monitor >/dev/null 2>&1 &
                         ;;
-                      konsole)
-                        nohup $terminal --geometry 120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                        ;;
-                      xfce4-terminal)
-                        nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                        ;;
-                      terminator)
-                        nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
-                        ;;
-                      mate-terminal|x-terminal-emulator)
+                      konsole|xfce4-terminal|terminator|mate-terminal|x-terminal-emulator)
                         nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
                         ;;
                       xterm)
@@ -982,7 +964,7 @@
                   fi
                 done
                 
-                # WSL-specific handling for Windows Terminal with appropriate size
+                # WSL-specific handling
                 if (grep -q Microsoft /proc/version 2>/dev/null); then
                   nohup cmd.exe /c start wt.exe -w 0 new-tab --title "Podman Monitor" bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1 &
                   if [ $? -eq 0 ]; then
@@ -998,7 +980,6 @@
               if ! open_terminal_with_tmux; then
                 echo "Could not automatically open a terminal. Connect with: tmux attach -t podman-monitor"
               fi
-          changed_when: true
           tags: [monitoring, monitoring_create_script]
 
         - name: Run monitoring script
