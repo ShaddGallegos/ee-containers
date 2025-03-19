@@ -178,10 +178,10 @@
           ┌────────────────────────────────────────────────────────────────────┐
           │                     RUN MODE INFORMATION                           │
           ├────────────────────────────────────────────────────────────────────┤
-          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run else "SUBSEQUENT RUN: Using stored configuration" }} │
+          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run|default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
           │                                                                    │
           │ User: {{ actual_user }}                                            │
-          │ Credentials: {{ "New" if first_run else "Loaded from file" }}      │
+          │ Credentials: {{ "New" if first_run|default(false) else "Loaded from file" }}      │
           └────────────────────────────────────────────────────────────────────┘
       tags: [always]
 
@@ -411,6 +411,7 @@
           loop_control:
             label: "{{ item }}"
           when: rhel_version == '8' and build_rhel8 | bool and is_root
+          tags: [setup, system_config, repositories, rhel8_repos]
           
         - name: Enable RHEL 9 repositories
           ansible.builtin.command:
@@ -426,6 +427,7 @@
           loop_control:
             label: "{{ item }}"
           when: rhel_version == '9' and build_rhel9 | bool and is_root
+          tags: [setup, system_config, repositories, rhel9_repos]
           
         - name: Check enabled repositories
           ansible.builtin.command:
@@ -433,6 +435,7 @@
           register: enabled_repos
           changed_when: false
           failed_when: false
+          tags: [setup, system_config, repositories, list_repos]
           
         - name: Display enabled repositories
           ansible.builtin.debug:
@@ -444,11 +447,14 @@
               {% endif %}
               {% endfor %}
           when: enabled_repos.rc == 0
+          tags: [setup, system_config, repositories, show_repos]
       rescue:
         - name: Handle repository configuration failure
           ansible.builtin.debug:
             msg: "Warning: Failed to enable some repositories. Continuing with available repositories."
-    
+          tags: [setup, system_config, repositories, error_handling]
+      tags: [setup, system_config, repositories]
+
     #
     # SECTION 3: DNS and Network Setup
     #
@@ -700,61 +706,81 @@
           failed_when: false
           loop_control:
             label: "{{ item }}"
+          tags: [setup, images, check_images]
 
         - name: Display missing images to pull
           ansible.builtin.set_fact:
             missing_images: "{{ image_check_results.results | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+          tags: [setup, images, identify_missing]
 
-        - name: Pull missing container images
-          ansible.builtin.command:
-            cmd: "podman pull {{ item }}"
-          environment: "{{ podman_env }}"
-          loop: "{{ missing_images }}"
-          register: pull_results
-          changed_when: pull_results.rc == 0
-          failed_when: false
-          retries: 3
-          delay: 5
-          until: pull_results is succeeded
-          loop_control:
-            label: "{{ item }}"
-            pause: 1.0
-          when: missing_images | length > 0
-          tags: [setup, images, pull_images]
-
-        - name: Process image pull results
-          ansible.builtin.set_fact:
-            successful_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | map(attribute='item') | list }}"
-            failed_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
-          when: missing_images | length > 0
-
-        - name: Summarize image pull results
+        - name: Show missing image count
           ansible.builtin.debug:
-            msg: |
-              Successfully pulled images:
-              {% for image in successful_pulls | default([]) %}
-              - {{ image }}
-              {% endfor %}
-              
-              Failed to pull images:
-              {% for image in failed_pulls | default([]) %}
-              - {{ image }}
-              {% endfor %}
-          when: missing_images | length > 0
+            msg: "Found {{ missing_images | length }} images that need to be pulled"
+          tags: [setup, images, count_missing]
 
-        - name: Fail if any required images could not be pulled
-          ansible.builtin.fail:
-            msg: |
-              CRITICAL ERROR: Failed to pull the following required images:
-              {% for image in failed_pulls | default([]) %}
-              - {{ image }}
-              {% endfor %}
-              
-              These images are required for execution environment building.
-              Please check your network connection, registry authentication,
-              and ensure these images are accessible.
-          when: failed_pulls is defined and failed_pulls | length > 0
-          
+        # Skip subsequent tasks if no images are missing
+        - name: Skip message when no images need to be pulled
+          ansible.builtin.debug:
+            msg: "All required images already present, skipping pull operations"
+          when: missing_images | length == 0
+          tags: [setup, images, skip_message]
+
+        # Only run these tasks when images need to be pulled
+        - name: Handle missing images
+          when: missing_images | length > 0
+          block:
+            - name: Pull missing container images
+              ansible.builtin.command:
+                cmd: "podman pull {{ item }}"
+              environment: "{{ podman_env }}"
+              loop: "{{ missing_images }}"
+              register: pull_results
+              changed_when: pull_results.rc == 0
+              failed_when: false
+              retries: 3
+              delay: 5
+              until: pull_results is succeeded
+              loop_control:
+                label: "{{ item }}"
+                pause: 1.0
+              tags: [setup, images, pull_images]
+
+            - name: Process image pull results
+              ansible.builtin.set_fact:
+                successful_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | map(attribute='item') | list }}"
+                failed_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+              tags: [setup, images, process_results]
+
+            - name: Summarize image pull results
+              ansible.builtin.debug:
+                msg: |
+                  Image Pull Summary:
+                  ───────────────────────────
+                  Successfully pulled images:
+                  {% for image in successful_pulls | default([]) %}
+                  - {{ image }}
+                  {% endfor %}
+                  
+                  Failed to pull images:
+                  {% for image in failed_pulls | default([]) %}
+                  - {{ image }}
+                  {% endfor %}
+              tags: [setup, images, summarize]
+
+            - name: Fail if any required images could not be pulled
+              ansible.builtin.fail:
+                msg: |
+                  CRITICAL ERROR: Failed to pull the following required images:
+                  {% for image in failed_pulls | default([]) %}
+                  - {{ image }}
+                  {% endfor %}
+                  
+                  These images are required for execution environment building.
+                  Please check your network connection, registry authentication,
+                  and ensure these images are accessible.
+              when: failed_pulls is defined and failed_pulls | length > 0
+              tags: [setup, images, validation]
+          tags: [setup, images, pull_process]
       rescue:
         - name: Critical failure in image pulling
           ansible.builtin.fail:
@@ -766,6 +792,7 @@
               1. Registry authentication is working (podman login)
               2. Network connectivity to container registries
               3. The required images exist and are accessible
+      tags: [setup, images]
 
     #
     # SECTION 8: Dependencies Management
@@ -867,7 +894,7 @@
             mode: '0755'
             content: |
               #!/bin/bash
-              # Simple monitoring script for podman with auto-popup terminal
+              # Enhanced monitoring script for podman with auto-popup terminal and title screen
 
               # Kill any existing session
               tmux kill-session -t podman-monitor 2>/dev/null || true
@@ -875,8 +902,13 @@
               # Create the basic session
               tmux new-session -d -s podman-monitor
               
-              # Configure the session
+              # Configure the session with proper formatting
               tmux set -g status-style bg=black,fg=white
+              tmux set -g default-terminal "screen-256color"
+              tmux set -g terminal-overrides ",xterm-256color:Tc"
+              
+              # Set larger history limit for better scrollback
+              tmux set -g history-limit 10000
               
               # Split into 3 panes
               tmux split-window -v -p 30
@@ -884,13 +916,31 @@
               
               # Put commands in each pane
               tmux select-pane -t 0
-              tmux send-keys "echo '=== BUILD OUTPUT ===' && echo 'Waiting for builds to start...'" C-m
+              
+              # Clear screen and display tmux_header.txt as main title
+              tmux send-keys "clear" C-m
+              
+              # Display the header file directly in the main pane
+              if [ -f "{{ playbook_dir }}/tmux_header.txt" ]; then
+                # Display the header with proper coloring
+                tmux send-keys "cat {{ playbook_dir }}/tmux_header.txt" C-m
+                # Add a separator line
+                tmux send-keys "echo ''" C-m
+                # Add the waiting message beneath it
+                tmux send-keys "echo -e '\e[1;36mWaiting for builds to start...\e[0m'" C-m
+              else
+                # Fallback if header file isn't found
+                tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m
+                tmux send-keys "echo 'Waiting for builds to start...'" C-m
+              fi
 
               tmux select-pane -t 1
-              tmux send-keys "echo '=== CONTAINERS ===' && watch -n 2 'podman ps'" C-m
+              tmux send-keys "printf '\e[1;33m%s\e[0m\n' '=== CONTAINERS ==='" C-m
+              tmux send-keys "watch -n 2 'podman ps'" C-m
               
               tmux select-pane -t 2
-              tmux send-keys "echo '=== IMAGES ===' && watch -n 5 'podman image ls'" C-m
+              tmux send-keys "printf '\e[1;32m%s\e[0m\n' '=== IMAGES ==='" C-m
+              tmux send-keys "watch -n 5 'podman image ls'" C-m
               
               # Return to main pane
               tmux select-pane -t 0
@@ -904,14 +954,27 @@
                 fi
                 
                 # Try different terminal emulators in order of preference
+                # Set appropriate geometry/size for best display
                 for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal x-terminal-emulator xterm; do
                   if command -v $terminal >/dev/null 2>&1; then
                     case $terminal in
                       gnome-terminal)
-                        nohup $terminal -- tmux attach -t podman-monitor >/dev/null 2>&1 &
+                        nohup $terminal --geometry=120x40 -- tmux attach -t podman-monitor >/dev/null 2>&1 &
                         ;;
-                      konsole|xfce4-terminal|terminator|mate-terminal|x-terminal-emulator|xterm)
-                        nohup $terminal -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                      konsole)
+                        nohup $terminal --geometry 120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                        ;;
+                      xfce4-terminal)
+                        nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                        ;;
+                      terminator)
+                        nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                        ;;
+                      mate-terminal|x-terminal-emulator)
+                        nohup $terminal --geometry=120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                        ;;
+                      xterm)
+                        nohup $terminal -geometry 120x40 -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
                         ;;
                     esac
                     echo "Opened monitoring in $terminal"
@@ -919,9 +982,9 @@
                   fi
                 done
                 
-                # WSL-specific handling for Windows Terminal
+                # WSL-specific handling for Windows Terminal with appropriate size
                 if (grep -q Microsoft /proc/version 2>/dev/null); then
-                  nohup cmd.exe /c start wt.exe bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                  nohup cmd.exe /c start wt.exe -w 0 new-tab --title "Podman Monitor" bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1 &
                   if [ $? -eq 0 ]; then
                     echo "Opened monitoring in Windows Terminal"
                     return 0
@@ -977,6 +1040,7 @@
           include_tasks: tasks/build_environment.yml
           vars:
             current_env: "{{ item }}"  # Set current_env to the environment name
+            environment_dir: "{{ work_dir }}/environments/{{ item }}"  # Add this missing variable
           loop: "{{ selected_environments }}"
           when: >
             (build_rhel8 and 'rhel8' in item) or
