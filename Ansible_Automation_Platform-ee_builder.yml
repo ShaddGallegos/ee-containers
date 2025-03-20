@@ -10,12 +10,12 @@
   tasks:
     # Clear screen as the very first action
     - name: Clear screen at playbook start
-      ansible.builtin.shell: clear
+      ansible.builtin.shell: reset
       changed_when: false
       tags: [always]
       
-    # Create basic ansible.cfg immediately as the first functional task
-    - name: Create initial basic ansible.cfg file
+    # Create static ansible.cfg before any template processing
+    - name: Create static ansible.cfg file for initial setup
       ansible.builtin.shell: |
         cat > ansible.cfg << 'EOF'
         [defaults]
@@ -40,7 +40,7 @@
         EOF
       args:
         chdir: "{{ playbook_dir }}"
-        creates: "{{ playbook_dir }}/ansible.cfg"
+        creates: "ansible.cfg"
       changed_when: true
       tags: [always]
 
@@ -360,6 +360,17 @@
           PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
       tags: [setup, env_config, podman_warnings]
       
+    - name: Check if Podman warning suppression is already in environment files
+      ansible.builtin.shell: |
+        grep -q "PODMAN_IGNORE_CGROUPSV1_WARNING=1" ~/.bashrc || 
+        grep -q "PODMAN_IGNORE_CGROUPSV1_WARNING=1" /etc/profile || 
+        grep -q "PODMAN_IGNORE_CGROUPSV1_WARNING=1" /etc/environment || 
+        grep -q "PODMAN_IGNORE_CGROUPSV1_WARNING=1" /etc/profile.d/podman.sh
+      register: podman_warning_check
+      changed_when: false
+      failed_when: false
+      tags: [setup, env_config, podman_warnings]
+      
     - name: Add Podman warning suppression to environment files
       ansible.builtin.lineinfile:
         path: "{{ item }}"
@@ -370,7 +381,7 @@
       with_items:
         - /etc/environment
         - /etc/profile.d/podman.sh
-      when: is_root
+      when: is_root and podman_warning_check.rc != 0
       tags: [setup, env_config, podman_env_files]
       
     - name: Create systemd environment override for podman
@@ -473,10 +484,10 @@
           ansible.builtin.set_fact:
             repos_to_enable: "{{ (rhel_version == '8') | ternary(rhel8_repos, rhel9_repos) }}"
 
-        - name: Enable only repositories that exist
+        - name: Enable only repositories that are not enabled yet
           ansible.builtin.command:
             cmd: "subscription-manager repos --enable={{ item }}"
-          loop: "{{ repos_to_enable | intersect(available_repos.stdout_lines) }}"
+          loop: "{{ repos_to_enable }}"
           register: repo_enable_result
           changed_when: repo_enable_result.rc == 0
           failed_when: false
@@ -735,19 +746,26 @@
             extra_args: "--user"
           when: "'not found' in ansible_builder_check.stdout"
           
+        - name: Ensure _build/configs directory exists
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/_build/configs"
+            state: directory
+            mode: '0755'
+          tags: [setup, builder_config]
+
         - name: Create ansible.cfg in build context
           ansible.builtin.template:
             src: templates/ansible.cfg.j2
-            dest: "{{ work_dir }}/_build/configs/ansible.cfg"
+            dest: "{{ playbook_dir }}/_build/configs/ansible.cfg"
             mode: '0644'
           vars:
-            automation_hub_token: "{{ automation_hub_token | default('') }}"
+            automation_hub_token_value: "{{ automation_hub_token | default('') }}"
             current_user: "{{ ansible_user_id | default('root') }}"
           tags: [setup, builder_config, ansible_cfg]
 
         - name: Copy ansible.cfg to system locations
           ansible.builtin.copy:
-            src: "{{ work_dir }}/_build/configs/ansible.cfg"
+            src: "_build/configs/ansible.cfg"
             dest: "{{ item }}"
             mode: '0644'
             remote_src: true
@@ -759,13 +777,13 @@
       block:
         - name: Check if ansible.cfg exists in current directory
           ansible.builtin.stat:
-            path: "{{ playbook_dir }}/ansible.cfg"
+            path: "ansible.cfg"
           register: ansible_cfg_check
           
         - name: Create ansible.cfg from template if it doesn't exist
           ansible.builtin.template:
             src: templates/ansible.cfg.j2
-            dest: "{{ playbook_dir }}/ansible.cfg"
+            dest: "ansible.cfg"
             mode: '0644'
           when: not ansible_cfg_check.stat.exists
           vars:
@@ -773,7 +791,7 @@
             
         - name: Ensure ansible.cfg has correct permissions
           ansible.builtin.file:
-            path: "{{ playbook_dir }}/ansible.cfg"
+            path: "ansible.cfg"
             mode: '0644'
             owner: "{{ actual_user | default(ansible_user_id) }}"
             group: "{{ actual_user | default(ansible_user_id) }}"
@@ -783,19 +801,39 @@
 
     - name: Update ansible.cfg with token information
       block:
+        - name: Set token value for template
+          ansible.builtin.set_fact:
+            token_for_template: "{{ automation_hub_token | default('') }}"
+
         - name: Apply token to ansible.cfg from template
           ansible.builtin.template:
             src: templates/ansible.cfg.j2
-            dest: "{{ playbook_dir }}/ansible.cfg"
+            dest: "ansible.cfg"
             mode: '0644'
-          when: automation_hub_token is defined and automation_hub_token != ""
           vars:
+            automation_hub_token_value: "{{ token_for_template }}"
             current_user: "{{ actual_user | default(ansible_user_id) }}"
             
         - name: Report ansible.cfg update
           ansible.builtin.debug:
             msg: "ansible.cfg has been updated with authentication tokens"
           when: automation_hub_token is defined and automation_hub_token != ""
+      tags: [setup, ansible_config, config_files]
+
+    - name: Update ansible.cfg with token information
+      block:
+        - name: Update ansible.cfg with token
+          ansible.builtin.lineinfile:
+            path: "ansible.cfg"
+            regexp: '^token='
+            insertafter: '^auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token'
+            line: "token={{ automation_hub_token | default('') }}"
+            state: present
+          with_items:
+            - validated
+            - published
+          ignore_errors: true
+      when: automation_hub_token is defined and automation_hub_token != ""
       tags: [setup, ansible_config, config_files]
 
     #
@@ -908,12 +946,12 @@
       block:
         - name: Check if requirements.txt exists
           ansible.builtin.stat:
-            path: "{{ work_dir }}/files/requirements.txt"
+            path: "files/requirements.txt"
           register: requirements_txt
 
         - name: Install Python packages from requirements.txt
           ansible.builtin.pip:
-            requirements: "{{ work_dir }}/files/requirements.txt"
+            requirements: "files/requirements.txt"
             extra_args: "--upgrade"
           when: requirements_txt.stat.exists
           register: pip_install_result
@@ -924,12 +962,12 @@
 
         - name: Check if requirements.yml exists
           ansible.builtin.stat:
-            path: "{{ work_dir }}/files/requirements.yml"
+            path: "files/requirements.yml"
           register: requirements_yml
 
         - name: Install ansible-galaxy collections
           ansible.builtin.command:
-            cmd: ansible-galaxy collection install -r {{ work_dir }}/files/requirements.yml
+            cmd: ansible-galaxy collection install -r files/requirements.yml
           when: requirements_yml.stat.exists
           register: galaxy_install_result
           changed_when: galaxy_install_result.rc == 0
@@ -943,7 +981,7 @@
       block:
         - name: Get all available environments
           ansible.builtin.find:
-            paths: "{{ work_dir }}/environments"
+            paths: "environments"
             file_type: directory
           register: all_environments
           
@@ -1010,7 +1048,6 @@
               tmux new-session -d -s podman-monitor
               
               # Configure the session with proper formatting
-              tmux set -g status-style bg=black,fg=white
               tmux set -g default-terminal "screen-256color"
               tmux set -g terminal-overrides ",xterm-256color:Tc"
               
@@ -1128,7 +1165,7 @@
           include_tasks: tasks/build_environment.yml
           vars:
             current_env: "{{ item }}"  # Set current_env to the environment name
-            environment_dir: "{{ work_dir }}/environments/{{ item }}"  # Add this missing variable
+            environment_dir: "environments/{{ item }}"  # Add this missing variable
           loop: "{{ selected_environments }}"
           when: >
             (build_rhel8 and 'rhel8' in item) or
@@ -1174,13 +1211,13 @@
     #
     - name: Check for existing environments
       ansible.builtin.find:
-        paths: "{{ work_dir }}/environments"
+        paths: "environments"
         file_type: directory
       register: existing_env_dirs
       
     - name: Create sample environment directories with clear RHEL version indicators
       ansible.builtin.file:
-        path: "{{ work_dir }}/environments/{{ item }}"
+        path: "environments/{{ item }}"
         state: directory
         mode: '0755'
       with_items:
@@ -1195,7 +1232,7 @@
       block:
         - name: Get all available environments
           ansible.builtin.find:
-            paths: "{{ work_dir }}/environments"
+            paths: "environments"
             file_type: directory
           register: all_environments
           
@@ -1272,7 +1309,7 @@
           
         - name: Read existing protected_images file if it exists
           ansible.builtin.slurp:
-            src: "{{ playbook_dir }}/protected_images.yml"
+            src: "protected_images.yml"
           register: existing_protected_file
           ignore_errors: true
           
@@ -1288,7 +1325,7 @@
         - name: Update protected_images.yml
           ansible.builtin.template:
             src: templates/protected_images.j2
-            dest: "{{ playbook_dir }}/protected_images.yml"
+            dest: "protected_images.yml"
             mode: '0644'
       tags: [setup, images, protect_images, token_refresh, cron]
 
@@ -1299,7 +1336,7 @@
         minute: "0"
         hour: "4"
         day: "*/14"
-        job: "{{ playbook_dir }}/scripts/refresh_rh_token.sh > /dev/null 2>&1"
+        job: "scripts/refresh_rh_token.sh > /dev/null 2>&1"
       ignore_errors: true
 
     - name: Verify Automation Hub token
@@ -1359,7 +1396,7 @@
         - name: Save valid token to ansible.cfg
           ansible.builtin.template:
             src: templates/ansible.cfg.j2
-            dest: "{{ playbook_dir }}/ansible.cfg"
+            dest: "ansible.cfg"
             mode: '0644'
           when: automation_hub_token is defined and automation_hub_token != ""
       tags: [setup, token_validation]
@@ -1368,13 +1405,13 @@
       block:
         - name: Create token refresh script directory
           ansible.builtin.file:
-            path: "{{ playbook_dir }}/scripts"
+            path: "scripts"
             state: directory
             mode: '0755'
 
         - name: Create token refresh script
           ansible.builtin.template:
-            dest: "{{ playbook_dir }}/scripts/refresh_rh_token.sh"
+            dest: "scripts/refresh_rh_token.sh"
             mode: '0700'
             content: |
               #!/bin/bash
@@ -1443,12 +1480,10 @@
         - name: Create cron job to refresh the token every 2 weeks
           ansible.builtin.cron:
             name: "Refresh Red Hat Automation Hub token"
-            job: "{{ playbook_dir }}/scripts/refresh_rh_token.sh > /dev/null 2>&1"
+            job: "scripts/refresh_rh_token.sh > /dev/null 2>&1"
             minute: "0"
             hour: "4"
             day: "*/14"
             user: "{{ actual_user }}"
             
       tags: [setup, token_refresh, cron]
-
-
