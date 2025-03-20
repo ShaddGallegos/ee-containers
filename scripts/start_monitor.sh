@@ -25,9 +25,9 @@ tmux select-pane -t 0
 tmux send-keys "clear" C-m
 
 # Display the header file directly in the main pane
-if [ -f "/mnt/c/Users/sgallego/Downloads/GIT/ee-containers/tmux_header.txt" ]; then
+if [ -f "tmux_header.txt" ]; then
   # Display the header with proper coloring
-  tmux send-keys "cat /mnt/c/Users/sgallego/Downloads/GIT/ee-containers/tmux_header.txt" C-m
+  tmux send-keys "cat tmux_header.txt" C-m
 else
   # Fallback if header file isn't found
   tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m

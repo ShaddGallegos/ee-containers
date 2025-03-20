@@ -8,6 +8,42 @@
   connection: local
   gather_facts: true
   tasks:
+    # Clear screen as the very first action
+    - name: Clear screen at playbook start
+      ansible.builtin.shell: clear
+      changed_when: false
+      tags: [always]
+      
+    # Create basic ansible.cfg immediately as the first functional task
+    - name: Create initial basic ansible.cfg file
+      ansible.builtin.shell: |
+        cat > ansible.cfg << 'EOF'
+        [defaults]
+        inventory = localhost,
+        ansible_localhost_warning=false
+        ansible_deprecation_warnings=false
+        force_color = True
+
+        [galaxy]
+        server_list = validated, published, galaxy
+
+        [galaxy_server.published]
+        url=https://console.redhat.com/api/automation-hub/content/published/
+        auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+
+        [galaxy_server.validated]
+        url=https://console.redhat.com/api/automation-hub/content/validated/
+        auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+
+        [galaxy_server.galaxy]
+        url=https://galaxy.ansible.com/
+        EOF
+      args:
+        chdir: "{{ playbook_dir }}"
+        creates: "{{ playbook_dir }}/ansible.cfg"
+      changed_when: true
+      tags: [always]
+
     # Improved user detection logic
     - name: Get effective and real user info
       ansible.builtin.shell: |
@@ -296,6 +332,7 @@
       default: "both"
 
   pre_tasks:
+  
     - name: Check root status
       ansible.builtin.command: id -u
       register: user_id
@@ -397,62 +434,56 @@
       
     - name: Enable required RHEL repositories based on version
       block:
-        - name: Enable RHEL 8 repositories
-          ansible.builtin.command:
-            cmd: "subscription-manager repos --enable={{ item }}"
-          loop:
-            - rhel-8-for-x86_64-supplementary-rpms
-            - rhel-8-for-x86_64-appstream-rpms
-            - rhel-8-for-x86_64-baseos-rpms
-            - codeready-builder-for-rhel-8-x86_64-rpms
-          register: repo_enable_rhel8
-          changed_when: repo_enable_rhel8.rc == 0
-          failed_when: false
-          loop_control:
-            label: "{{ item }}"
-          when: rhel_version == '8' and build_rhel8 | bool and is_root
-          tags: [setup, system_config, repositories, rhel8_repos]
-          
-        - name: Enable RHEL 9 repositories
-          ansible.builtin.command:
-            cmd: "subscription-manager repos --enable={{ item }}"
-          loop:
-            - rhel-9-for-x86_64-supplementary-rpms
-            - rhel-9-for-x86_64-appstream-rpms
-            - rhel-9-for-x86_64-baseos-rpms
-            - codeready-builder-for-rhel-9-x86_64-rpms
-          register: repo_enable_rhel9
-          changed_when: repo_enable_rhel9.rc == 0
-          failed_when: false
-          loop_control:
-            label: "{{ item }}"
-          when: rhel_version == '9' and build_rhel9 | bool and is_root
-          tags: [setup, system_config, repositories, rhel9_repos]
-          
-        - name: Check enabled repositories
-          ansible.builtin.command:
-            cmd: "subscription-manager repos --list-enabled"
-          register: enabled_repos
+        - name: Get list of available repositories
+          ansible.builtin.shell: |
+            if command -v subscription-manager >/dev/null 2>&1; then
+              subscription-manager repos --list | grep "Repo ID" | awk '{print $3}'
+            fi
+          register: available_repos
           changed_when: false
-          failed_when: false
-          tags: [setup, system_config, repositories, list_repos]
-          
-        - name: Display enabled repositories
+          ignore_errors: true
+          args:
+            executable: /bin/bash
+
+        - name: Show available repositories
           ansible.builtin.debug:
             msg: |
-              Currently enabled repositories for RHEL {{ rhel_version }}:
-              {% for line in enabled_repos.stdout_lines %}
-              {% if 'Repo ID:' in line %}
-              - {{ line | regex_replace('^Repo ID:\\s+', '') }}
-              {% endif %}
+              Available repositories:
+              {% for repo in available_repos.stdout_lines %}
+              - {{ repo }}
               {% endfor %}
-          when: enabled_repos.rc == 0
-          tags: [setup, system_config, repositories, show_repos]
+          when: available_repos.stdout_lines | length > 0
+
+        - name: Define repository lists by RHEL version
+          ansible.builtin.set_fact:
+            rhel8_repos:
+              - rhel-8-for-x86_64-baseos-rpms
+              - rhel-8-for-x86_64-appstream-rpms
+              - ansible-automation-platform-2.4-for-rhel-8-x86_64-rpms
+              - rhel-8-for-x86_64-supplementary-rpms
+              - codeready-builder-for-rhel-8-x86_64-rpms
+            rhel9_repos:
+              - rhel-9-for-x86_64-baseos-rpms
+              - rhel-9-for-x86_64-appstream-rpms
+              - ansible-automation-platform-2.4-for-rhel-9-x86_64-rpms
+              - rhel-9-for-x86_64-supplementary-rpms
+              - codeready-builder-for-rhel-9-x86_64-rpms
+
+        - name: Select appropriate repositories based on detected RHEL version
+          ansible.builtin.set_fact:
+            repos_to_enable: "{{ (rhel_version == '8') | ternary(rhel8_repos, rhel9_repos) }}"
+
+        - name: Enable only repositories that exist
+          ansible.builtin.command:
+            cmd: "subscription-manager repos --enable={{ item }}"
+          loop: "{{ repos_to_enable | intersect(available_repos.stdout_lines) }}"
+          register: repo_enable_result
+          changed_when: repo_enable_result.rc == 0
+          failed_when: false
       rescue:
         - name: Handle repository configuration failure
           ansible.builtin.debug:
-            msg: "Warning: Failed to enable some repositories. Continuing with available repositories."
-          tags: [setup, system_config, repositories, error_handling]
+            msg: "Warning: Unable to enable repositories. Continuing with available repositories."
       tags: [setup, system_config, repositories]
 
     #
@@ -505,23 +536,56 @@
           changed_when: true
           ignore_errors: true
           
-        - name: Remove entire container configuration
-          ansible.builtin.shell: |
-            # Remove all container storage
-            rm -rf /var/lib/containers/*
-            rm -rf /run/containers/*
-            rm -rf /run/libpod/*
-            rm -rf /run/user/*/containers/*
+        - name: Safely clean container configuration
+          block:
+            - name: Get list of all existing tagged images
+              ansible.builtin.shell: |
+                podman images --format '{{ .Repository }}:{{ .Tag }}' | grep -v "<none>:<none>"
+              register: existing_images
+              changed_when: false
+              
+            - name: Create protected images list
+              ansible.builtin.set_fact:
+                protected_images: "{{ existing_images.stdout_lines | default([]) }}"
+              
+            - name: Display protected images
+              ansible.builtin.debug:
+                msg: |
+                  Protected images that will NOT be removed:
+                  {% for image in protected_images %}
+                  - {{ image }}
+                  {% endfor %}
             
-            # Remove caches and temporary files
-            rm -rf /root/.local/share/containers/*
-            rm -rf /home/*/.local/share/containers/* || true
-            rm -rf /tmp/containers-*
-            rm -rf /tmp/libpod-*
-            
-            # Remove runtime files
-            rm -f /run/libpod/runc*
-          changed_when: true
+            - name: Remove dangling containers safely
+              ansible.builtin.shell: |
+                # Only remove containers that are not using protected images
+                for container in $(podman ps -a --format '{{ .ID }}'); do
+                  image=$(podman inspect --format '{{ .Config.Image }}' $container)
+                  if echo "$image" | grep -q "<none>" || ! echo "{{ protected_images | join(' ') }}" | grep -q "$image"; then
+                    echo "Removing container $container with image $image"
+                    podman rm -f $container
+                  fi
+                done
+              changed_when: true
+              
+            - name: Remove only dangling images
+              ansible.builtin.shell: |
+                # Remove only <none>:<none> images
+                podman images --filter "dangling=true" --format '{{ .ID }}' | xargs -r podman rmi -f
+              changed_when: true
+              
+            - name: Clean unused volumes and networks only
+              ansible.builtin.shell: |
+                podman volume prune -f
+                podman network prune -f
+              changed_when: true
+              
+            - name: Clean temporary files
+              ansible.builtin.shell: |
+                # Remove only temporary build files
+                rm -rf /tmp/ansible-builder.*
+                rm -rf /tmp/pip-*
+              changed_when: true
           ignore_errors: true
           
         - name: Create basic container configuration files
@@ -689,7 +753,50 @@
             remote_src: true
           with_items:
             - /etc/ansible/ansible.cfg
-            - "{{ playbook_dir }}/ansible.cfg"
+            - "ansible.cfg"
+
+    - name: Ensure ansible.cfg exists in current directory
+      block:
+        - name: Check if ansible.cfg exists in current directory
+          ansible.builtin.stat:
+            path: "{{ playbook_dir }}/ansible.cfg"
+          register: ansible_cfg_check
+          
+        - name: Create ansible.cfg from template if it doesn't exist
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "{{ playbook_dir }}/ansible.cfg"
+            mode: '0644'
+          when: not ansible_cfg_check.stat.exists
+          vars:
+            automation_hub_token: "{{ automation_hub_token | default('') }}"
+            
+        - name: Ensure ansible.cfg has correct permissions
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/ansible.cfg"
+            mode: '0644'
+            owner: "{{ actual_user | default(ansible_user_id) }}"
+            group: "{{ actual_user | default(ansible_user_id) }}"
+          when: actual_user is defined and actual_user != ""
+          failed_when: false
+      tags: [setup, ansible_config, config_files]
+
+    - name: Update ansible.cfg with token information
+      block:
+        - name: Apply token to ansible.cfg from template
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "{{ playbook_dir }}/ansible.cfg"
+            mode: '0644'
+          when: automation_hub_token is defined and automation_hub_token != ""
+          vars:
+            current_user: "{{ actual_user | default(ansible_user_id) }}"
+            
+        - name: Report ansible.cfg update
+          ansible.builtin.debug:
+            msg: "ansible.cfg has been updated with authentication tokens"
+          when: automation_hub_token is defined and automation_hub_token != ""
+      tags: [setup, ansible_config, config_files]
 
     #
     # SECTION 7: Image Management
@@ -747,8 +854,8 @@
 
             - name: Process image pull results
               ansible.builtin.set_fact:
-                successful_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | map(attribute='item') | list }}"
-                failed_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
+                successful_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list }}"
+                failed_pulls: "{{ pull_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'ne', 0) | list }}"
               tags: [setup, images, process_results]
 
             - name: Summarize image pull results
@@ -883,14 +990,14 @@
       block:
         - name: Ensure scripts directory exists
           ansible.builtin.file:
-            path: "{{ playbook_dir }}/scripts"
+            path: "scripts"
             state: directory
             mode: '0755'
           tags: [monitoring, monitoring_dir]
 
         - name: Create monitoring script
           ansible.builtin.copy:
-            dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
+            dest: "scripts/start_monitor.sh"
             mode: '0755'
             content: |
               #!/bin/bash
@@ -920,9 +1027,9 @@
               tmux send-keys "clear" C-m
               
               # Display the header file directly in the main pane
-              if [ -f "{{ playbook_dir }}/tmux_header.txt" ]; then
+              if [ -f "tmux_header.txt" ]; then
                 # Display the header with proper coloring
-                tmux send-keys "cat {{ playbook_dir }}/tmux_header.txt" C-m
+                tmux send-keys "cat tmux_header.txt" C-m
               else
                 # Fallback if header file isn't found
                 tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m
@@ -983,7 +1090,7 @@
           tags: [monitoring, monitoring_create_script]
 
         - name: Run monitoring script
-          ansible.builtin.command: "{{ playbook_dir }}/scripts/start_monitor.sh"
+          ansible.builtin.command: "scripts/start_monitor.sh"
           changed_when: true
           tags: [monitoring, monitoring_start]
 
@@ -1030,6 +1137,35 @@
           loop_control:
             label: "{{ item }}"
           tags: [build, build_process, execute_environment]
+          
+        - name: Fix systemd-python dependency in requirements.txt
+          ansible.builtin.replace:
+            path: "environments/{{ current_env }}/requirements.txt"
+            regexp: '^systemd-python.*$'
+            replace: "# systemd-python was causing build failures - disabled\n# systemd-python; sys_platform == 'linux' and 'linux' in platform_machine"
+          when: "'rhel9' in current_env"
+          ignore_errors: true
+          tags: [build, build_deps]
+          
+        - name: Remove temporary build files
+          ansible.builtin.shell: |
+            # Remove only build-related temporary files
+            rm -rf /tmp/ansible-builder.*
+            rm -rf /tmp/pip-*
+            
+            # Clean up dangling containers from failed build only
+            podman ps -a --filter "name={{ current_env }}" --format "{{.ID}}" | xargs -r podman rm -f
+            
+            # Clean up only dangling images (untagged)
+            podman images --filter "dangling=true" --format "{{.ID}}" | xargs -r podman rmi -f
+            
+            # Don't use podman system prune as it's too aggressive
+            # Instead clean only build-related volumes
+            podman volume ls --filter "label=io.buildah.volume=builder" --format "{{.Name}}" | xargs -r podman volume rm
+            
+            echo "Cleaned up build artifacts for {{ current_env }}"
+          changed_when: true
+          ignore_errors: true
       when: is_root and build_ready | default(false) | bool
       tags: [build]
 
@@ -1102,3 +1238,217 @@
             msg: |
               Final environment list for {{ (build_rhel8 | bool) | ternary('RHEL 8', '') }}{{ (build_rhel8 and build_rhel9) | ternary(' and ', '') }}{{ (build_rhel9 | bool) | ternary('RHEL 9', '') }}:
               {{ environment_paths | map('basename') | list }}
+
+    - name: Build summary report
+      ansible.builtin.debug:
+        msg: |
+          ====================================================
+                         BUILD SUMMARY REPORT
+          ====================================================
+          
+          Total environments processed: {{ selected_environments | length }}
+          
+          {% if failed_environments | default([]) | length > 0 %}
+          FAILED ENVIRONMENTS:
+          {% for env in failed_environments | default([]) %}
+          ✗ {{ env }}
+          {% endfor %}
+          
+          These environments were skipped due to build failures.
+          Check logs in /var/log/ansible/ansible-builder/ for details.
+          {% else %}
+          All builds completed successfully!
+          {% endif %}
+      run_once: true
+      tags: [build, summary]
+
+    - name: Update protected images list
+      block:
+        - name: Get all tagged images
+          ansible.builtin.shell: |
+            podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}' | grep -v "<none>:<none>"
+          register: current_images
+          changed_when: false
+          
+        - name: Read existing protected_images file if it exists
+          ansible.builtin.slurp:
+            src: "{{ playbook_dir }}/protected_images.yml"
+          register: existing_protected_file
+          ignore_errors: true
+          
+        - name: Parse existing protected images
+          ansible.builtin.set_fact:
+            existing_protected: "{{ (existing_protected_file.content | b64decode | from_yaml).protected_images | default([]) }}"
+          when: existing_protected_file is succeeded
+          
+        - name: Combine all protected images
+          ansible.builtin.set_fact:
+            consolidated_images: "{{ (existing_protected | default([])) + current_images.stdout_lines | unique }}"
+          
+        - name: Update protected_images.yml
+          ansible.builtin.template:
+            src: templates/protected_images.j2
+            dest: "{{ playbook_dir }}/protected_images.yml"
+            mode: '0644'
+      tags: [setup, images, protect_images, token_refresh, cron]
+
+    - name: Create cron job to refresh the token every 2 weeks
+      ansible.builtin.cron:
+        name: "Refresh Red Hat Automation Hub token"
+        user: "{{ actual_user }}"
+        minute: "0"
+        hour: "4"
+        day: "*/14"
+        job: "{{ playbook_dir }}/scripts/refresh_rh_token.sh > /dev/null 2>&1"
+      ignore_errors: true
+
+    - name: Verify Automation Hub token
+      block:
+        - name: Test Automation Hub token validity
+          ansible.builtin.uri:
+            url: https://console.redhat.com/api/automation-hub/api/v3/collections/
+            method: GET
+            headers:
+              Authorization: "Bearer {{ automation_hub_token | default('') }}"
+          register: token_check
+          failed_when: false
+          
+        - name: Get new token if current one is invalid
+          block:
+            - name: Display token renewal instructions
+              ansible.builtin.pause:
+                prompt: |
+                  ⚠️  Your Automation Hub token is invalid or has expired!
+                  
+                  Please follow these steps:
+                  1. Go to: https://console.redhat.com/ansible/automation-hub/token
+                  2. Click the blue "Load Token" button
+                  3. Copy the generated offline token
+                  4. Paste it below
+                  
+                  Enter your new token
+              register: new_token_input
+              when: token_check.status is defined and token_check.status != 200
+              
+            - name: Set new token value
+              ansible.builtin.set_fact:
+                automation_hub_token: "{{ new_token_input.user_input }}"
+              when: new_token_input is defined and new_token_input.user_input is defined
+
+            - name: Verify new token
+              ansible.builtin.uri:
+                url: https://console.redhat.com/api/automation-hub/api/v3/collections/
+                method: GET
+                headers:
+                  Authorization: "Bearer {{ automation_hub_token | default('') }}"
+              register: new_token_check
+              failed_when: false
+              when: new_token_input is defined and new_token_input.user_input is defined
+
+            - name: Handle still invalid token
+              ansible.builtin.fail:
+                msg: |
+                  The new token appears to be invalid.
+                  
+                  Please double check:
+                  1. That you copied the entire token string correctly
+                  2. Your network connectivity to console.redhat.com
+                  3. That your Red Hat account has appropriate permissions
+          when: token_check.status is defined and token_check.status != 200
+          
+        - name: Save valid token to ansible.cfg
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "{{ playbook_dir }}/ansible.cfg"
+            mode: '0644'
+          when: automation_hub_token is defined and automation_hub_token != ""
+      tags: [setup, token_validation]
+
+    - name: Create token refresh automation
+      block:
+        - name: Create token refresh script directory
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/scripts"
+            state: directory
+            mode: '0755'
+
+        - name: Create token refresh script
+          ansible.builtin.template:
+            dest: "{{ playbook_dir }}/scripts/refresh_rh_token.sh"
+            mode: '0700'
+            content: |
+              #!/bin/bash
+              
+              # Set up logging
+              LOG_FILE="{{ user_home }}/.ansible/vars/token_refresh.log"
+              CONFIG_PATH="{{ user_home }}/.ansible/vars/config"
+              
+              # Log start time
+              echo "===== Token refresh attempt started at $(date) =====" >> $LOG_FILE
+              
+              # Extract the refresh token from config
+              if [ -f "$CONFIG_PATH" ]; then
+                # Extract refresh token from the config file
+                REFRESH_TOKEN=$(grep "automation_hub_token" "$CONFIG_PATH" | head -1 | cut -d "'" -f 4)
+                
+                # Check if token is available
+                if [ -z "$REFRESH_TOKEN" ]; then
+                  echo "ERROR: Could not find refresh token in $CONFIG_PATH" >> $LOG_FILE
+                  exit 1
+                fi
+                
+                # Attempt to refresh the token
+                echo "Refreshing token..." >> $LOG_FILE
+                RESPONSE=$(curl https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token \
+                  -d grant_type=refresh_token \
+                  -d client_id="cloud-services" \
+                  -d refresh_token="$REFRESH_TOKEN" \
+                  --fail \
+                  --silent \
+                  --show-error 2>&1)
+                
+                # Check result
+                if [ $? -eq 0 ]; then
+                  echo "SUCCESS: Token refresh completed successfully" >> $LOG_FILE
+                  
+                  # Extract and update new token
+                  NEW_TOKEN=$(echo $RESPONSE | jq -r '.refresh_token')
+                  if [ "$NEW_TOKEN" != "null" ] && [ -n "$NEW_TOKEN" ]; then
+                    # Create a backup of the config
+                    cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
+                    
+                    # Replace the token in the config file
+                    sed -i "s|automation_hub_token: '$REFRESH_TOKEN'|automation_hub_token: '$NEW_TOKEN'|g" "$CONFIG_PATH"
+                    echo "Token updated in config file" >> $LOG_FILE
+                  else
+                    echo "WARNING: Response didn't contain a valid refresh token" >> $LOG_FILE
+                  fi
+                else
+                  echo "ERROR: Token refresh failed" >> $LOG_FILE
+                  echo "Response: $RESPONSE" >> $LOG_FILE
+                fi
+              else
+                echo "ERROR: Config file not found at $CONFIG_PATH" >> $LOG_FILE
+              fi
+              
+              echo "===== Token refresh attempt completed at $(date) =====" >> $LOG_FILE
+              echo "" >> $LOG_FILE
+
+        - name: Install jq for JSON parsing
+          ansible.builtin.package:
+            name: jq
+            state: present
+          ignore_errors: true
+
+        - name: Create cron job to refresh the token every 2 weeks
+          ansible.builtin.cron:
+            name: "Refresh Red Hat Automation Hub token"
+            job: "{{ playbook_dir }}/scripts/refresh_rh_token.sh > /dev/null 2>&1"
+            minute: "0"
+            hour: "4"
+            day: "*/14"
+            user: "{{ actual_user }}"
+            
+      tags: [setup, token_refresh, cron]
+
+

@@ -15,7 +15,7 @@
 - name: Create ansible.cfg in base directory from template
   ansible.builtin.template:
     src: templates/ansible.cfg.j2
-    dest: "{{ playbook_dir }}/ansible.cfg"
+    dest: "ansible.cfg"
     mode: '0644'
   vars:
     current_usersudo: "{{ lookup('env', 'USER') | default('root') }}"

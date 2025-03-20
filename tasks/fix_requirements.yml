@@ -1,7 +1,7 @@
 ---
 - name: Ensure requirements.yml exists
   ansible.builtin.stat:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    path: "environments/{{ current_env }}/requirements.yml"
   register: req_file
 
 - name: Skip requirements fixes if file doesn't exist
@@ -10,7 +10,7 @@
 
 - name: Check requirements.yml for problematic collections
   ansible.builtin.command:
-    cmd: "grep -l '{{ item.pattern }}' {{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    cmd: "grep -l '{{ item.pattern }}' environments/{{ current_env }}/requirements.yml"
   loop:
     - { pattern: 'infra\\.ansible', name: 'infra.ansible' }
     - { pattern: 'ansible\\.builtin', name: 'ansible.builtin'}
@@ -21,7 +21,7 @@
 
 - name: Fix infra.ansible reference in requirements.yml
   ansible.builtin.replace:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    path: "environments/{{ current_env }}/requirements.yml"
     regexp: '(\s+)- name: infra\.ansible(\s+.*)?'
     replace: '\1- name: infra.ee_utilities\n\1- name: infra.aap_utilities'
   when: collection_checks.results | selectattr('item.name', 'eq', 'infra.ansible') | first | attr('rc') == 0
@@ -29,7 +29,7 @@
 
 - name: Fix ansible.builtin reference in requirements.yml
   ansible.builtin.replace:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    path: "environments/{{ current_env }}/requirements.yml"
     regexp: '(\s+)- name: ansible\.builtin(\s+.*)?'
     replace: '# The following line was removed as ansible.builtin is part of ansible-core and cannot be installed separately'
   when: collection_checks.results | selectattr('item.name', 'eq', 'ansible.builtin') | first | attr('rc') == 0
@@ -37,15 +37,15 @@
 
 - name: Check if cloud.vmware_ops is in conflict with cloud.common
   ansible.builtin.shell: |
-    grep -q 'cloud\\.vmware_ops' "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml" && 
-    grep -q 'cloud\\.common' "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    grep -q 'cloud\\.vmware_ops' "environments/{{ current_env }}/requirements.yml" && 
+    grep -q 'cloud\\.common' "environments/{{ current_env }}/requirements.yml"
   register: vmware_conflict
   changed_when: false
   failed_when: false
 
 - name: Fix cloud.vmware_ops and cloud.common conflict
   ansible.builtin.blockinfile:
-    path: "{{ playbook_dir }}/environments/{{ current_env }}/requirements.yml"
+    path: "environments/{{ current_env }}/requirements.yml"
     marker: "# {mark} ANSIBLE MANAGED BLOCK - VMWARE COLLECTION FIX"
     insertafter: "collections:"
     block: |
