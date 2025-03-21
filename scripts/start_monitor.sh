@@ -8,7 +8,6 @@ tmux kill-session -t podman-monitor 2>/dev/null || true
 tmux new-session -d -s podman-monitor
 
 # Configure the session with proper formatting
-tmux set -g status-style bg=black,fg=white
 tmux set -g default-terminal "screen-256color"
 tmux set -g terminal-overrides ",xterm-256color:Tc"
 

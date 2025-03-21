@@ -445,44 +445,49 @@
       
     - name: Enable required RHEL repositories based on version
       block:
-        - name: Get list of available repositories
-          ansible.builtin.shell: |
-            if command -v subscription-manager >/dev/null 2>&1; then
-              subscription-manager repos --list | grep "Repo ID" | awk '{print $3}'
-            fi
-          register: available_repos
-          changed_when: false
-          ignore_errors: true
-          args:
-            executable: /bin/bash
-
-        - name: Show available repositories
-          ansible.builtin.debug:
-            msg: |
-              Available repositories:
-              {% for repo in available_repos.stdout_lines %}
-              - {{ repo }}
-              {% endfor %}
-          when: available_repos.stdout_lines | length > 0
-
         - name: Define repository lists by RHEL version
           ansible.builtin.set_fact:
-            rhel8_repos:
-              - rhel-8-for-x86_64-baseos-rpms
-              - rhel-8-for-x86_64-appstream-rpms
-              - ansible-automation-platform-2.4-for-rhel-8-x86_64-rpms
-              - rhel-8-for-x86_64-supplementary-rpms
-              - codeready-builder-for-rhel-8-x86_64-rpms
-            rhel9_repos:
-              - rhel-9-for-x86_64-baseos-rpms
-              - rhel-9-for-x86_64-appstream-rpms
-              - ansible-automation-platform-2.4-for-rhel-9-x86_64-rpms
-              - rhel-9-for-x86_64-supplementary-rpms
-              - codeready-builder-for-rhel-9-x86_64-rpms
+            rhel8_repos: >
+              [
+                "rhel-8-for-x86_64-baseos-rpms",
+                "rhel-8-for-x86_64-appstream-rpms",
+                "ansible-automation-platform-2.4-for-rhel-8-x86_64-rpms",
+                "rhel-8-for-x86_64-supplementary-rpms",
+                "codeready-builder-for-rhel-8-x86_64-rpms"
+              ]
+            rhel9_repos: >
+              [
+                "rhel-9-for-x86_64-baseos-rpms",
+                "rhel-9-for-x86_64-appstream-rpms",
+                "ansible-automation-platform-2.4-for-rhel-9-x86_64-rpms",
+                "rhel-9-for-x86_64-supplementary-rpms",
+                "codeready-builder-for-rhel-9-x86_64-rpms"
+              ]
 
         - name: Select appropriate repositories based on detected RHEL version
           ansible.builtin.set_fact:
             repos_to_enable: "{{ (rhel_version == '8') | ternary(rhel8_repos, rhel9_repos) }}"
+        
+        - name: Check enabled status of defined repositories
+          ansible.builtin.shell: |
+            if command -v subscription-manager >/dev/null 2>&1; then
+              subscription-manager repos --list-enabled | grep "Repo ID" | awk '{print $3}'
+            fi
+          register: enabled_repos
+          changed_when: false
+          ignore_errors: true
+          args:
+            executable: /bin/bash
+            
+        - name: Report status of required repositories
+          ansible.builtin.debug:
+            msg: |
+              Status of required repositories:
+              {% set enabled_repos_list = enabled_repos.stdout_lines | default([]) %}
+              {% for repo in repos_to_enable %}
+              - {{ repo }}: {{ "ENABLED" if repo in enabled_repos_list else "NOT ENABLED" }}
+              {% endfor %}
+          when: enabled_repos.stdout_lines | default([]) | length > 0
 
         - name: Enable only repositories that are not enabled yet
           ansible.builtin.command:
@@ -596,6 +601,12 @@
                 # Remove only temporary build files
                 rm -rf /tmp/ansible-builder.*
                 rm -rf /tmp/pip-*
+              changed_when: true
+              
+            - name: Remove images that are not tagged as latest
+              ansible.builtin.shell: |
+                podman images --format '{{.ID}} {{.Tag}}' | 
+                grep -v "latest" | awk '{print $1}' | xargs -r podman rmi
               changed_when: true
           ignore_errors: true
           
@@ -764,14 +775,32 @@
           tags: [setup, builder_config, ansible_cfg]
 
         - name: Copy ansible.cfg to system locations
-          ansible.builtin.copy:
-            src: "_build/configs/ansible.cfg"
-            dest: "{{ item }}"
-            mode: '0644'
-            remote_src: true
-          with_items:
-            - /etc/ansible/ansible.cfg
-            - "ansible.cfg"
+          block:
+            - name: Create destination directory if needed
+              ansible.builtin.file:
+                path: "{{ playbook_dir }}"
+                state: directory
+                mode: '0755'
+              
+            - name: Touch ansible.cfg file to ensure it exists
+              ansible.builtin.file:
+                path: "{{ playbook_dir }}/ansible.cfg"
+                state: touch
+                mode: '0644'
+                
+            - name: Copy ansible.cfg to /etc/ansible
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/_build/configs/ansible.cfg"
+                dest: "/etc/ansible/ansible.cfg"
+                mode: '0644'
+                remote_src: true
+                
+            - name: Copy ansible.cfg to playbook directory
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/_build/configs/ansible.cfg"
+                dest: "{{ playbook_dir }}/ansible.cfg"
+                mode: '0644'
+                remote_src: true
 
     - name: Ensure ansible.cfg exists in current directory
       block:
@@ -835,6 +864,53 @@
           ignore_errors: true
       when: automation_hub_token is defined and automation_hub_token != ""
       tags: [setup, ansible_config, config_files]
+
+    - name: Save valid token to ansible.cfg
+      ansible.builtin.template:
+        src: templates/ansible.cfg.j2
+        dest: "ansible.cfg"
+        mode: '0644'
+      vars:
+        current_user: "{{ actual_user | default(ansible_user_id) }}"
+        automation_hub_token_value: "{{ automation_hub_token | default('') }}"
+      when: automation_hub_token is defined and automation_hub_token != ""
+      tags: [setup, token_validation]
+
+    - name: Fix Copy ansible.cfg to playbook directory
+      block:
+        - name: Create _build/configs directory if it doesn't exist
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/_build/configs"
+            state: directory
+            mode: '0755'
+          
+        - name: Create ansible.cfg in _build/configs directly
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "{{ playbook_dir }}/_build/configs/ansible.cfg"
+            mode: '0644'
+          vars:
+            automation_hub_token_value: "{{ automation_hub_token | default('') }}"
+            current_user: "{{ ansible_user_id | default('root') }}"
+            
+        - name: Create ansible.cfg in playbook directory directly
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "{{ playbook_dir }}/ansible.cfg"
+            mode: '0644'
+          vars:
+            automation_hub_token_value: "{{ automation_hub_token | default('') }}"
+            current_user: "{{ ansible_user_id | default('root') }}"
+            
+        - name: Create ansible.cfg in /etc/ansible directory
+          ansible.builtin.template:
+            src: templates/ansible.cfg.j2
+            dest: "/etc/ansible/ansible.cfg"
+            mode: '0644'
+          vars:
+            automation_hub_token_value: "{{ automation_hub_token | default('') }}"
+            current_user: "{{ ansible_user_id | default('root') }}"
+      ignore_errors: true
 
     #
     # SECTION 7: Image Management
@@ -987,9 +1063,9 @@
           
         - name: Process environments for filtering
           ansible.builtin.set_fact:
-            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | list }}"
-            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | list }}"
-            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | map(attribute='path') | list }}"
+            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
+            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
+            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
             
         - name: Set available environments based on distribution selection
           ansible.builtin.set_fact:
@@ -1008,6 +1084,13 @@
           ansible.builtin.set_fact:
             environment_paths: "{{ available_environments }}"
       when: build_rhel8 is defined or build_rhel9 is defined
+
+    - name: Clean up backup directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      with_items: "{{ all_environments.files | selectattr('path', 'search', '\\.bak$') | list }}"
+      when: cleanup_backups|default(true)
 
     # 
     # Continue with environment selection, monitoring setup, etc.
@@ -1161,12 +1244,20 @@
             label: "{{ item }}"
           tags: [build, build_process, skip_incompatible]
             
+        - name: Filter out backup directories from build list
+          ansible.builtin.set_fact:
+            filtered_selected_environments: "{{ selected_environments | reject('search', '\\.bak$') | list }}"
+          
+        - name: Show filtered build environments
+          ansible.builtin.debug:
+            msg: "Building environments (excluding .bak): {{ filtered_selected_environments | join(', ') }}"
+            
         - name: Build compatible selected environments
           include_tasks: tasks/build_environment.yml
           vars:
-            current_env: "{{ item }}"  # Set current_env to the environment name
-            environment_dir: "environments/{{ item }}"  # Add this missing variable
-          loop: "{{ selected_environments }}"
+            current_env: "{{ item | basename }}"
+            environment_dir: "{{ item }}"
+          loop: "{{ filtered_selected_environments }}"
           when: >
             (build_rhel8 and 'rhel8' in item) or
             (build_rhel9 and 'rhel9' in item) or
@@ -1175,34 +1266,48 @@
             label: "{{ item }}"
           tags: [build, build_process, execute_environment]
           
-        - name: Fix systemd-python dependency in requirements.txt
-          ansible.builtin.replace:
-            path: "environments/{{ current_env }}/requirements.txt"
-            regexp: '^systemd-python.*$'
-            replace: "# systemd-python was causing build failures - disabled\n# systemd-python; sys_platform == 'linux' and 'linux' in platform_machine"
-          when: "'rhel9' in current_env"
-          ignore_errors: true
-          tags: [build, build_deps]
-          
-        - name: Remove temporary build files
-          ansible.builtin.shell: |
-            # Remove only build-related temporary files
-            rm -rf /tmp/ansible-builder.*
-            rm -rf /tmp/pip-*
-            
-            # Clean up dangling containers from failed build only
-            podman ps -a --filter "name={{ current_env }}" --format "{{.ID}}" | xargs -r podman rm -f
-            
-            # Clean up only dangling images (untagged)
-            podman images --filter "dangling=true" --format "{{.ID}}" | xargs -r podman rmi -f
-            
-            # Don't use podman system prune as it's too aggressive
-            # Instead clean only build-related volumes
-            podman volume ls --filter "label=io.buildah.volume=builder" --format "{{.Name}}" | xargs -r podman volume rm
-            
-            echo "Cleaned up build artifacts for {{ current_env }}"
-          changed_when: true
-          ignore_errors: true
+        - name: Ensure all execution environment files have ansible-core dependency
+          ansible.builtin.lineinfile:
+            path: "{{ item }}/execution-environment.yml"
+            regexp: '  ansible_core:'
+            insertafter: '^dependencies:'
+            line: '  ansible_core:'
+            create: yes
+          with_items: "{{ filtered_selected_environments }}"
+          when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+
+        - name: Add version specification for ansible-core
+          ansible.builtin.lineinfile:
+            path: "{{ item }}/execution-environment.yml"
+            regexp: '    package_pip:'
+            insertafter: '  ansible_core:'
+            line: '    package_pip: "ansible-core>=2.13.0"'
+            create: no
+          with_items: "{{ filtered_selected_environments }}"
+          when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+
+        # Keep this section for final cleanup only - NOT between builds
+        - name: Final Cleanup (runs only once after all builds)
+          block:
+            - name: Ensure _build directory structure exists
+              ansible.builtin.file:
+                path: "{{ work_dir }}/context/_build"
+                state: directory
+                mode: '0755'
+              ignore_errors: true
+              tags: [build, build_deps]
+
+            - name: Fix systemd-python dependency in Python package list
+              ansible.builtin.replace:
+                path: "{{ work_dir }}/context/_build/requirements.txt"
+                regexp: '^systemd-python.*$'
+                replace: '# systemd-python disabled due to build issues'
+                backup: true
+              when: 
+                - lookup('ansible.builtin.first_found', 'paths="{{ work_dir }}/context/_build/requirements.txt" errors=ignore') != ""
+              ignore_errors: true
+              tags: [build, build_deps]
+          run_once: true
       when: is_root and build_ready | default(false) | bool
       tags: [build]
 
@@ -1238,7 +1343,7 @@
           
         - name: Display all discovered environments before filtering
           ansible.builtin.debug:
-            msg: |
+            msg: |  
               All available environments before filtering:
               {% for env in all_environments.files %}
               - {{ env.path | basename }}
@@ -1246,9 +1351,9 @@
         
         - name: Process environments for filtering
           ansible.builtin.set_fact:
-            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | list }}"
-            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | list }}"
-            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | map(attribute='path') | list }}"
+            rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
+            rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
+            neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
 
         - name: Display filtered environment lists
           ansible.builtin.debug:
@@ -1377,7 +1482,7 @@
                 url: https://console.redhat.com/api/automation-hub/api/v3/collections/
                 method: GET
                 headers:
-                  Authorization: "Bearer {{ automation_hub_token | default('') }}"
+                  Authorization: "Bearer {{ new_token_input.user_input }}"
               register: new_token_check
               failed_when: false
               when: new_token_input is defined and new_token_input.user_input is defined
@@ -1399,7 +1504,7 @@
             dest: "ansible.cfg"
             mode: '0644'
           when: automation_hub_token is defined and automation_hub_token != ""
-      tags: [setup, token_validation]
+          tags: [setup, token_validation]
 
     - name: Create token refresh automation
       block:
@@ -1485,5 +1590,4 @@
             hour: "4"
             day: "*/14"
             user: "{{ actual_user }}"
-            
       tags: [setup, token_refresh, cron]
