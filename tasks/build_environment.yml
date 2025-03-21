@@ -643,9 +643,9 @@
     msg: "Fixed infra.ansible reference in requirements.yml for {{ current_env }}"
   when: infra_ansible_fixed.changed | default(false)
 
-- name: Update protected images in cleanup.yml 
+- name: Update protected images in protected_images.yml 
   ansible.builtin.blockinfile:
-    path: "tasks/cleanup.yml"
+    path: "tasks/protected_images.yml"
     block: |
       # This list is automatically generated from existing images
       # Images will NOT be deleted unless specifically selected from menu
