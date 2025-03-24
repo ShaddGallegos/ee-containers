@@ -6,11 +6,13 @@
     path: "environments"
     state: directory
     mode: '0755'
+  tags: [setup, directories]
 
 - name: Display environment filter information
   ansible.builtin.debug:
     msg: |
       Distribution filter active: {{ (build_rhel8 | bool) | ternary('RHEL 8', '') }}{{ (build_rhel8 and build_rhel9) | ternary(' and ', '') }}{{ (build_rhel9 | bool) | ternary('RHEL 9', '') }}
+  tags: [display, filters]
 
 - name: Check if environment_paths is defined and not empty
   ansible.builtin.debug:
@@ -28,9 +30,32 @@
     msg: "Found environments: {{ found_environments.files | map(attribute='path') | map('basename') | list }}"
     verbosity: 1
 
-- name: Filter environments based on distribution selection
+- name: Extract environment basenames
   ansible.builtin.set_fact:
-    environment_names: "{% if build_rhel8 and build_rhel9 %}{{ found_environments.files | map(attribute='path') | map('basename') | list }}{% elif build_rhel8 %}{{ found_environments.files | map(attribute='path') | map('basename') | select('search', 'rhel8') | list }}{% elif build_rhel9 %}{{ found_environments.files | map(attribute='path') | map('basename') | select('search', 'rhel9') | list }}{% else %}{{ found_environments.files | map(attribute='path') | map('basename') | list }}{% endif %}"
+    all_environment_names: "{{ found_environments.files | map(attribute='path') | map('basename') | list }}"
+
+- name: Filter RHEL 8 environments
+  ansible.builtin.set_fact:
+    rhel8_environments: "{{ all_environment_names | select('search', 'rhel8') | list }}"
+  when: build_rhel8 | bool
+
+- name: Filter RHEL 9 environments
+  ansible.builtin.set_fact:
+    rhel9_environments: "{{ all_environment_names | select('search', 'rhel9') | list }}"
+  when: build_rhel9 | bool
+
+- name: Set final environment list based on distribution selection
+  ansible.builtin.set_fact:
+    environment_names: >-
+      {% if build_rhel8 and build_rhel9 %}
+      {{ all_environment_names }}
+      {% elif build_rhel8 %}
+      {{ rhel8_environments | default([]) }}
+      {% elif build_rhel9 %}
+      {{ rhel9_environments | default([]) }}
+      {% else %}
+      {{ all_environment_names }}
+      {% endif %}
 
 - name: Show filtered environment names
   ansible.builtin.debug:
@@ -97,8 +122,18 @@
 
 - name: Convert indices to environment names
   ansible.builtin.set_fact:
-    selected_environments: "{{ selected_indices | map('extract', environment_names, 1) | list }}"
-  when: selected_indices | length > 0 and not select_all | bool and not quit_selection | bool
+    selected_environments: "{{ [] }}"
+
+- name: Add each selected environment by index
+  ansible.builtin.set_fact:
+    selected_environments: "{{ selected_environments + [environment_names[item-1]] }}"
+  loop: "{{ selected_indices }}"
+  when: 
+    - selected_indices | length > 0 
+    - not select_all | bool 
+    - not quit_selection | bool
+    - item >= 1
+    - item <= environment_names | length
 
 - name: Set empty selection when nothing valid was entered or quit selected
   ansible.builtin.set_fact:
@@ -109,10 +144,14 @@
   ansible.builtin.debug:
     msg: |
       Selected environments for building: 
-      {% if selected_environments | length > 0 %}
       {% for env in selected_environments %}
       - {{ env }}
       {% endfor %}
-      {% else %}
-      No environments selected for building.
-      {% endif %}
+  when: selected_environments | length > 0
+  tags: [display, selection]
+
+- name: Report no environments selected
+  ansible.builtin.debug:
+    msg: "No environments selected for building."
+  when: selected_environments | length == 0
+  tags: [display, selection]

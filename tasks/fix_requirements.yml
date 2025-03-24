@@ -8,23 +8,26 @@
   ansible.builtin.meta: end_play
   when: not req_file.stat.exists
 
-- name: Check requirements.yml for problematic collections
-  ansible.builtin.command:
-    cmd: "grep -l '{{ item.pattern }}' environments/{{ current_env }}/requirements.yml"
-  loop:
-    - { pattern: 'infra\\.ansible', name: 'infra.ansible' }
-    - { pattern: 'ansible\\.builtin', name: 'ansible.builtin'}
-  changed_when: false
-  failed_when: false
-  loop_control:
-    label: "{{ item.name }}"
+- name: Read requirements.yml content
+  ansible.builtin.slurp:
+    src: "environments/{{ current_env }}/requirements.yml"
+  register: requirements_content
+  when: req_file.stat.exists
+
+- name: Check for problematic collections
+  ansible.builtin.set_fact:
+    infra_ansible_exists: "{{ (requirements_content['content'] | b64decode) | regex_search('\\s+-\\s+name:\\s+infra\\.ansible\\s*') is not none }}"
+    ansible_builtin_exists: "{{ (requirements_content['content'] | b64decode) | regex_search('\\s+-\\s+name:\\s+ansible\\.builtin\\s*') is not none }}"
+    vmware_ops_exists: "{{ (requirements_content['content'] | b64decode) | regex_search('\\s+-\\s+name:\\s+cloud\\.vmware_ops\\s*') is not none }}"
+    cloud_common_exists: "{{ (requirements_content['content'] | b64decode) | regex_search('\\s+-\\s+name:\\s+cloud\\.common\\s*') is not none }}"
+  when: req_file.stat.exists
 
 - name: Fix infra.ansible reference in requirements.yml
   ansible.builtin.replace:
     path: "environments/{{ current_env }}/requirements.yml"
     regexp: '(\s+)- name: infra\.ansible(\s+.*)?'
     replace: '\1- name: infra.ee_utilities\n\1- name: infra.aap_utilities'
-  when: collection_checks.results | selectattr('item.name', 'eq', 'infra.ansible') | first | attr('rc') == 0
+  when: infra_ansible_exists | bool
   register: infra_ansible_fixed
 
 - name: Fix ansible.builtin reference in requirements.yml
@@ -32,16 +35,12 @@
     path: "environments/{{ current_env }}/requirements.yml"
     regexp: '(\s+)- name: ansible\.builtin(\s+.*)?'
     replace: '# The following line was removed as ansible.builtin is part of ansible-core and cannot be installed separately'
-  when: collection_checks.results | selectattr('item.name', 'eq', 'ansible.builtin') | first | attr('rc') == 0
+  when: ansible_builtin_exists | bool
   register: ansible_builtin_fixed
 
-- name: Check if cloud.vmware_ops is in conflict with cloud.common
-  ansible.builtin.shell: |
-    grep -q 'cloud\\.vmware_ops' "environments/{{ current_env }}/requirements.yml" && 
-    grep -q 'cloud\\.common' "environments/{{ current_env }}/requirements.yml"
-  register: vmware_conflict
-  changed_when: false
-  failed_when: false
+- name: Set VMware conflict status
+  ansible.builtin.set_fact:
+    vmware_conflict_exists: "{{ vmware_ops_exists and cloud_common_exists }}"
 
 - name: Fix cloud.vmware_ops and cloud.common conflict
   ansible.builtin.blockinfile:
@@ -54,7 +53,7 @@
       #   version: ">=0.3.0"
       - name: cloud.common
         version: ">=2.0.0,<3.0.0"
-  when: vmware_conflict.rc == 0
+  when: vmware_conflict_exists | bool
   register: vmware_fixed
 
 - name: Display collection fixes

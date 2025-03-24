@@ -26,7 +26,7 @@
         ] + (existing_image_list | default([]))
       }}
 
-- name: Update protected images list with any new entries
+- name: Update consolidated images list
   ansible.builtin.set_fact:
     consolidated_images: "{{ ((protected_images | default([])) + (selected_environments | default([])) + (required_images | default([])) + (existing_image_list | default([]))) | unique | sort }}"
 
@@ -38,47 +38,60 @@
   when: update_protected_list | default(false) | bool
 
 - name: Clean up unprotected images only when specifically selected
-  block:
+  ansible.builtin.block:
     - name: Begin cleanup of unprotected images
       ansible.builtin.debug:
         msg: "Starting cleanup of unprotected images"
       when: cleanup_all | default(false) | bool
 
-    - name: Clean up unprotected images
-      ansible.builtin.shell: |
-        images_to_check=$(podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}' | grep -v "<none>:<none>")
-        images_to_remove=""
-        for image in $images_to_check; do
-          is_protected=false
-          {% for protected in consolidated_images | default([]) %}
-          if [[ "$image" == "{{ protected }}" ]]; then
-            is_protected=true
-            break
-          fi
-          {% endfor %}
-          if [[ "$is_protected" == "false" ]]; then
-            images_to_remove="$images_to_remove $image"
-          fi
-        done
-        if [[ -n "$images_to_remove" ]]; then
-          echo "Would remove these unprotected images: $images_to_remove"
-          # Only actually remove if CONFIRM_CLEANUP is set
-          if [[ "${CONFIRM_CLEANUP:-no}" == "yes" ]]; then
-            podman rmi -f $images_to_remove
-            echo "Removed unprotected images"
-          else
-            echo "Dry run - no images removed. Set CONFIRM_CLEANUP=yes to remove."
-          fi
-        else
-          echo "No unprotected images to remove"
-        fi
-      args:
-        executable: /bin/bash
+    - name: Get list of all container images
+      ansible.builtin.command:
+        cmd: "podman images --format '{% raw %}{{ .Repository }}:{{ .Tag }}{% endraw %}' | grep -v '<none>:<none>'"
+      register: all_images
+      changed_when: false
       when: cleanup_all | default(false) | bool
-      register: cleanup_result
-      changed_when: cleanup_result.stdout is search('Removed')
-      environment:
-        CONFIRM_CLEANUP: "{{ confirm_cleanup | default('no') }}"
+      
+    - name: Identify unprotected images
+      ansible.builtin.set_fact:
+        unprotected_images: "{{ all_images.stdout_lines | default([]) | difference(consolidated_images | default([])) }}"
+      when: cleanup_all | default(false) | bool
+      
+    - name: Show images that would be removed (dry run)
+      ansible.builtin.debug:
+        msg: >
+          Would remove these unprotected images: 
+          {{ unprotected_images | join(', ') if unprotected_images | length > 0 else 'None' }}
+      when: 
+        - cleanup_all | default(false) | bool
+        - unprotected_images | length > 0
+        
+    - name: Remove unprotected images
+      ansible.builtin.command:
+        cmd: "podman rmi -f {{ item }}"
+      with_items: "{{ unprotected_images }}"
+      register: removal_results
+      changed_when: removal_results.rc == 0
+      when:
+        - cleanup_all | default(false) | bool
+        - confirm_cleanup | default('no') == 'yes'
+        - unprotected_images | length > 0
+        
+    - name: Report removal status
+      ansible.builtin.debug:
+        msg: >
+          {{ 'Removed ' + (unprotected_images | length | string) + ' unprotected images' 
+             if confirm_cleanup | default('no') == 'yes' and unprotected_images | length > 0
+             else 'Dry run - no images removed. Set confirm_cleanup=yes to remove.' }}
+      when: 
+        - cleanup_all | default(false) | bool
+        - unprotected_images | length > 0
+        
+    - name: Report no unprotected images
+      ansible.builtin.debug:
+        msg: "No unprotected images to remove"
+      when:
+        - cleanup_all | default(false) | bool
+        - unprotected_images | length == 0
 
 - name: Include protected images from defaults
   ansible.builtin.include_vars:
@@ -88,13 +101,3 @@
 - name: Set protected images variable
   ansible.builtin.set_fact:
     protected_images: "{{ protected_images_var.protected_images }}"
-
-# BEGIN ANSIBLE MANAGED PROTECTED IMAGES
-# This list is automatically generated from existing images
-# Images will NOT be deleted unless specifically selected from menu
-protected_images:
-  - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-  - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
-# END ANSIBLE MANAGED PROTECTED IMAGES

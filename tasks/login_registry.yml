@@ -14,6 +14,15 @@
       - rh_password is defined and rh_password != ''
     fail_msg: "Red Hat registry username (rh_username) and password (rh_password) must be provided"
 
+- name: Ensure containers.podman collection is available
+  ansible.builtin.command:
+    cmd: ansible-galaxy collection install containers.podman
+  register: galaxy_result
+  changed_when: "'Installing' in galaxy_result.stdout"
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
 - name: Log out from any existing sessions
   ansible.builtin.command:
     cmd: "podman logout {{ item }}"
@@ -53,30 +62,29 @@
     echo "{{ rh_password }}" | podman login -u "{{ rh_username }}" --password-stdin "{{ item }}"
   loop: "{{ container_registries }}"
   register: login_result
-#  no_log: true
+  no_log: true
   changed_when: login_result.rc == 0
   failed_when: false  # Don't fail the playbook on login errors
   ignore_errors: true
 
-- name: Check login status
-  ansible.builtin.command:
-    cmd: "podman login --get-login {{ item }}"
+- name: Verify registry login status
+  containers.podman.podman_login_info:
+    registry: "{{ item }}"
   loop: "{{ container_registries }}"
   register: verify_login
-  changed_when: false
   failed_when: false
   ignore_errors: true
 
 - name: Display login status
   ansible.builtin.debug:
-    msg: "Login to {{ item.item }} {{ 'succeeded' if item.rc == 0 else 'failed - continuing anyway' }}"
+    msg: "Login to {{ item.registry }} {{ 'succeeded' if item.logged_in else 'failed - continuing anyway' }}"
   loop: "{{ verify_login.results }}"
   loop_control:
-    label: "{{ item.item }}"
+    label: "{{ item.registry }}"
 
 - name: Count successful logins
   ansible.builtin.set_fact:
-    successful_logins: "{{ verify_login.results | selectattr('rc', 'eq', 0) | list | length }}"
+    successful_logins: "{{ verify_login.results | selectattr('logged_in', 'eq', true) | list | length }}"
     required_registries:
       - "registry.redhat.io"  # The most critical registry for Red Hat images
 
@@ -87,9 +95,7 @@
       Image pulls may fail, but continuing the playbook.
       Please check your Red Hat credentials.
   when: >
-    (verify_login.results | selectattr('item', 'eq', 'registry.redhat.io') | first).rc != 0
-  failed_when: >
-    (verify_login.results | selectattr('item', 'eq', 'registry.redhat.io') | first).rc == 0
+    not (verify_login.results | selectattr('registry', 'eq', 'registry.redhat.io') | first).logged_in
 
 - name: Proceed with warnings
   ansible.builtin.debug:

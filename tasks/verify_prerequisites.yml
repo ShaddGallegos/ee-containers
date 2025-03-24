@@ -3,21 +3,25 @@
   ansible.builtin.uri:
     url: https://google.com
     method: GET
-    register: connectivity_check
-    failed_when: connectivity_check.status != 200  
-    changed_when: false
+  register: connectivity_check
+  failed_when: connectivity_check.status != 200  
+  changed_when: false
+  tags: [connectivity, validation]
         
 - name: Install required packages
   ansible.builtin.package:
     name: "{{ required_packages }}"
     state: latest
-    tags: [setup, packages]
-    ignore_errors: true
+  tags: [setup, packages]
+  ignore_errors: true
+  become: true
       
 - name: Upgrade system packages
-  ansible.builtin.dnf:
-      name: '*'
-      state: latest
+  ansible.builtin.package:
+    name: '*'
+    state: latest
+  become: true
+  tags: [setup, system, upgrade]
 
 - name: Check for required packages
   ansible.builtin.package:
@@ -30,16 +34,24 @@
     state: present
   become: true
   ignore_errors: true
+  tags: [setup, validation, packages]
 
 - name: Verify podman is running
   ansible.builtin.service:
     name: podman
     state: started
   become: true
+  tags: [setup, services, podman]
+  
+- name: Check if buildah is installed
+  ansible.builtin.package_facts:
+    manager: auto
+  tags: [setup, validation, buildah]
 
 - name: Verify buildah is available
-  ansible.builtin.command:
-    cmd: buildah --version
-  changed_when: false
-  register: buildah_check
-  failed_when: buildah_check.rc != 0
+  ansible.builtin.assert:
+    that: "'buildah' in ansible_facts.packages"
+    fail_msg: "Buildah is not installed. Please install buildah before continuing."
+    success_msg: "Buildah is installed and available."
+  tags: [setup, validation, buildah]
+  when: ansible_facts.packages is defined

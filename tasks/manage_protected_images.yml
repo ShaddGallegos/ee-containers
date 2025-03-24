@@ -1,0 +1,21 @@
+---
+- name: Load protected images data
+  ansible.builtin.include_vars:
+    file: vars/protected_images.yml
+
+- name: Add new image to protected list
+  ansible.builtin.set_fact:
+    protected_images: "{{ protected_images | default([]) + [new_image] | unique | sort }}"
+  when: new_image is defined
+
+- name: Remove image from protected list
+  ansible.builtin.set_fact:
+    protected_images: "{{ protected_images | default([]) | difference([remove_image]) | sort }}"
+  when: remove_image is defined
+
+- name: Update protected images list
+  ansible.builtin.template:
+    src: templates/protected_images.j2
+    dest: "{{ playbook_dir }}/vars/protected_images.yml"
+    mode: '0644'
+  when: protected_images is defined and protected_images | length > 0

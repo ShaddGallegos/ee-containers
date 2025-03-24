@@ -16,33 +16,96 @@
       
     # Create static ansible.cfg before any template processing
     - name: Create static ansible.cfg file for initial setup
-      ansible.builtin.shell: |
-        cat > ansible.cfg << 'EOF'
-        [defaults]
-        inventory = localhost,
-        ansible_localhost_warning=false
-        ansible_deprecation_warnings=false
-        force_color = True
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/ansible.cfg"
+        mode: '0644'
+        force: false  # Don't overwrite if exists
+        content: |
+          [defaults]
+          inventory = localhost,
+          ansible_localhost_warning=false
+          ansible_deprecation_warnings=false
+          force_color = True
 
-        [galaxy]
-        server_list = validated, published, galaxy
+          [galaxy]
+          server_list = validated, published, galaxy
 
-        [galaxy_server.published]
-        url=https://console.redhat.com/api/automation-hub/content/published/
-        auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+          [galaxy_server.published]
+          url=https://console.redhat.com/api/automation-hub/content/published/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
 
-        [galaxy_server.validated]
-        url=https://console.redhat.com/api/automation-hub/content/validated/
-        auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+          [galaxy_server.validated]
+          url=https://console.redhat.com/api/automation-hub/content/validated/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
 
-        [galaxy_server.galaxy]
-        url=https://galaxy.ansible.com/
-        EOF
-      args:
-        chdir: "{{ playbook_dir }}"
-        creates: "ansible.cfg"
-      changed_when: true
+          [galaxy_server.galaxy]
+          url=https://galaxy.ansible.com/
       tags: [always]
+
+    - name: Create collections requirements file
+      ansible.builtin.copy:
+        dest: "/tmp/requirements.yml"
+        mode: '0644'
+        content: |
+          ---
+          collections:
+            - name: ansible.utils
+            - name: ansible.posix
+            - name: community.general
+            - name: infra.aap_configuration
+            - name: infra.aap_utilities
+            - name: infra.ah_configuration
+            - name: infra.ansible
+            - name: infra.ansible_collections
+            - name: infra.ansible_rekey_variables
+            - name: infra.eda_configuration
+            - name: infra.ee_ansible_collections
+            - name: infra.ee_collections
+            - name: infra.ee_configuration
+            - name: infra.ee_rekey_variables
+            - name: infra.ee_utilities
+            - name: infra.osbuild
+      tags: [setup, always, collections]
+
+    - name: Create requirements.txt file
+      ansible.builtin.copy:
+        dest: "/tmp/requirements.txt"
+        mode: '0644'
+        content: |
+          ansible-builder>=3.0.0
+          ansible-core>=2.15.0,<2.16
+          ansible-creator>=1.0.0
+          ansible-lint>=24.0.0
+          ansible-navigator>=3.0.0
+          ansible-runner>=2.3.1
+          ansible-sign>=0.1.0
+      tags: [setup, always, collections]
+
+    - name: Create inventory file
+      ansible.builtin.copy:
+        dest: "/tmp/inventory"
+        mode: '0644'
+        content: |
+          [devnode]
+          localhost ansible_connection=localhost
+      tags: [always, setup]
+     
+    - name: Force install community.general collection system-wide
+      ansible.builtin.command:
+        cmd: "sudo ansible-galaxy collection install community.general ansible.posix -p /usr/share/ansible/collections --force"
+      register: galaxy_install
+      changed_when: galaxy_install.rc == 0
+      failed_when: galaxy_install.rc != 0
+
+    - name: Verify community.general collection installation
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection list community.general"
+      register: collection_verify
+      failed_when: collection_verify.rc != 0
+
+    - name: Show installation path
+      ansible.builtin.debug:
+        msg: "Collection installed at: {{ collection_verify.stdout_lines | select('search', 'Path:') | first | default('Unknown location') }}"
 
     # Improved user detection logic
     - name: Get effective and real user info
@@ -70,9 +133,9 @@
     
     - name: Set user facts
       ansible.builtin.set_fact:
-        is_root: "{{ parsed_user_info.EUID == '0' }}"
-        actual_user: "{{ parsed_user_info.SUDO_USER | default(parsed_user_info.USER) }}"
-        user_home: "{{ parsed_user_info.SUDO_HOME | default(parsed_user_info.HOME) }}"
+        is_root: "{{ ansible_user_id == '0' }}"
+        actual_user: "{{ ansible_user_id }}"
+        user_home: "{{ ansible_env.HOME }}"
       tags: [always]
     
     - name: Debug user detection
@@ -197,27 +260,17 @@
                   └────────────────────────────────────────────────────────────────┘
           when: first_run or (stored_credentials is not defined)
           tags: [always]
-    
-    - name: Fail if not running with sudo
-      ansible.builtin.fail:
-        msg: |
-          This playbook must be run as root or with sudo privileges for full functionality.
-          
-          For a full run to build environments, use:
-            sudo ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
-      when: not is_root
-      tags: [always]
-      
+
     - name: Show run mode
       ansible.builtin.debug:
         msg: |
           ┌────────────────────────────────────────────────────────────────────┐
           │                     RUN MODE INFORMATION                           │
           ├────────────────────────────────────────────────────────────────────┤
-          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run|default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
+          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run | default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
           │                                                                    │
-          │ User: {{ actual_user }}                                            │
-          │ Credentials: {{ "New" if first_run|default(false) else "Loaded from file" }}      │
+          │ User: {{ actual_user | default('Unknown') }}                                            │
+          │ Credentials: {{ "New" if first_run | default(false) else "Loaded from file" }}      │
           └────────────────────────────────────────────────────────────────────┘
       tags: [always]
 
@@ -242,7 +295,7 @@
       ansible.builtin.shell: clear
       changed_when: false
       
-    - name: Show title
+    - name: Show ascii title
       ansible.builtin.debug:
         msg: |
           ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -270,6 +323,49 @@
         seconds: 3
         prompt: "Starting Execution Environment Builder..."
       tags: [always]
+
+# New Play: Install required collections
+- name: Install Required Ansible Collections
+  hosts: localhost
+  become: true
+  gather_facts: false
+  tasks:
+      
+    - name: Install required collections system-wide
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection install community.general -p /usr/share/ansible/collections --force"
+      register: galaxy_install
+      failed_when: galaxy_install.rc != 0
+    
+    - name: Verify collection installation
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection list community.general"
+      register: collection_verify
+      failed_when: collection_verify.rc != 0
+      
+    - name: Show installation path
+      ansible.builtin.debug:
+        msg: "Collection installed at: {{ collection_verify.stdout_lines | select('search', 'Path:') | first | default('Unknown location') }}"
+
+    - name: Check if required collections are installed
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection list -p /usr/share/ansible/collections"
+      register: collection_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install required collections system-wide
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection install -r /tmp/requirements.yml -p /usr/share/ansible/collections"
+      register: galaxy_install
+      changed_when: galaxy_install.rc == 0
+      failed_when: galaxy_install.rc != 0
+      when: collection_check.rc != 0 or (force_collection_reinstall | default(false)) | bool
+
+    - name: Check if required collections are installed
+      ansible.builtin.fail:
+        msg: "Required collections not installed. Run: sudo ansible-galaxy collection install community.general ansible.posix -p /usr/share/ansible/collections"
+      when: lookup('ansible.builtin.first_found', '/usr/share/ansible/collections/ansible_collections/community/general', errors='ignore') == ""
 
 # Play 3: Main execution environment building process
 - name: Build Execution Environments for Ansible Automation Platform
@@ -332,17 +428,19 @@
       default: "both"
 
   pre_tasks:
-  
     - name: Check root status
       ansible.builtin.command: id -u
       register: user_id
       changed_when: false
-      tags: [always]
 
     - name: Set root flag
       ansible.builtin.set_fact:
         is_root: "{{ user_id.stdout == '0' }}"
       tags: [always]
+
+    - name: Debug is_root variable
+      ansible.builtin.debug:
+        msg: "is_root is set to: {{ is_root }}"
 
     - name: Warning if running as non-root
       ansible.builtin.debug:
@@ -398,6 +496,16 @@
       ansible.builtin.systemd:
         daemon_reload: true
       when: is_root
+
+    - name: Initialize protected_images variable
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images | default([]) }}"
+      tags: [setup, images, protect_images]
+
+    - name: Ensure protected_images list is unique and sorted
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images | unique | sort }}"
+      tags: [setup, images, protect_images]
     
     #
     # SECTION 1: Distribution Selection
@@ -434,6 +542,39 @@
       ansible.builtin.set_fact:
         required_images: "{{ filtered_images }}"
       when: filtered_images is defined and filtered_images | length > 0
+
+    - name: Update protected images with distribution-specific images
+      block:
+        - name: Add required RHEL8 images to protected list
+          ansible.builtin.set_fact:
+            protected_images: >-
+              {{ 
+                (protected_images | default([])) + 
+                (required_images | select('search', 'rhel8') | list)
+              }}
+          when: build_rhel8 | bool
+          
+        - name: Add required RHEL9 images to protected list
+          ansible.builtin.set_fact:
+            protected_images: >-
+              {{ 
+                (protected_images | default([])) + 
+                (required_images | select('search', 'rhel9') | list)
+              }}
+          when: build_rhel9 | bool
+          
+        - name: Ensure protected_images list is unique and sorted
+          ansible.builtin.set_fact:
+            protected_images: "{{ protected_images | unique | sort }}"
+            
+        - name: Update protected_images.yml after distribution selection
+          ansible.builtin.template:
+            src: templates/protected_images.j2
+            dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+            mode: '0644'
+          vars:
+            consolidated_images: "{{ protected_images }}"
+      tags: [setup, distribution, image_protection]
 
     #
     # SECTION 2: Base System Configuration
@@ -489,13 +630,23 @@
               {% endfor %}
           when: enabled_repos.stdout_lines | default([]) | length > 0
 
-        - name: Enable only repositories that are not enabled yet
-          ansible.builtin.command:
-            cmd: "subscription-manager repos --enable={{ item }}"
-          loop: "{{ repos_to_enable }}"
+        - name: Create list of repositories that need enabling
+          ansible.builtin.set_fact:
+            repos_to_enable_now: "{{ repos_to_enable | difference(enabled_repos.stdout_lines | default([])) }}"
+
+        - name: Show repositories to be enabled
+          ansible.builtin.debug:
+            msg: "Will enable: {{ repos_to_enable_now }}"
+          when: repos_to_enable_now | length > 0
+
+        - name: Enable only repositories that are not already enabled
+          community.general.rhsm_repository:
+            name: "{{ item }}"
+            state: enabled
+          loop: "{{ repos_to_enable_now }}"
           register: repo_enable_result
-          changed_when: repo_enable_result.rc == 0
           failed_when: false
+          when: repos_to_enable_now | length > 0
       rescue:
         - name: Handle repository configuration failure
           ansible.builtin.debug:
@@ -506,8 +657,11 @@
     # SECTION 3: DNS and Network Setup
     #
     - name: Verify DNS resolution
-      ansible.builtin.command:
-        cmd: "nslookup {{ item }}"
+      ansible.builtin.uri:
+        url: "http://{{ item }}"
+        method: HEAD
+        status_code: -1
+        timeout: 5
       loop:
         - github.com
         - cdn-ubi.redhat.com
@@ -645,22 +799,23 @@
           changed_when: true
           ignore_errors: true
           
-        - name: Create container directory structure from scratch
-          ansible.builtin.shell: |
-            # Create essential directories with proper permissions
-            mkdir -p /var/lib/containers/storage/overlay
-            mkdir -p /var/lib/containers/storage/overlay-layers
-            mkdir -p /var/lib/containers/storage/overlay-images
-            mkdir -p /var/lib/containers/storage/vfs
-            mkdir -p /var/lib/containers/storage/vfs-containers
-            mkdir -p /var/lib/containers/storage/vfs-images
-            mkdir -p /var/lib/containers/storage/vfs-layers
-            mkdir -p /run/containers/storage
-            
-            # Set proper ownership
-            chown -R root:root /var/lib/containers
-            chown -R root:root /run/containers
-          changed_when: true
+        - name: Create container directory structure
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+            owner: root
+            group: root
+          loop:
+            - /var/lib/containers/storage/overlay
+            - /var/lib/containers/storage/overlay-layers
+            - /var/lib/containers/storage/overlay-images
+            - /var/lib/containers/storage/vfs
+            - /var/lib/containers/storage/vfs-containers
+            - /var/lib/containers/storage/vfs-images
+            - /var/lib/containers/storage/vfs-layers
+            - /run/containers/storage
+          become: true
           
         - name: Export environment variables to disable warnings
           ansible.builtin.shell: |
@@ -701,18 +856,12 @@
             registry_login_success: false
             registry_login_results: {}
         
-        - name: Login to container registries
+        - name: Login to Podman registry
           ansible.builtin.command:
-            cmd: "podman login --username {{ rh_username }} --password {{ rh_password }} {{ item }}"
-          environment: "{{ podman_env }}"
-          no_log: true
-          register: registry_logins
-          changed_when: registry_logins.rc == 0
-          failed_when: false
+            cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
           loop: "{{ container_registries }}"
-          loop_control:
-            label: "{{ item }}"
-          tags: [setup, registry, registry_login]
+          register: podman_login_results
+          failed_when: podman_login_results.rc != 0
             
         - name: Process registry login results
           ansible.builtin.set_fact:
@@ -720,7 +869,7 @@
               {{ registry_login_success or 
                  (item.item != 'quay.io' and item.rc == 0) }}
             registry_login_results: "{{ registry_login_results | combine({item.item: (item.rc == 0)}) }}"
-          loop: "{{ registry_logins.results }}"
+          loop: "{{ podman_login_results.results }}"
           loop_control:
             label: "{{ item.item }}"
             
@@ -739,6 +888,8 @@
               Authentication to at least one Red Hat registry is required for this playbook to function.
               Please check your Red Hat credentials and network connectivity.
           when: not registry_login_success
+
+
 
     #
     # SECTION 6: Builder Configuration
@@ -789,18 +940,13 @@
                 mode: '0644'
                 
             - name: Copy ansible.cfg to /etc/ansible
-              ansible.builtin.copy:
-                src: "{{ playbook_dir }}/_build/configs/ansible.cfg"
+              ansible.builtin.template:
+                src: templates/ansible.cfg.j2
                 dest: "/etc/ansible/ansible.cfg"
                 mode: '0644'
-                remote_src: true
-                
-            - name: Copy ansible.cfg to playbook directory
-              ansible.builtin.copy:
-                src: "{{ playbook_dir }}/_build/configs/ansible.cfg"
-                dest: "{{ playbook_dir }}/ansible.cfg"
-                mode: '0644'
-                remote_src: true
+              vars:
+                automation_hub_token_value: "{{ automation_hub_token | default('') }}"
+                current_user: "{{ ansible_user_id | default('root') }}"
 
     - name: Ensure ansible.cfg exists in current directory
       block:
@@ -1041,14 +1187,14 @@
             path: "files/requirements.yml"
           register: requirements_yml
 
-        - name: Install ansible-galaxy collections
+        - name: Install required collections system-wide
           ansible.builtin.command:
-            cmd: ansible-galaxy collection install -r files/requirements.yml
-          when: requirements_yml.stat.exists
-          register: galaxy_install_result
-          changed_when: galaxy_install_result.rc == 0
+            cmd: "ansible-galaxy collection install -r /tmp/requirements.yml -p /usr/share/ansible/collections"
+          register: galaxy_install
+          changed_when: galaxy_install.rc == 0
           failed_when: galaxy_install_result.rc != 0
-          ignore_errors: true
+          when: collection_check.rc != 0 or (force_collection_reinstall | default(false)) | bool
+          tags: [always, collections]
 
     # 
     # SECTION 8.5: Environment Selection Filtering
@@ -1082,8 +1228,13 @@
         # Pass the filtered environment list to the environment_menu.yml
         - name: Set environment_paths for menu
           ansible.builtin.set_fact:
-            environment_paths: "{{ available_environments }}"
-      when: build_rhel8 is defined or build_rhel9 is defined
+            environment_paths: >-
+              {{
+                neutral_environments +
+                ((build_rhel8 | bool) | ternary(rhel8_environments, [])) +
+                ((build_rhel9 | bool) | ternary(rhel9_environments, []))
+              }}
+          when: build_rhel8 is defined or build_rhel9 is defined
 
     - name: Clean up backup directories
       ansible.builtin.file:
@@ -1092,9 +1243,70 @@
       with_items: "{{ all_environments.files | selectattr('path', 'search', '\\.bak$') | list }}"
       when: cleanup_backups|default(true)
 
-    # 
-    # Continue with environment selection, monitoring setup, etc.
-    #
+    - name: Display environment selection menu header
+      ansible.builtin.debug:
+        msg: |
+          **************************************************
+          ENVIRONMENT SELECTION MENU
+
+          Selected distribution: RHEL {{ distribution_selection }}
+
+          Available environments:
+          {% for env in environment_paths %}
+          {{ loop.index }}. {{ env | basename }}
+          {% endfor %}
+          **************************************************
+
+    - name: Prompt for environment selection
+      ansible.builtin.pause:
+        prompt: |
+          **************************************************
+          ENVIRONMENT SELECTION MENU
+
+          Selected distribution: RHEL {{ distribution_selection }}
+
+          Available environments:
+          {% for env in environment_paths %}
+          {{ loop.index }}. {{ env | basename }}
+          {% endfor %}
+          **************************************************
+
+          Enter numbers for environments to build (comma-separated, max {{ environment_paths | length }}):
+          Enter 'all' to select all environments
+          Enter 'q' to quit without selecting:
+      register: user_input
+
+    - name: Debug user input
+      ansible.builtin.debug:
+        var: user_input
+
+    - name: Parse user input for environment selection
+      ansible.builtin.set_fact:
+        selected_environments: >-
+          {{
+            environment_paths if user_input.user_input == 'all' else
+            environment_paths | zip(range(1, environment_paths | length + 1)) |
+            selectattr(1, 'in', user_input.user_input.split(',')) |
+            map(attribute=0) | list
+          }}
+      vars:
+        user_input: "{{ user_input.user_input | default('') }}"
+
+    - name: Debug selected environments
+      ansible.builtin.debug:
+        var: selected_environments
+
+    - name: Validate selected environment paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: environment_path_check
+      loop: "{{ selected_environments }}"
+      failed_when: environment_path_check.results | selectattr('stat.exists', 'equalto', false) | list | length > 0
+
+    - name: Debug environment path check results
+      ansible.builtin.debug:
+        var: environment_path_check
+
     - name: Include environment menu tasks
       ansible.builtin.include_tasks: tasks/environment_menu.yml
       register: environment_menu_result
@@ -1104,6 +1316,43 @@
       ansible.builtin.debug:
         msg: "Selected environments to process: {{ selected_environments | join(', ') }}"
       when: selected_environments | default([]) | length > 0
+
+    - name: Debug environment paths
+      ansible.builtin.debug:
+        var: environment_paths
+
+    - name: Debug selected environments
+      ansible.builtin.debug:
+        var: selected_environments
+
+    - name: Debug environment paths
+      ansible.builtin.debug:
+        var: environment_paths
+
+    - name: Debug user input
+      ansible.builtin.debug:
+        var: user_input
+
+    # Add after menu selections
+    - name: Update protected images after menu selections
+      block:
+        - name: Add selected environments to protected list
+          ansible.builtin.set_fact:
+            protected_images: "{{ (protected_images | default([])) + selected_environments | map('basename') | list }}"
+          when: selected_environments is defined and selected_environments | length > 0
+            
+        - name: Ensure protected_images list is unique and sorted
+          ansible.builtin.set_fact:
+            protected_images: "{{ protected_images | unique | sort }}"
+            
+        - name: Update protected_images.yml after menu selections
+          ansible.builtin.template:
+            src: templates/protected_images.j2
+            dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+            mode: '0644'
+          vars:
+            consolidated_images: "{{ protected_images }}"
+      tags: [setup, menu, image_protection]
       
     # SECTION 8: Monitoring Setup
     #
@@ -1142,37 +1391,23 @@
               
               # Put commands in each pane
               tmux select-pane -t 0
-              
-              # Clear screen and display tmux_header.txt as main title
               tmux send-keys "clear" C-m
-              
-              # Display the header file directly in the main pane
-              if [ -f "tmux_header.txt" ]; then
-                # Display the header with proper coloring
-                tmux send-keys "cat tmux_header.txt" C-m
-              else
-                # Fallback if header file isn't found
-                tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m
-                tmux send-keys "echo 'Waiting for builds to start...'" C-m
-              fi
+              tmux send-keys "printf '\e[1;36m%s\e[0m\n' '=== BUILD OUTPUT ==='" C-m
+              tmux send-keys "echo 'Waiting for builds to start...'" C-m
 
-              # Configure second pane
               tmux select-pane -t 1
               tmux send-keys "printf '\e[1;32m%s\e[0m\n' '=== IMAGES ==='" C-m
               tmux send-keys "watch -n .5 'podman images'" C-m
               
-              # Return to main pane
               tmux select-pane -t 0
 
               # Auto-open terminal with tmux session attached
               function open_terminal_with_tmux {
-                # If we're already in tmux, create a new window
                 if [ -n "$TMUX" ]; then
                   tmux new-window "tmux attach -t podman-monitor"
                   return 0
                 fi
                 
-                # Try different terminal emulators
                 for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal x-terminal-emulator xterm; do
                   if command -v $terminal >/dev/null 2>&1; then
                     case $terminal in
@@ -1191,9 +1426,8 @@
                   fi
                 done
                 
-                # WSL-specific handling
                 if (grep -q Microsoft /proc/version 2>/dev/null); then
-                  nohup cmd.exe /c start wt.exe -w 0 new-tab --title "Podman Monitor" bash -c "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                  nohup cmd.exe /c start wt.exe -w 0 new-tab --title "Podman Monitor" bash -c "tmux attach -t podman-monitor" >/dev/null 2>&19 &
                   if [ $? -eq 0 ]; then
                     echo "Opened monitoring in Windows Terminal"
                     return 0
@@ -1203,111 +1437,156 @@
                 return 1
               }
 
-              # Try to open terminal with tmux
               if ! open_terminal_with_tmux; then
                 echo "Could not automatically open a terminal. Connect with: tmux attach -t podman-monitor"
               fi
           tags: [monitoring, monitoring_create_script]
 
         - name: Run monitoring script
-          ansible.builtin.command: "scripts/start_monitor.sh"
+          ansible.builtin.command:
+            cmd: "scripts/start_monitor.sh"
           changed_when: true
           tags: [monitoring, monitoring_start]
 
-        - name: Display monitoring instructions
+        - name: Display monitoring availability message
           ansible.builtin.debug:
             msg: |
-              ┌────────────────────────────────────────────────────────────────┐
-              │                  BUILD MONITORING AVAILABLE                    │
-              ├────────────────────────────────────────────────────────────────┤
-              │ To monitor build progress, run:                                │
-              │   tmux attach -t podman-monitor                                │
-              └────────────────────────────────────────────────────────────────┘
-          tags: [monitoring, monitoring_instructions]
-      tags: [monitoring]
+              ┌────────────────────────────────────────────────────────┐
+              │                  BUILD MONITORING AVAILABLE            │
+              ├────────────────────────────────────────────────────────┤
+              │ To monitor build progress, run:                        │
+              │ tmux attach -t podman-monitor                          │
+              └────────────────────────────────────────────────────────┘
+          tags: [monitoring]
 
-    - name: Set build_ready flag
+    #
+    # SECTION 9: Build execution environments
+    #
+    - name: Set build ready flag
       ansible.builtin.set_fact:
         build_ready: "{{ selected_environments | default([]) | length > 0 }}"
       tags: [build, build_set_ready_flag]
 
-    - name: Build execution environments
+    - name: Skip message if environment is not compatible with selected distributions
+      ansible.builtin.debug:
+        msg: "Skipping environment '{{ item }}' as it's not compatible with selected distributions."
+      loop: "{{ selected_environments | default([]) }}"
+      when: >
+        (not build_rhel8 and 'rhel8' in item) or
+        (not build_rhel9 and 'rhel9' in item)
+      loop_control:
+        label: "{{ item }}"
+      tags: [build, build_process, skip_incompatible]
+
+    - name: Filter out backup directories from build list
+      ansible.builtin.set_fact:
+        filtered_selected_environments: "{{ selected_environments | reject('search', '\\.bak$') | list }}"
+
+    - name: Show filtered build environments
+      ansible.builtin.debug:
+        msg: "Building environments (excluding .bak): {{ filtered_selected_environments | join(', ') }}"
+            
+    - name: Build compatible selected environments
+      include_tasks: tasks/build_environment.yml
+      vars:
+        current_env: "{{ item | basename }}"
+        environment_dir: "{{ item }}"
+      loop: "{{ filtered_selected_environments }}"
+      when: >
+        (build_rhel8 and 'rhel8' in item) or
+        (build_rhel9 and 'rhel9' in item) or
+        ('rhel8' not in item and 'rhel9' not in item)
+      loop_control:
+        label: "{{ item }}"
+      tags: [build, build_process, execute_environment]
+
+    - name: Ensure all execution environment files have ansible-core dependency
+      ansible.builtin.lineinfile:
+        path: "{{ item }}/execution-environment.yml"
+        regexp: '  ansible_core:'
+        insertafter: '^dependencies:'
+        line: '  ansible_core:'
+        create: yes
+      with_items: "{{ filtered_selected_environments }}"
+      when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+
+    - name: Add version specification for ansible-core
+      ansible.builtin.lineinfile:
+        path: "{{ item }}/execution-environment.yml"
+        regexp: '  ansible_core:'
+        insertafter: '  ansible_core:'
+        line: '    package_pip: "ansible-core>=2.13.0"'
+        create: no
+      with_items: "{{ filtered_selected_environments }}"
+      when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+
+    # Keep this section for final cleanup only - NOT between builds
+    - name: Final Cleanup (runs only once after all builds)
       block:
-        - name: Skip message if environment is not compatible with selected distributions
-          ansible.builtin.debug:
-            msg: "Skipping environment '{{ item }}' as it's not compatible with selected distributions."
-          loop: "{{ selected_environments | default([]) }}"
-          when: >
-            (not build_rhel8 and 'rhel8' in item) or
-            (not build_rhel9 and 'rhel9' in item)
-          loop_control:
-            label: "{{ item }}"
-          tags: [build, build_process, skip_incompatible]
-            
-        - name: Filter out backup directories from build list
-          ansible.builtin.set_fact:
-            filtered_selected_environments: "{{ selected_environments | reject('search', '\\.bak$') | list }}"
-          
-        - name: Show filtered build environments
-          ansible.builtin.debug:
-            msg: "Building environments (excluding .bak): {{ filtered_selected_environments | join(', ') }}"
-            
-        - name: Build compatible selected environments
-          include_tasks: tasks/build_environment.yml
-          vars:
-            current_env: "{{ item | basename }}"
-            environment_dir: "{{ item }}"
-          loop: "{{ filtered_selected_environments }}"
-          when: >
-            (build_rhel8 and 'rhel8' in item) or
-            (build_rhel9 and 'rhel9' in item) or
-            ('rhel8' not in item and 'rhel9' not in item)
-          loop_control:
-            label: "{{ item }}"
-          tags: [build, build_process, execute_environment]
-          
-        - name: Ensure all execution environment files have ansible-core dependency
-          ansible.builtin.lineinfile:
-            path: "{{ item }}/execution-environment.yml"
-            regexp: '  ansible_core:'
-            insertafter: '^dependencies:'
-            line: '  ansible_core:'
-            create: yes
-          with_items: "{{ filtered_selected_environments }}"
-          when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+        - name: Ensure _build directory structure exists
+          ansible.builtin.file:
+            path: "{{ work_dir }}/context/_build"
+            state: directory
+            mode: '0755'
+          ignore_errors: true
+          tags: [build, build_deps]
 
-        - name: Add version specification for ansible-core
-          ansible.builtin.lineinfile:
-            path: "{{ item }}/execution-environment.yml"
-            regexp: '    package_pip:'
-            insertafter: '  ansible_core:'
-            line: '    package_pip: "ansible-core>=2.13.0"'
-            create: no
-          with_items: "{{ filtered_selected_environments }}"
-          when: lookup('ansible.builtin.file', '{{ item }}/execution-environment.yml') is defined
+        - name: Fix systemd-python dependency in Python package list
+          ansible.builtin.replace:
+            path: "{{ work_dir }}/context/_build/requirements.txt"
+            regexp: '^systemd-python.*$'
+            replace: '# systemd-python disabled due to build issues'
+            backup: true
+          when: 
+            - lookup('ansible.builtin.first_found', 'paths="{{ work_dir }}/context/_build/requirements.txt" errors=ignore') != ""
+          ignore_errors: true
+          tags: [build, build_deps]
 
-        # Keep this section for final cleanup only - NOT between builds
-        - name: Final Cleanup (runs only once after all builds)
+        - name: Ensure requirements files are properly copied to build context
           block:
-            - name: Ensure _build directory structure exists
+            - name: Create build context directory structure
               ansible.builtin.file:
                 path: "{{ work_dir }}/context/_build"
                 state: directory
                 mode: '0755'
+              
+            - name: Copy requirements.txt from environment directory if it exists
+              ansible.builtin.copy:
+                src: "{{ environment_dir }}/requirements.txt"
+                dest: "{{ work_dir }}/context/_build/requirements.txt"
+                mode: '0644'
               ignore_errors: true
-              tags: [build, build_deps]
-
-            - name: Fix systemd-python dependency in Python package list
-              ansible.builtin.replace:
-                path: "{{ work_dir }}/context/_build/requirements.txt"
-                regexp: '^systemd-python.*$'
-                replace: '# systemd-python disabled due to build issues'
-                backup: true
-              when: 
-                - lookup('ansible.builtin.first_found', 'paths="{{ work_dir }}/context/_build/requirements.txt" errors=ignore') != ""
+              when: lookup('ansible.builtin.first_found', ['{{ environment_dir }}/requirements.txt'], errors='ignore') != ''
+              
+            - name: Copy requirements.yml from environment directory if it exists
+              ansible.builtin.copy:
+                src: "{{ environment_dir }}/requirements.yml"
+                dest: "{{ work_dir }}/context/_build/requirements.yml"
+                mode: '0644'
               ignore_errors: true
-              tags: [build, build_deps]
-          run_once: true
+              when: lookup('ansible.builtin.first_found', ['{{ environment_dir }}/requirements.yml'], errors='ignore') != ''
+              
+            - name: Copy requirements.txt from files directory if environment file doesn't exist
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/files/requirements.txt"
+                dest: "{{ work_dir }}/context/_build/requirements.txt"
+                mode: '0644'
+              ignore_errors: true
+              when: >
+                lookup('ansible.builtin.first_found', ['{{ environment_dir }}/requirements.txt'], errors='ignore') == '' and
+                lookup('ansible.builtin.first_found', ['{{ playbook_dir }}/files/requirements.txt'], errors='ignore') != ''
+              
+            - name: Copy requirements.yml from files directory if environment file doesn't exist
+              ansible.builtin.copy:
+                src: "{{ playbook_dir }}/files/requirements.yml"
+                dest: "{{ work_dir }}/context/_build/requirements.yml"
+                mode: '0644'
+              ignore_errors: true
+              when: >
+                lookup('ansible.builtin.first_found', ['{{ environment_dir }}/requirements.yml'], errors='ignore') == '' and
+                lookup('ansible.builtin.first_found', ['{{ playbook_dir }}/files/requirements.yml'], errors='ignore') != ''
+          tags: [build, build_deps]
+      run_once: true
       when: is_root and build_ready | default(false) | bool
       tags: [build]
 
@@ -1361,7 +1640,7 @@
               RHEL 8 environments: {{ rhel8_environments | map('basename') | list }}
               RHEL 9 environments: {{ rhel9_environments | map('basename') | list }}
               Neutral environments: {{ neutral_environments | map('basename') | list }}
-            
+
         - name: Set available environments based on distribution selection
           ansible.builtin.set_fact:
             available_environments: "{{ 
@@ -1369,6 +1648,9 @@
                 (build_rhel8 | bool) | ternary(rhel8_environments, []) + 
                 (build_rhel9 | bool) | ternary(rhel9_environments, [])
               }}"
+              
+        - name: Set environment_paths for menu
+          ansible.builtin.set_fact:
             environment_paths: "{{ 
                 neutral_environments + 
                 (build_rhel8 | bool) | ternary(rhel8_environments, []) + 
@@ -1387,7 +1669,6 @@
           ====================================================
                          BUILD SUMMARY REPORT
           ====================================================
-          
           Total environments processed: {{ selected_environments | length }}
           
           {% if failed_environments | default([]) | length > 0 %}
@@ -1395,7 +1676,7 @@
           {% for env in failed_environments | default([]) %}
           ✗ {{ env }}
           {% endfor %}
-          
+                    
           These environments were skipped due to build failures.
           Check logs in /var/log/ansible/ansible-builder/ for details.
           {% else %}
@@ -1434,7 +1715,86 @@
             mode: '0644'
       tags: [setup, images, protect_images, token_refresh, cron]
 
-    - name: Create cron job to refresh the token every 2 weeks
+    - name: Create token refresh script
+      ansible.builtin.copy:
+        dest: "scripts/refresh_rh_token.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          # Set variables
+          CONFIG_PATH="{{ user_home }}/.ansible/vars/config"
+          LOG_FILE="{{ user_home }}/.ansible/vars/token_refresh.log"
+
+          # Create log directory if it doesn't exist
+          mkdir -p "$(dirname $LOG_FILE)"
+
+          # Create log entry for this run
+          echo "===== Token refresh attempt started at $(date) =====" >> $LOG_FILE
+          
+          # Check if config file exists
+          if [ ! -f "$CONFIG_PATH" ]; then
+            echo "ERROR: Config file not found at $CONFIG_PATH" >> $LOG_FILE
+            exit 1
+          fi
+
+          # Extract refresh token from config
+          REFRESH_TOKEN=$(grep "automation_hub_token" "$CONFIG_PATH" | cut -d "'" -f 2)
+          
+          if [ -z "$REFRESH_TOKEN" ]; then
+            echo "ERROR: No token found in config file" >> $LOG_FILE
+            exit 1
+          fi
+          
+          # Make token refresh request
+          echo "Making token refresh request..." >> $LOG_FILE
+          RESPONSE=$(curl https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token \
+            -d grant_type=refresh_token \
+            -d client_id="cloud-services" \
+            -d refresh_token="$REFRESH_TOKEN" \
+            --fail \
+            --silent \
+            --show-error 2>&1)
+          
+          # Check result
+          if [ $? -eq 0 ]; then
+            echo "SUCCESS: Token refresh completed successfully" >> $LOG_FILE
+            
+            # Extract and update new token
+            NEW_TOKEN=$(echo $RESPONSE | jq -r '.refresh_token')
+            if [ "$NEW_TOKEN" != "null" ] && [ -n "$NEW_TOKEN" ]; then
+              # Create a backup of the config
+              cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
+              
+              # Replace the token in the config file
+              sed -i "s|automation_hub_token: '$REFRESH_TOKEN'|automation_hub_token: '$NEW_TOKEN'|g" "$CONFIG_PATH"
+              echo "Token updated in config file" >> $LOG_FILE
+            else
+              echo "WARNING: Response didn't contain a valid refresh token" >> $LOG_FILE
+            fi
+          else
+            echo "ERROR: Token refresh failed" >> $LOG_FILE
+            echo "Response: $RESPONSE" >> $LOG_FILE
+          fi
+          
+          echo "===== Token refresh attempt completed at $(date) =====" >> $LOG_FILE
+          echo "" >> $LOG_FILE
+
+    - name: Handle token verification
+      block:
+        - name: Test token with API request
+          ansible.builtin.uri:
+            url: https://console.redhat.com/api/automation-hub/api/v3/collections/
+            method: GET
+            headers:
+              Authorization: "Bearer {{ automation_hub_token | default('') }}"
+          register: token_test
+          failed_when: false
+
+        - name: Display token status
+          ansible.builtin.debug:
+            msg: "Token is {{ token_test.status == 200 | ternary('valid', 'invalid') }}"
+
+    - name: Create cron job to refresh token
       ansible.builtin.cron:
         name: "Refresh Red Hat Automation Hub token"
         user: "{{ actual_user }}"
@@ -1444,150 +1804,136 @@
         job: "scripts/refresh_rh_token.sh > /dev/null 2>&1"
       ignore_errors: true
 
-    - name: Verify Automation Hub token
+    - name: Install jq for JSON parsing
+      ansible.builtin.package:
+        name: jq
+        state: present 
+      ignore_errors: true
+
+    - name: Create cron job to refresh the token every 2 weeks
+      ansible.builtin.cron:
+        name: "Refresh Red Hat Automation Hub token"
+        job: "scripts/refresh_rh_token.sh > /dev/null 2>&1"
+        minute: "0"
+        hour: "4"
+        day: "*/14"
+        user: "{{ actual_user }}"
+      tags: [setup, token_refresh, cron]
+
+    - name: Setup protected images management
       block:
-        - name: Test Automation Hub token validity
-          ansible.builtin.uri:
-            url: https://console.redhat.com/api/automation-hub/api/v3/collections/
-            method: GET
-            headers:
-              Authorization: "Bearer {{ automation_hub_token | default('') }}"
-          register: token_check
-          failed_when: false
-          
-        - name: Get new token if current one is invalid
-          block:
-            - name: Display token renewal instructions
-              ansible.builtin.pause:
-                prompt: |
-                  ⚠️  Your Automation Hub token is invalid or has expired!
-                  
-                  Please follow these steps:
-                  1. Go to: https://console.redhat.com/ansible/automation-hub/token
-                  2. Click the blue "Load Token" button
-                  3. Copy the generated offline token
-                  4. Paste it below
-                  
-                  Enter your new token
-              register: new_token_input
-              when: token_check.status is defined and token_check.status != 200
-              
-            - name: Set new token value
-              ansible.builtin.set_fact:
-                automation_hub_token: "{{ new_token_input.user_input }}"
-              when: new_token_input is defined and new_token_input.user_input is defined
-
-            - name: Verify new token
-              ansible.builtin.uri:
-                url: https://console.redhat.com/api/automation-hub/api/v3/collections/
-                method: GET
-                headers:
-                  Authorization: "Bearer {{ new_token_input.user_input }}"
-              register: new_token_check
-              failed_when: false
-              when: new_token_input is defined and new_token_input.user_input is defined
-
-            - name: Handle still invalid token
-              ansible.builtin.fail:
-                msg: |
-                  The new token appears to be invalid.
-                  
-                  Please double check:
-                  1. That you copied the entire token string correctly
-                  2. Your network connectivity to console.redhat.com
-                  3. That your Red Hat account has appropriate permissions
-          when: token_check.status is defined and token_check.status != 200
-          
-        - name: Save valid token to ansible.cfg
-          ansible.builtin.template:
-            src: templates/ansible.cfg.j2
-            dest: "ansible.cfg"
-            mode: '0644'
-          when: automation_hub_token is defined and automation_hub_token != ""
-          tags: [setup, token_validation]
-
-    - name: Create token refresh automation
-      block:
-        - name: Create token refresh script directory
+        - name: Ensure tasks directory exists
           ansible.builtin.file:
-            path: "scripts"
+            path: "{{ playbook_dir }}/tasks"
+            state: directory
+            mode: '0755'
+            
+        - name: Initialize protected_images list management
+          ansible.builtin.set_fact:
+            protected_images: "{{ protected_images | default([]) }}"
+            
+        - name: Add base required images to protected list
+          ansible.builtin.set_fact:
+            protected_images: >-
+              {{ 
+                protected_images +
+                [
+                  'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest',
+                  'registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest'
+                ]
+              }}
+
+    - name: Update protected_images.yml
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+        mode: '0644'
+      vars:
+        consolidated_images: "{{ protected_images | unique | sort }}"
+
+    - name: Clean dangling images while preserving protected images
+      block:
+        - name: Get list of all images
+          ansible.builtin.shell: podman images --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+          register: all_images_info
+          changed_when: false
+
+        - name: Parse image information
+          ansible.builtin.set_fact:
+            images: "{{ all_images_info.stdout_lines | map('split', ' ') | map('list') | list }}"
+
+        - name: Display parsed images
+          ansible.builtin.debug:
+            msg: |
+              Parsed images:
+              {% for image in images %}
+              - Repository: {{ image[0] }}
+                Tag: {{ image[1] }}
+                ID: {{ image[2] }}
+              {% endfor %}
+
+        - name: Extract protected image IDs
+          ansible.builtin.set_fact:
+            protected_image_ids: "{{ all_images_info.stdout_lines | map('split', ' ') | selectattr(0, 'in', protected_images) | map('last') | list }}"
+          
+        - name: Find dangling images
+          ansible.builtin.set_fact:
+            dangling_image_ids: "{{ all_images_info.images | 
+                                 selectattr('RepoTags', 'defined') | 
+                                 selectattr('RepoTags', 'equalto', ['<none>:<none>']) |
+                                 map(attribute='Id') | list }}"
+          
+        - name: Remove unprotected dangling images
+          ansible.builtin.shell: |
+            for image in {{ dangling_image_ids | difference(protected_image_ids) | join(' ') }}; do
+              podman rmi -f $image || true
+            done
+          changed_when: true
+      ignore_errors: true
+
+    - name: Check if image exists using podman inspect
+      ansible.builtin.shell: podman inspect "{{ image_name }}"
+      register: image_info
+      failed_when: false
+      changed_when: false
+
+    - name: Determine if image exists
+      ansible.builtin.set_fact:
+        image_exists: "{{ image_info.rc == 0 }}"
+
+    - name: Build environment if image does not exist
+      when: not image_exists
+      block:
+        - name: Create context directory
+          ansible.builtin.file:
+            path: "{{ work_dir }}/context"
             state: directory
             mode: '0755'
 
-        - name: Create token refresh script
-          ansible.builtin.template:
-            dest: "scripts/refresh_rh_token.sh"
-            mode: '0700'
-            content: |
-              #!/bin/bash
-              
-              # Set up logging
-              LOG_FILE="{{ user_home }}/.ansible/vars/token_refresh.log"
-              CONFIG_PATH="{{ user_home }}/.ansible/vars/config"
-              
-              # Log start time
-              echo "===== Token refresh attempt started at $(date) =====" >> $LOG_FILE
-              
-              # Extract the refresh token from config
-              if [ -f "$CONFIG_PATH" ]; then
-                # Extract refresh token from the config file
-                REFRESH_TOKEN=$(grep "automation_hub_token" "$CONFIG_PATH" | head -1 | cut -d "'" -f 4)
-                
-                # Check if token is available
-                if [ -z "$REFRESH_TOKEN" ]; then
-                  echo "ERROR: Could not find refresh token in $CONFIG_PATH" >> $LOG_FILE
-                  exit 1
-                fi
-                
-                # Attempt to refresh the token
-                echo "Refreshing token..." >> $LOG_FILE
-                RESPONSE=$(curl https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token \
-                  -d grant_type=refresh_token \
-                  -d client_id="cloud-services" \
-                  -d refresh_token="$REFRESH_TOKEN" \
-                  --fail \
-                  --silent \
-                  --show-error 2>&1)
-                
-                # Check result
-                if [ $? -eq 0 ]; then
-                  echo "SUCCESS: Token refresh completed successfully" >> $LOG_FILE
-                  
-                  # Extract and update new token
-                  NEW_TOKEN=$(echo $RESPONSE | jq -r '.refresh_token')
-                  if [ "$NEW_TOKEN" != "null" ] && [ -n "$NEW_TOKEN" ]; then
-                    # Create a backup of the config
-                    cp "$CONFIG_PATH" "${CONFIG_PATH}.bak"
-                    
-                    # Replace the token in the config file
-                    sed -i "s|automation_hub_token: '$REFRESH_TOKEN'|automation_hub_token: '$NEW_TOKEN'|g" "$CONFIG_PATH"
-                    echo "Token updated in config file" >> $LOG_FILE
-                  else
-                    echo "WARNING: Response didn't contain a valid refresh token" >> $LOG_FILE
-                  fi
-                else
-                  echo "ERROR: Token refresh failed" >> $LOG_FILE
-                  echo "Response: $RESPONSE" >> $LOG_FILE
-                fi
-              else
-                echo "ERROR: Config file not found at $CONFIG_PATH" >> $LOG_FILE
-              fi
-              
-              echo "===== Token refresh attempt completed at $(date) =====" >> $LOG_FILE
-              echo "" >> $LOG_FILE
+        - name: Copy execution environment file
+          ansible.builtin.copy:
+            src: "{{ current_path }}/execution-environment.yml"
+            dest: "{{ work_dir }}/context/execution-environment.yml"
+            mode: '0644'
 
-        - name: Install jq for JSON parsing
-          ansible.builtin.package:
-            name: jq
-            state: present
-          ignore_errors: true
-
-        - name: Create cron job to refresh the token every 2 weeks
-          ansible.builtin.cron:
-            name: "Refresh Red Hat Automation Hub token"
-            job: "scripts/refresh_rh_token.sh > /dev/null 2>&1"
-            minute: "0"
-            hour: "4"
-            day: "*/14"
-            user: "{{ actual_user }}"
-      tags: [setup, token_refresh, cron]
+        - name: Build container image using ansible-builder
+          ansible.builtin.command:
+            cmd: >-
+              ansible-builder build
+              --tag {{ image_name }}
+              --container-runtime podman
+              --verbosity 2
+              --prune-images
+              --context {{ work_dir }}/context
+              -f {{ work_dir }}/context/execution-environment.yml
+            chdir: "{{ work_dir }}/context"
+          register: build_output
+          changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+          environment:
+            ANSIBLE_BUILDER_HOME: "{{ work_dir }}/context"

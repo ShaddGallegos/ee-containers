@@ -22,6 +22,29 @@
   become: false
   register: base_config_result
 
+- name: Validate environment requirements
+  ansible.builtin.block:
+    - name: Check if podman is installed
+      ansible.builtin.command:
+        cmd: which podman
+      register: podman_check
+      changed_when: false
+      failed_when: false
+      
+    - name: Fail if podman is not installed
+      ansible.builtin.fail:
+        msg: "Podman is not installed. Please install podman before continuing."
+      when: podman_check.rc != 0
+      
+    - name: Verify internet connectivity
+      ansible.builtin.uri:
+        url: https://google.com
+        method: GET
+      register: connectivity_check
+      failed_when: connectivity_check.status != 200
+      changed_when: false
+  tags: [validation, setup]
+
 - name: Verify internet connectivity
   ansible.builtin.uri:
     url: https://google.com
@@ -29,6 +52,7 @@
   register: connectivity_check
   failed_when: connectivity_check.status != 200
   changed_when: false
+  tags: [connectivity, validation]
 
 - name: Fail if no internet connection is detected
   ansible.builtin.fail:
@@ -39,6 +63,7 @@
   ansible.builtin.package:
     name: "{{ required_packages }}"
     state: present
+  tags: [packages, installation]
 
 - name: Ensure container policy directory exists
   ansible.builtin.file:
@@ -59,7 +84,7 @@
   with_items: "{{ git_repos }}"
 
 - name: Clone repositories (ignoring errors)
-  block:
+  ansible.builtin.block:
     - name: Clone repository
       ansible.builtin.git:
         repo: "{{ item.item.url }}"
@@ -70,13 +95,21 @@
         force: true
       when: not item.stat.exists
       with_items: "{{ repo_exists.results }}"
-  rescue:
+  ansible.builtin.rescue:
     - name: Display repository clone failure
       ansible.builtin.debug:
         msg: "Failed to clone repository {{ item.item.url }}. Continuing with playbook..."
       with_items: "{{ repo_exists.results }}"
 
 - name: Install required collections
-  ansible.builtin.command:
-    cmd: ansible-galaxy collection install community.general
+  ansible.builtin.ansible_galaxy_collection:
+    name: community.general
+    state: present
   changed_when: false
+
+- name: Gather system information
+  ansible.builtin.setup:
+    gather_subset:
+      - '!all'
+      - 'min'
+  tags: [setup, system_info]

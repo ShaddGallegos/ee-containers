@@ -1,0 +1,282 @@
+---
+# Ansible Automation Platform - Execution Environment Builder
+# This playbook builds customized execution environments based on Red Hat AAP base images
+
+# Play 1: Verify or collect credentials
+- name: Setup and store credentials
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  tasks:
+    # Clear screen as the very first action
+    - name: Clear screen at playbook start
+      ansible.builtin.shell: reset
+      changed_when: false
+      tags: [always]
+      
+    # Create static ansible.cfg before any template processing
+    - name: Create static ansible.cfg file for initial setup
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/ansible.cfg"
+        mode: '0644'
+        force: false  # Don't overwrite if exists
+        content: |
+          [defaults]
+          inventory = localhost,
+          ansible_localhost_warning=false
+          ansible_deprecation_warnings=false
+          force_color = True
+
+          [galaxy]
+          server_list = validated, published, galaxy
+
+          [galaxy_server.published]
+          url=https://console.redhat.com/api/automation-hub/content/published/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+
+          [galaxy_server.validated]
+          url=https://console.redhat.com/api/automation-hub/content/validated/
+          auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+
+          [galaxy_server.galaxy]
+          url=https://galaxy.ansible.com/
+      tags: [always]
+
+    # REVIEW: DUPLICATE
+    # The following task appears multiple times in the playbook.
+    # Consider consolidating it into a single reusable task or role.
+    - name: Install required collections system-wide
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection install community.general ansible.posix -p /usr/share/ansible/collections --force"
+      register: galaxy_install
+      changed_when: galaxy_install.rc == 0
+      failed_when: galaxy_install.rc != 0
+
+    # REVIEW: DUPLICATE
+    # The following task for verifying collection installation is repeated.
+    - name: Verify collection installation
+      ansible.builtin.command:
+        cmd: "ansible-galaxy collection list community.general"
+      register: collection_verify
+      failed_when: collection_verify.rc != 0
+
+    - name: Show installation path
+      ansible.builtin.debug:
+        msg: "Collection installed at: {{ collection_verify.stdout_lines | select('search', 'Path:') | first | default('Unknown location') }}"
+
+    # Improved user detection logic
+    - name: Get effective and real user info
+      ansible.builtin.shell: |
+        echo "EUID=$(id -u)"
+        if [ -n "$SUDO_USER" ]; then
+          echo "SUDO_USER=$SUDO_USER"
+          echo "SUDO_UID=$(id -u $SUDO_USER)"
+          echo "SUDO_HOME=$(eval echo ~$SUDO_USER)"
+        else
+          echo "SUDO_USER="
+          echo "SUDO_UID="
+          echo "SUDO_HOME="
+        fi
+        echo "USER=$(whoami)"
+        echo "HOME=$HOME"
+      register: user_info_output
+      changed_when: false
+      tags: [always]
+    
+    - name: Parse user info
+      ansible.builtin.set_fact:
+        parsed_user_info: "{{ dict(user_info_output.stdout_lines | map('regex_replace', '^([^=]+)=(.*)$', '\\1:\\2') | map('split', ':') | list) }}"
+      tags: [always]
+    
+    - name: Set user facts
+      ansible.builtin.set_fact:
+        is_root: "{{ ansible_user_id == '0' }}"
+        actual_user: "{{ ansible_user_id }}"
+        user_home: "{{ ansible_env.HOME }}"
+      tags: [always]
+    
+    - name: Debug user detection
+      ansible.builtin.debug:
+        msg: |
+          User detection results:
+          - Effective UID: {{ parsed_user_info.EUID }}
+          - Running as root: {{ is_root }}
+          - Original user: {{ actual_user }}
+          - User home: {{ user_home }}
+      tags: [always]
+
+    # Skip credential setup if running as root directly (not via sudo)
+    - name: Skip credential setup if running as root directly
+      ansible.builtin.set_fact:
+        skip_credential_setup: "{{ ansible_user_id == 'root' and lookup('env', 'SUDO_USER') == '' }}"
+      tags: [always]
+
+    - name: Show credential setup status
+      ansible.builtin.debug:
+        msg: "{{ skip_credential_setup | ternary('Running as direct root user - skipping credential setup', 'Setting up credentials for user ' + actual_user) }}"
+      tags: [always]
+
+    # Only run credential setup if not skipping
+    - name: Setup user credentials
+      when: not skip_credential_setup
+      block:
+        - name: Ensure ansible vars directory exists in user's home
+          ansible.builtin.file:
+            path: "{{ user_home }}/.ansible/vars"
+            state: directory
+            mode: '0700'
+          tags: [setup, credential_setup]
+    
+        - name: Check if credentials file exists
+          ansible.builtin.stat:
+            path: "{{ user_home }}/.ansible/vars/config"
+          register: config_file
+          tags: [always]
+    
+        - name: Set first run flag 
+          ansible.builtin.set_fact:
+            first_run: "{{ not config_file.stat.exists }}"
+          tags: [always]
+    
+        - name: Load stored credentials if they exist
+          ansible.builtin.include_vars:
+            file: "{{ user_home }}/.ansible/vars/config"
+            name: stored_credentials
+          when: config_file.stat.exists
+          tags: [always]
+    
+        - name: Request credentials if needed
+          block:
+            - name: Collect Red Hat CDN username
+              ansible.builtin.pause:
+                prompt: "Enter your Red Hat CDN username"
+                echo: true
+              register: rh_username_input
+              when: stored_credentials is not defined or stored_credentials.rh_username is not defined
+              
+            - name: Collect Red Hat CDN password
+              ansible.builtin.pause:
+                prompt: "Enter your Red Hat CDN password"
+                echo: false
+              register: rh_password_input
+              when: stored_credentials is not defined or stored_credentials.rh_password is not defined
+              
+            - name: Collect Automation Hub token
+              ansible.builtin.pause:
+                prompt: "Enter your Automation Hub token (or press enter to skip)"
+                echo: false
+              register: automation_hub_token_input
+              when: stored_credentials is not defined or stored_credentials.automation_hub_token is not defined
+              
+            - name: Collect Galaxy token
+              ansible.builtin.pause:
+                prompt: "Enter your Galaxy token (or press enter to skip)"
+                echo: false
+              register: galaxy_token_input
+              when: stored_credentials is not defined or stored_credentials.galaxy_token is not defined
+              
+            - name: Set collected credential facts
+              ansible.builtin.set_fact:
+                rh_username: "{{ rh_username_input.user_input | default(stored_credentials.rh_username | default('')) }}"
+                rh_password: "{{ rh_password_input.user_input | default(stored_credentials.rh_password | default('')) }}"
+                automation_hub_token: "{{ automation_hub_token_input.user_input | default(stored_credentials.automation_hub_token | default('')) }}"
+                galaxy_token: "{{ galaxy_token_input.user_input | default(stored_credentials.galaxy_token | default('')) }}"
+              no_log: true
+              
+            - name: Create credentials file
+              ansible.builtin.copy:
+                dest: "{{ user_home }}/.ansible/vars/config"
+                content: |
+                  ---
+                  # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+                  rh_username: '{{ rh_username }}'
+                  rh_password: '{{ rh_password }}'
+                  automation_hub_token: '{{ automation_hub_token }}'
+                  galaxy_token: '{{ galaxy_token }}'
+                mode: '0600'
+                # Remove owner and group attributes when running as root
+              no_log: true
+              
+            - name: Set proper ownership on credentials file when needed
+              ansible.builtin.file:
+                path: "{{ user_home }}/.ansible/vars/config"
+                owner: "{{ actual_user }}"
+                group: "{{ actual_user }}"
+                mode: '0600'
+              when: actual_user != 'root' and actual_user != ''
+              no_log: true
+              
+            - name: Report stored credentials
+              ansible.builtin.debug:
+                msg: |
+                  ┌────────────────────────────────────────────────────────────────┐
+                  │                  CREDENTIALS STORED                            │
+                  ├────────────────────────────────────────────────────────────────┤
+                  │ Credentials have been stored at: {{ user_home }}/.ansible/vars/config │
+                  │ These will be used for future runs.                            │
+                  └────────────────────────────────────────────────────────────────┘
+          when: first_run or (stored_credentials is not defined)
+          tags: [always]
+
+    - name: Show run mode
+      ansible.builtin.debug:
+        msg: |
+          ┌────────────────────────────────────────────────────────────────────┐
+          │                     RUN MODE INFORMATION                           │
+          ├────────────────────────────────────────────────────────────────────┤
+          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run | default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
+          │                                                                    │
+          │ User: {{ actual_user | default('Unknown') }}                                            │
+          │ Credentials: {{ "New" if first_run | default(false) else "Loaded from file" }}      │
+          └────────────────────────────────────────────────────────────────────┘
+      tags: [always]
+
+    # Use sudo_user's home directory for config in the main play
+    - name: Set config path for main play
+      ansible.builtin.set_fact:
+        config_path: "{{ user_home }}/.ansible/vars/config"
+      tags: [always]
+
+# Play 2: Display title and introduction
+- name: Display title screen
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  environment:
+    ANSIBLE_LOCALHOST_WARNING: "False" 
+    ANSIBLE_DEPRECATION_WARNINGS: "False"
+    ANSIBLE_COMMAND_WARNINGS: "False"
+    ANSIBLE_SYSTEM_WARNINGS: "False"
+  tasks:
+    - name: Clear screen before showing title
+      ansible.builtin.shell: clear
+      changed_when: false
+      
+    - name: Show ascii title
+      ansible.builtin.debug:
+        msg: |
+          ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+          │                                                                                      ..:-=@@@@=-:..          │
+          │                                                                                    .*%@@@@@@@@@@@@%*.        │
+          │                                                                                 .:@@@@@@@@@@@@@@@@@@@@:.     │
+          │                                                                                .*@@@@@@@@@@*-@@@@@@@@@@*.    │
+          │                                                                               .@@@@@@@@@@@*. =@@@@@@@@@@@.   │
+          │                                                                              .%@@@@@@@@@@@ .@ +@@@@@@@@@@%.  │
+          │                                                                              -%@@@@@@@@@@..@%-.*@@@@@@@@@%-  │
+          │     "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:@@@@@@@@@@+. │
+          │                                                                             .+@@@@@@@@@@ ..:+@%.-@@@@@@@@@+. │
+          │                                                                             .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=  │
+          │                                                                              .%@@@@@@@:.*@@@@%.  .+@@@@@@%.  │
+          │                                                                               .@@@@@@= =@@@@@@@%=.:%@@@@@.   │
+          │                                                                                :%@@@@@@@@@@@@@@@@@@@@@@%:    │
+          │                                                                                 .*@@@@@@@@@@@@@@@@@@@@*.     │
+          │                                                                                   .+@@@@@@@@@@@@@@@@+..      │
+          │                                                                                     ..+*%@@@@@@%*+..         │
+          └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+      tags: [always]
+
+    - name: Pause for title screen
+      ansible.builtin.pause:
+        seconds: 3
+        prompt: "Starting Execution Environment Builder..."
+      tags: [always]

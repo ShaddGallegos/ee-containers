@@ -251,7 +251,7 @@
   tags: [build, build_cleanup, image_protection]
 
 - name: Clean up execution environment resources
-  block:
+  ansible.builtin.block:
     - name: Find containers related to this build
       ansible.builtin.shell: |
         podman ps -a --filter "name={{ current_env }}" --format '{{ "{{" }}.ID{{ "}}" }}' | tr '\n' ' '
@@ -305,7 +305,7 @@
         path: "{{ work_dir }}/context"
         state: absent
 
-  rescue:
+  ansible.builtin.rescue:
     - name: Report cleanup failure
       ansible.builtin.debug:
         msg: "Warning: Resource cleanup encountered an issue. Continuing with build anyway."
@@ -483,7 +483,7 @@
 
 # Replace with this enhanced implementation
 - name: Send build output to log file
-  block:  # Just 'block:' instead of 'ansible.builtin.block:'
+  ansible.builtin.block:  # Was just 'block:'
     - name: Ensure log directory structure exists
       ansible.builtin.file:
         path: /var/log/ansible/ansible-builder
@@ -558,7 +558,7 @@
         echo "Build log saved to: $LOG_FILE"
       changed_when: false
       ignore_errors: true
-  rescue:
+  ansible.builtin.rescue:
     - name: Report logging failure
       ansible.builtin.debug:
         msg: "Warning: Failed to create log file, but build process will continue"
@@ -574,7 +574,7 @@
 
 # Replace the current build failure handling with this enhanced version
 - name: Record build failure and clean up artifacts
-  block:
+  ansible.builtin.block:
     - name: Initialize failed_environments list if not exists
       ansible.builtin.set_fact:
         failed_environments: "{{ failed_environments | default([]) }}"
@@ -594,7 +594,7 @@
           /var/log/ansible/ansible-builder/{{ current_env }}*.log
       
     - name: Clean up artifacts from failed build
-      block:
+      ansible.builtin.block:
         - name: Remove build context directory
           ansible.builtin.file:
             path: "{{ work_dir }}/context"
@@ -695,5 +695,144 @@
   changed_when: image_cleanup.stdout is search("Removing")
   failed_when: false
   tags: [build, cleanup, image_cleanup]
+
+# Add this to the early part of your playbook, after podman installation
+- name: Setup protected images management
+  block:e.builtin.block:
+    - name: Ensure tasks directory exists
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tasks"
+        state: directory
+        mode: '0755'
+        
+    - name: Initialize protected_images.yml
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+        mode: '0644'
+        force: no  # Don't overwrite if it exists
+      register: init_protected_images
+      
+    - name: Load existing protected images
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/tasks/protected_images.yml"
+        name: protected_images_vars
+      ignore_errors: true
+      
+    - name: Set initial protected images list
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images_vars.protected_images | default([]) }}"
+        
+    # Clean dangling images early after podman install
+    - name: Clean up dangling images
+      ansible.builtin.shell: |
+        podman images --filter "dangling=true" --format "{% raw %}{{.ID}}{% endraw %}" | xargs -r podman rmi -f
+      changed_when: false
+      ignore_errors: true
+        
+    - name: Collect all current podman images
+      ansible.builtin.shell: |
+        podman images --format "{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}" | grep -v "<none>:<none>" | sort -u
+      register: current_images
+      changed_when: false
+      
+    - name: Combine existing and current images
+      ansible.builtin.set_fact:
+        protected_images: "{{ (protected_images | default([]) + current_images.stdout_lines) | unique | sort }}"
+        
+    - name: Update protected_images.yml with initial content
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+        mode: '0644'
+      vars:
+        consolidated_images: "{{ protected_images }}"
+  tags: [setup, image_protection]
+
+# Add this after distribution selection
+- name: Update protected images with distribution-specific images
+  ansible.builtin.block:
+    - name: Add required RHEL8 images to protected list
+      ansible.builtin.set_fact:
+        protected_images: >-
+          {{ 
+            (protected_images | default([])) + 
+            (required_images | select('search', 'rhel8') | list)
+          }}
+      when: build_rhel8 | bool
+      
+    - name: Add required RHEL9 images to protected list
+      ansible.builtin.set_fact:
+        protected_images: >-
+          {{ 
+            (protected_images | default([])) + 
+            (required_images | select('search', 'rhel9') | list)
+          }}
+      when: build_rhel9 | bool
+      
+    - name: Ensure protected_images list is unique and sorted
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images | unique | sort }}"
+        
+    - name: Update protected_images.yml after distribution selection
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+        mode: '0644'
+      vars:
+        consolidated_images: "{{ protected_images }}"
+  tags: [setup, distribution, image_protection]
+
+# Add this after menu selections
+- name: Update protected images after menu selections
+  ansible.builtin.block:
+    - name: Add selected environments to protected list
+      ansible.builtin.set_fact:
+        protected_images: "{{ (protected_images | default([])) + selected_environments | map('basename') | list }}"
+      when: selected_environments is defined and selected_environments | length > 0
+        
+    - name: Ensure protected_images list is unique and sorted
+      ansible.builtin.set_fact:
+        protected_images: "{{ protected_images | unique | sort }}"
+        
+    - name: Update protected_images.yml after menu selections
+      ansible.builtin.template:
+        src: templates/protected_images.j2
+        dest: "{{ playbook_dir }}/tasks/protected_images.yml"
+        mode: '0644'
+      vars:
+        consolidated_images: "{{ protected_images }}"
+  tags: [setup, menu, image_protection]
+
+- name: Only remove unprotected dangling images
+  ansible.builtin.shell: |
+    # Get all protected images
+    PROTECTED_IMAGES=({{ protected_images | join(' ') }})
+    
+    # Function to check if image is protected
+    is_protected() {
+      local image="$1"
+      for protected in "${PROTECTED_IMAGES[@]}"; do
+        if [[ "$image" == "$protected" ]]; then
+          return 0
+        fi
+      done
+      return 1
+    }
+    
+    # Get all dangling images
+    DANGLING_IMAGES=$(podman images --filter "dangling=true" --format "{% raw %}{{.ID}} {{.Repository}}:{{.Tag}}{% endraw %}")
+    
+    # Remove only truly unprotected dangling images
+    while read -r id image; do
+      if ! is_protected "$image"; then
+        echo "Removing unprotected dangling image: $id ($image)"
+        podman rmi "$id" || true
+      else
+        echo "Skipping protected image: $id ($image)"
+      fi
+    done <<< "$DANGLING_IMAGES"
+  changed_when: false
+  ignore_errors: true
 
 
