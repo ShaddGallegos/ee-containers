@@ -62,10 +62,7 @@
       - xdg-utils
       - yum-utils
 
-    work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
-
     update_protected_list: true
-
 
   tasks:
     - name: Verify internet connectivity  
@@ -132,6 +129,7 @@
     - name: Create inventory file
       ansible.builtin.copy:
         dest: "/tmp/inventory"
+        state: presant
         mode: '0644'
         content: |
           [devnode]
@@ -503,10 +501,106 @@
       ansible.builtin.debug:
         var: selected_environments
 
-    - name: Set basename for the selected environment
-      ansible.builtin.set_fact:
-        basename: "{{ selected_environments | first | basename }}"
-      when: selected_environments | length > 0
+    - name: Debug work_dir
+      ansible.builtin.debug:
+        msg: "Work directory: Not yet defined (will be set during processing)"
+      when: work_dir is not defined
+
+    - name: Create scripts directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/scripts"
+        state: directory
+        mode: '0755'
+      tags: [setup, monitoring]
+
+    - name: Create Podman monitoring script
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
+        content: |
+          #!/bin/bash
+          # start_monitor.sh - Opens a terminal window with tmux session attached
+
+          # Function to try opening a terminal with tmux
+          open_terminal_with_tmux() {
+            # If we're already in tmux, create a new window
+            if [ -n "$TMUX" ]; then
+              tmux new-window "tmux attach -t podman-monitor"
+              return 0
+            fi
+
+            # Try different terminal emulators in order of preference
+            for terminal in gnome-terminal konsole xfce4-terminal terminator mate-terminal xterm; do
+              if command -v $terminal >/dev/null 2>&1; then
+                case $terminal in
+                  gnome-terminal)
+                    nohup $terminal -- tmux attach -t podman-monitor >/dev/null 2>&1 &
+                    ;;
+                  *)
+                    nohup $terminal -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+                    ;;
+                esac
+                echo "Opened tmux session in $terminal"
+                return 0
+              fi
+            done
+            
+            # If none of the above worked, try X-terminal-emulator alternative
+            if command -v x-terminal-emulator >/dev/null 2>&1; then
+              nohup x-terminal-emulator -e "tmux attach -t podman-monitor" >/dev/null 2>&1 &
+              echo "Opened tmux session in x-terminal-emulator"
+              return 0
+            fi
+            
+            echo "Warning: Could not find a suitable terminal emulator"
+            return 1
+          }
+
+          # Create the tmux session if it doesn't exist
+          if ! tmux has-session -t podman-monitor 2>/dev/null; then
+            tmux new-session -d -s podman-monitor 'watch -n 2 "podman ps -a; echo; podman images; echo; podman volume ls"'
+            echo "Created new tmux session: podman-monitor"
+          fi
+
+          # Open terminal with the tmux session
+          open_terminal_with_tmux
+
+          # If we get here and still in terminal, provide instructions
+          echo "To manually attach to monitoring: tmux attach -t podman-monitor"
+        mode: '0755'
+      tags: [setup, monitoring]
+
+    - name: Copy Podman monitoring script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/scripts/start_monitor.sh"
+        dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
+        mode: '0755'
+      tags: [setup, monitoring]
+
+    - name: Create and start Podman monitoring session
+      ansible.builtin.block:
+        - name: Check if tmux is installed
+          ansible.builtin.command: which tmux
+          register: tmux_check
+          changed_when: false
+          failed_when: false
+          
+        - name: Create Podman monitoring tmux session
+          ansible.builtin.shell: |
+            if ! tmux has-session -t podman-monitor 2>/dev/null; then
+              tmux new-session -d -s podman-monitor 'watch -n 2 "podman ps -a; echo; podman images; echo; podman volume ls"'
+              echo "Created new tmux session: podman-monitor"
+            fi
+          when: tmux_check.rc == 0
+          changed_when: true
+          
+        - name: Launch monitoring script in new terminal window
+          ansible.builtin.command: "{{ playbook_dir }}/scripts/start_monitor.sh"
+          when: tmux_check.rc == 0
+          changed_when: true
+          ignore_errors: true
+          async: 10  # Run in background
+          poll: 0    # Don't wait for completion
+      tags: [monitoring, setup]
 
 - name: Registry Authentication
   hosts: localhost
@@ -538,6 +632,7 @@
       ansible.builtin.include_vars:
         file: "{{ ansible_env.HOME }}/.ansible/vars/config"
       when: config_file.stat.exists
+      no_log: true
 
     - name: Set default value for container_registries
       ansible.builtin.set_fact:
@@ -563,6 +658,7 @@
       loop: "{{ registry_login_results.results }}"
       loop_control:
         label: "{{ item.item }}"
+      no_log: true
 
     - name: Display registry login results
       ansible.builtin.debug:
@@ -583,120 +679,98 @@
 # Play 3: Build Execution Environments
 - name: Build Execution Environments
   hosts: localhost
-  become: true
-  gather_facts: true
-  vars:
-    container_registries:
-      - registry.redhat.io
-      - registry.access.redhat.com
-      - registry.connect.redhat.com
+  connection: local
+  gather_facts: false
   pre_tasks:
-    - name: Ensure /tmp/ee-containers/context directory exists
+    - name: Ensure /tmp/ee-builder/context directory exists
       ansible.builtin.file:
-        path: "/tmp/ee-containers/context"
+        path: "/tmp/ee-builder/context"
         state: directory
         mode: '0755'
 
-    - name: Ensure /tmp/ee-containers/_build directory exists
+    - name: Ensure /tmp/ee-builder/context/environments directory exists
       ansible.builtin.file:
-        path: "/tmp/ee-containers/_build"
+        path: "/tmp/ee-builder/context/environments"
         state: directory
         mode: '0755'
 
-    - name: Check if already logged into container registries
-      block:
-        - name: Check login status for each container registry
-          ansible.builtin.command:
-            cmd: "podman login --get-login {{ item }}"
-          loop: "{{ container_registries }}"
-          register: login_status_results
-          failed_when: false
-          changed_when: false
+    - name: Ensure tasks/ folder exists in the playbook directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tasks"
+        state: directory
+        mode: '0755'
 
-        - name: Parse login status results
-          ansible.builtin.set_fact:
-            already_logged_in: >-
-              {{
-                login_status_results.results | selectattr('rc', 'eq', 0) | map(attribute='item') | list
-              }}
+    - name: Create process_environment.yml dynamically in tasks/ folder
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/tasks/process_environment.yml"
+        content: |
+          - name: Set work_dir for the current environment
+            ansible.builtin.set_fact:
+              work_dir: "/tmp/ee-builder/context/environments/{% raw %}{{ item | basename }}{% endraw %}"
 
-        - name: Debug already logged-in registries
-          ansible.builtin.debug:
-            msg: |
-              Already logged into the following registries:
-              {% for registry in already_logged_in %}
-              - {{ registry }}
-              {% endfor %}
+          - name: Debug work_dir
+            ansible.builtin.debug:
+              msg: "Work directory: {% raw %}{{ work_dir }}{% endraw %}"
 
-    - name: Check if already logged into container registries
-      block:
-        - name: Check login status for each container registry
-          ansible.builtin.command:
-            cmd: "podman login --get-login {{ item }}"
-          loop: "{{ container_registries }}"
-          register: login_status_results
-          failed_when: false
-          changed_when: false
+          - name: Create work_dir for the current environment
+            ansible.builtin.file:
+              path: "{% raw %}{{ work_dir }}{% endraw %}"
+              state: directory
+              mode: '0755'
 
-        - name: Parse login status results
-          ansible.builtin.set_fact:
-            already_logged_in: >-
-              {{
-                login_status_results.results | selectattr('rc', 'eq', 0) | map(attribute='item') | list
-              }}
+          - name: Copy selected environment to work_dir
+            ansible.builtin.copy:
+              src: "{% raw %}{{ item }}{% endraw %}"
+              dest: "{% raw %}{{ work_dir }}{% endraw %}"
+              remote_src: true
 
-        - name: Debug already logged-in registries
-          ansible.builtin.debug:
-            msg: |
-              Already logged into the following registries:
-              {% for registry in already_logged_in %}
-              - {{ registry }}
-              {% endfor %}
+          - name: Build container image using ansible-builder
+            ansible.builtin.command:
+              cmd: >-
+                ansible-builder build
+                --tag {% raw %}{{ item | basename }}{% endraw %}
+                --container-runtime podman
+                --verbosity 2
+                --prune-images
+                --context {% raw %}{{ work_dir }}{% endraw %}
+                -f {% raw %}{{ work_dir }}{% endraw %}/execution-environment.yml
+              chdir: "{% raw %}{{ work_dir }}{% endraw %}"
+            register: build_output
+            changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+            environment:
+              ANSIBLE_BUILDER_HOME: "{% raw %}{{ work_dir }}{% endraw %}"
 
-    - name: Login to each container registry
-      block:
-        - name: Login to each container registry
-          ansible.builtin.command:
-            cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
-          loop: "{{ container_registries }}"
-          when: item not in already_logged_in
-          register: registry_login_results
-          failed_when: registry_login_results.rc != 0
-          changed_when: false
-          vars:
-            rh_username: "{{ rh_username | default(omit) }}"
-            rh_password: "{{ rh_password | default(omit) }}"
-          tags: [registry, login]
+          - name: Verify image was built successfully
+            ansible.builtin.command:
+              cmd: "podman images | grep {% raw %}{{ item | basename }}{% endraw %}"
+            register: verify_image
+            failed_when: verify_image.rc != 0
 
-    - name: Build container image using ansible-builder
-      ansible.builtin.command:
-        cmd: >-
-          ansible-builder build
-          --tag {{ image_name }}
-          --container-runtime podman
-          --verbosity 2
-          --prune-images
-          --context {{ work_dir }}/context
-          -f {{ work_dir }}/context/execution-environment.yml
-        chdir: "{{ work_dir }}/context"
-      register: build_output
-      changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
-      environment:
-        ANSIBLE_BUILDER_HOME: "{{ work_dir }}/context"
+          - name: Display build result summary
+            ansible.builtin.debug:
+              msg: |
+                Build Summary for {% raw %}{{ item | basename }}{% endraw %}:
+                - Image Name: {% raw %}{{ item | basename }}{% endraw %}
+                - Build Status: {% raw %}{{ 'SUCCESS' if verify_image.rc == 0 else 'FAILED' }}{% endraw %}"
+        mode: '0644'
 
-    - name: Verify image was built successfully
-      ansible.builtin.command:
-        cmd: "podman images | grep {{ image_name }}"
-      register: verify_image
-      failed_when: verify_image.rc != 0
-      tags: [validation]
+    - name: Copy environment directories to /tmp/ee-builder/context
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/environments"
+        dest: "/tmp/ee-builder/context"
+        remote_src: true
+        mode: '0755'
 
-    - name: Display build result summary
+    - name: Debug copied environments
       ansible.builtin.debug:
-        msg: |
-          Build Summary:
-          - Image Name: {{ image_name }}
-          - Build Status: {{ 'SUCCESS' if verify_image.rc == 0 else 'FAILED' }}
+        msg: "Environment directories copied to /tmp/ee-builder/context"
+
+  tasks:
+    - name: Process each selected environment
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
+      loop: "{{ selected_environments }}"
+      loop_control:
+        label: "{{ item | basename }}"
 
 # Play 4: Build Execution Environments for Ansible Automation Platform
 - name: Build Execution Environments for Ansible Automation Platform
@@ -1148,8 +1222,6 @@
             - xdg-utils
             - yum-utils
 
-          work_dir: '/tmp/ee-containers'
-
           update_protected_list: true
 
           rh_username: "{{ rh_username | default('') }}"
@@ -1217,8 +1289,159 @@
         state: directory
         mode: '0755'
 
+    - name: Create tasks/ folder for dynamic task files
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tasks"
+        state: directory
+        mode: '0755'
+
+    - name: Create process_environment.yml dynamically
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/tasks/process_environment.yml"
+        content: |
+          # Your task file content
+        mode: '0644'
+
     - name: Process each selected environment
-      ansible.builtin.include_tasks: process_environment.yml
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
       loop: "{{ selected_environments }}"
       loop_control:
         label: "{{ item | basename }}"
+
+- name: Process each selected environment
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Create tasks/ folder for dynamic task files
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tasks"
+        state: directory
+        mode: '0755'
+
+    - name: Create process_environment.yml dynamically
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/tasks/process_environment.yml"
+        content: |
+          - name: Set work_dir for the current environment
+            ansible.builtin.set_fact:
+              work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
+
+          - name: Debug work_dir
+            ansible.builtin.debug:
+              msg: "Work directory: {{ work_dir }}"
+
+          - name: Create work_dir for the current environment
+            ansible.builtin.file:
+              path: "{{ work_dir }}"
+              state: directory
+              mode: '0755'
+
+          - name: Copy selected environment to work_dir
+            ansible.builtin.copy:
+              src: "{{ item }}"
+              dest: "{{ work_dir }}"
+              remote_src: true
+
+          - name: Build container image using ansible-builder
+            ansible.builtin.command:
+              cmd: >-
+                ansible-builder build
+                --tag {{ item | basename }}
+                --container-runtime podman
+                --verbosity 2
+                --prune-images
+                --context {{ work_dir }}
+                -f {{ work_dir }}/execution-environment.yml
+              chdir: "{{ work_dir }}"
+            register: build_output
+            changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+            environment:
+              ANSIBLE_BUILDER_HOME: "{{ work_dir }}"
+            ignore_errors: true
+
+          - name: Record build status
+            ansible.builtin.set_fact:
+              build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}"
+            changed_when: false
+
+          - name: Verify image was built successfully
+            ansible.builtin.command:
+              cmd: "podman images | grep {{ item | basename }}"
+            register: verify_image
+            failed_when: verify_image.rc != 0
+
+          - name: Display build result summary
+            ansible.builtin.debug:
+              msg: |
+                Build Summary for {{ item | basename }}:
+                - Image Name: {{ item | basename }}
+                - Build Status: {{ 'SUCCESS' if verify_image.rc == 0 else 'FAILED' }}"
+        mode: '0644'
+
+    - name: Process each selected environment
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
+      loop: "{{ selected_environments }}"
+      loop_control:
+        label: "{{ item | basename }}"
+
+- name: Setup default variables
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Set default work_dir
+      ansible.builtin.set_fact:
+        work_dir: "/tmp/ee-builder/context"
+
+- name: Summarize build results
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Display build summary
+      ansible.builtin.debug:
+        msg: |
+          =================================================
+          EXECUTION ENVIRONMENT BUILD SUMMARY
+          =================================================
+          
+          SUCCESSFUL BUILDS:
+          {% for result in build_results | selectattr('success', 'equalto', true) | list %}
+          ✅ {{ result.image }}
+          {% else %}
+          (none)
+          {% endfor %}
+          
+          FAILED BUILDS:
+          {% for result in build_results | selectattr('success', 'equalto', false) | list %}
+          ❌ {{ result.image }}
+          {% else %}
+          (none)
+          {% endfor %}
+          
+          =================================================
+          
+          Total successful: {{ build_results | selectattr('success', 'equalto', true) | list | length }}
+          Total failed: {{ build_results | selectattr('success', 'equalto', false) | list | length }}
+          
+          {% if build_results | selectattr('success', 'equalto', false) | list | length > 0 %}
+          For details on failed builds, look at the full playbook output above.
+          {% endif %}
+
+    - name: Display detailed failure information
+      ansible.builtin.debug:
+        msg: |
+          FAILURE DETAILS FOR: {{ result.image }}
+          
+          Exit code: {{ result.output.rc }}
+          
+          ERROR OUTPUT:
+          {{ result.output.stderr_lines | join('\n') }}
+          
+          -------------------------------------------------
+      loop: "{{ build_results | selectattr('success', 'equalto', false) | list }}"
+      loop_control:
+        loop_var: result
+        label: "{{ result.image }}"
+      when: build_results | selectattr('success', 'equalto', false) | list | length > 0

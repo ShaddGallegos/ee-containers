@@ -6,7 +6,15 @@ images:
     name: registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest
     #name: quay.io/acme_corp/windows-ee:latest
 
+additional_build_files:
+  - src: ./ansible.cfg
+    dest: configs
+
 dependencies:
+  ansible_core:
+    package_pip: ansible-core>=2.13.10
+  ansible_runner:
+    package_pip: ansible-runner
   galaxy:
     collections:
       - ansible.windows
@@ -28,5 +36,12 @@ dependencies:
     - msgraph-sdk==1.0.0
     - psycopg2-binary
     - urllib3==1.26.15
-options:
-  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  prepend_final: |
+    RUN /usr/bin/microdnf install -y yum-utils \
+      && microdnf upgrade -y \
+      && microdnf install -y python39-pip python39-devel gcc \
+      && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
+      && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner 
+

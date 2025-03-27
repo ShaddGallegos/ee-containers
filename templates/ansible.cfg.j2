@@ -14,6 +14,9 @@ inventory = localhost,
 ansible_localhost_warning=false
 ansible_deprecation_warnings=false
 force_color = True
+fact_caching = jsonfile
+fact_caching_connection = /tmp/ansible_fact_cache
+fact_caching_timeout = 7200
 
 [galaxy]
 server_list = validated, published, galaxy

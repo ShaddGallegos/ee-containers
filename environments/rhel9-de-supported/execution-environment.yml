@@ -33,7 +33,8 @@ additional_build_steps:
         echo "admin:redhat" | chpasswd && \
         echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
         chown -R admin:admin /home/admin && \
-        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core>=2.13.10 ansible-runner
 
   prepend_final: |
     USER root

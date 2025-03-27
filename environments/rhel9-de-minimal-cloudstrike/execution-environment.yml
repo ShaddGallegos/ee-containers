@@ -33,16 +33,15 @@ additional_build_steps:
     RUN microdnf upgrade -y && \
         microdnf install -y gcc make pkg-config python3-devel systemd-devel \
         libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel && \
         rpm -e ansible-core --nodeps || true && \
-        python3 -m pip install --user --user --upgrade --ignore-installed ansible-core ansible-runner
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core>=2.13.10 ansible-runner
 
   prepend_final: |
     USER root
     RUN microdnf upgrade -y && \
         microdnf install -y python3-pip python3-devel gcc krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --user --user --no-cache-dir --upgrade pip setuptools wheel && \
-        python3 -m pip install --user --user --no-cache-dir --upgrade ansible-core ansible-runner
+
 
   append_final: |
     USER root
@@ -54,12 +53,6 @@ additional_build_steps:
 
   prepend_builder: |
     RUN pip3 install --user --upgrade --ignore-installed pip setuptools
-    # Create empty requirements-test.txt file to fix ncclient installation
-    # Create empty requirements-test.txt file to fix ncclient installation
-    # Create empty requirements-test.txt file to fix ncclient installation
-    # Create empty requirements-test.txt file to fix ncclient installation
-    # Create empty requirements-test.txt file to fix ncclient installation
-    RUN touch /requirements-test.txt
 
   append_builder: |
     RUN pip3 check

@@ -3,18 +3,39 @@ version: 3
 
 images:
   base_image:
-    name: registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel9:latest
+    name: registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel8:latest
+
+additional_build_files:
+  - src: ./ansible.cfg
+    dest: configs
 
 dependencies:
+  ansible_core:
+    package_pip: ansible-core>=2.13.10
+  ansible_runner:
+    package_pip: ansible-runner
   galaxy:
     collections:
-      - { name: cloud.terraform, version: 3.0.0 }
+      - { name: cloud.terraform, version: 3.0.0 }  
+  python: requirements.txt
+  system: bindep.txt
 
 additional_build_steps:
-  prepend_final:
-    - RUN /usr/bin/microdnf install -y yum-utils
-    - RUN yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo
-    - RUN /usr/bin/microdnf install -y terraform
+  prepend_final: |
+    RUN /usr/bin/microdnf install -y yum-utils \
+        && microdnf upgrade -y \
+        && microdnf install -y python39-pip python39-devel gcc \
+        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
+        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner \
+        && yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo \
+        && /usr/bin/microdnf install -y terraform
 
-options:
-  package_manager_path: /usr/bin/microdnf
+  append_final: |
+    ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
+    RUN microdnf clean all \
+      && rm -rf /var/cache/{dnf,yum} \
+      && rm -rf /var/lib/dnf/history.* \
+      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
+      && rm -rf /var/cache/dnf \
+      && rm -rf /root/.cache \
+      && rm -rf /etc/ansible/ansible.cfg
