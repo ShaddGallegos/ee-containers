@@ -3,7 +3,7 @@ version: 3
 
 images:
   base_image:
-    name: registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel8:latest
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
 
 additional_build_files:
   - src: ./ansible.cfg
@@ -16,21 +16,38 @@ dependencies:
     package_pip: ansible-runner
   galaxy:
     collections:
-      - { name: cloud.terraform, version: 3.0.0 }  
+      - { name: cloud.terraform }  
   python: requirements.txt
   system: bindep.txt
 
 additional_build_steps:
+  prepend_base:
+    # Install DNF first so the assemble script can use it
+    - RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
+          microdnf install -y dnf; \
+      fi
+
   prepend_final: |
-    RUN /usr/bin/microdnf install -y yum-utils \
-        && microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner \
-        && yum-config-manager --add-repo https://rpm.releases.hashicorp.com/RHEL/hashicorp.repo \
-        && /usr/bin/microdnf install -y terraform
+    USER root
+    # Use microdnf for initial updates on minimal containers
+    RUN if [ -f /usr/bin/microdnf ] && [ ! -f /usr/bin/dnf ]; then \
+          microdnf upgrade -y && \
+          microdnf install -y python39-pip python39-devel gcc; \
+        elif [ -f /usr/bin/dnf ]; then \
+          dnf upgrade -y && \
+          dnf install -y python39-pip python39-devel gcc; \
+        fi
+    
+    # Install Python packages
+    RUN python3 -m pip install --no-cache-dir terraform-inventory
 
   append_final: |
+    # Final cleanup
+    RUN if [ -f /usr/bin/microdnf ]; then \
+          microdnf clean all; \
+        elif [ -f /usr/bin/dnf ]; then \
+          dnf clean all; \
+        fi
     ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
     RUN microdnf clean all \
       && rm -rf /var/cache/{dnf,yum} \

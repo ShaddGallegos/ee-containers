@@ -22,6 +22,9 @@ dependencies:
     package_pip: 'ansible-core'
   ansible_runner:
     package_pip: 'ansible-runner'
+  exclude:
+    python: 
+      - systemd-python
 
 options:
   package_manager_path: /usr/bin/microdnf
@@ -29,7 +32,7 @@ options:
 additional_build_steps:
   prepend_final: |
     RUN microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc \
+        && microdnf install -y python39-pip python39-devel gcc systemd-devel \
         && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
         && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
 
@@ -41,4 +44,4 @@ additional_build_steps:
       && rm -rf /var/log/dnf.* /var/log/hawkey.log \
       && rm -rf /var/cache/dnf \
       && rm -rf /root/.cache \
-      && rm -rf /etc/ansible/ansible.cfg 
+      && rm -rf /etc/ansible/ansible.cfg

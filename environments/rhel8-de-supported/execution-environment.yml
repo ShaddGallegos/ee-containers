@@ -14,6 +14,8 @@ images:
 additional_build_files:
   - src: ./ansible.cfg
     dest: configs
+  - src: ./ansible.cfg
+    dest: ansible.cfg
 
 dependencies:
   ansible_core:
@@ -30,8 +32,7 @@ options:
 additional_build_steps:
   prepend_base: |
     USER root
-    # Install dependencies without replacing system packages
-    RUN microdnf upgrade -y && \
+    RUN microdnf upgrade -y \
       && microdnf install -y gcc make pkg-config python3-devel systemd-devel \
       libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation \
       && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
@@ -41,6 +42,11 @@ additional_build_steps:
     # Tell pip not to overwrite system packages
     ENV PIP_BREAK_SYSTEM_PACKAGES=0
     # Use --no-deps to prevent pip from attempting to upgrade dependencies
+
+  prepend_final: |
+    RUN microdnf upgrade -y \
+        && microdnf install -y python39-pip python39-devel gcc systemd-devel \
+        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel
 
   append_final: |
     RUN microdnf clean all \

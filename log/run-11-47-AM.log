@@ -1,0 +1,24 @@
+[0;34mansible-playbook [core 2.15.13][0m
+[0;34m  config file = /etc/ansible/ansible.cfg[0m
+[0;34m  configured module search path = ['/root/.ansible/plugins/modules', '/usr/share/ansible/plugins/modules'][0m
+[0;34m  ansible python module location = /root/.local/lib/python3.9/site-packages/ansible[0m
+[0;34m  ansible collection location = /root/.ansible/collections:/usr/share/ansible/collections:/etc/ansible/collections[0m
+[0;34m  executable location = /root/.local/bin/ansible-playbook[0m
+[0;34m  python version = 3.9.21 (main, Dec  5 2024, 00:00:00) [GCC 11.5.0 20240719 (Red Hat 11.5.0-2)] (/usr/bin/python3)[0m
+[0;34m  jinja version = 3.1.6[0m
+[0;34m  libyaml = True[0m
+[0;34mUsing /etc/ansible/ansible.cfg as config file[0m
+[0;34mhost_list declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mSkipping due to inventory source not existing or not being readable by the current user[0m
+[0;34mscript declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mauto declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mSkipping due to inventory source not existing or not being readable by the current user[0m
+[0;34myaml declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mSkipping due to inventory source not existing or not being readable by the current user[0m
+[0;34mini declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mSkipping due to inventory source not existing or not being readable by the current user[0m
+[0;34mtoml declined parsing /etc/ansible/localhost as it did not pass its verify_file() method[0m
+[0;34mhost_list declined parsing /etc/ansible/hosts as it did not pass its verify_file() method[0m
+[0;34mscript declined parsing /etc/ansible/hosts as it did not pass its verify_file() method[0m
+[0;34mauto declined parsing /etc/ansible/hosts as it did not pass its verify_file() method[0m
+[0;34mParsed /etc/ansible/hosts inventory source with ini plugin[0m
