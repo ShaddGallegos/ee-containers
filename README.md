@@ -28,7 +28,6 @@ This project automates the creation of custom Ansible Execution Environments bas
 
 ## Required Packages
 
-```
 python3-pip
 ansible-builder
 ansible-core
@@ -97,6 +96,7 @@ The playbook includes configurations for:
 ## Monitoring Display
 
 The build monitoring display shows:
+
 - ASCII art header
 - Current build status with progress spinner
 - List of available container images
