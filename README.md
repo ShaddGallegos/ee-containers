@@ -151,3 +151,4 @@ the base images are stored localy
 - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9"
 
 so you don't need a connection other than for UBI updates for your image builds.
+git merge shaddsfixs -X theirs
