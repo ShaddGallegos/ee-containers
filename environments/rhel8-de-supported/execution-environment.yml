@@ -14,6 +14,8 @@ images:
 additional_build_files:
   - src: ./ansible.cfg
     dest: configs
+  - src: ./ansible.cfg
+    dest: ansible.cfg
 
 dependencies:
   ansible_core:
@@ -30,29 +32,27 @@ options:
 additional_build_steps:
   prepend_base: |
     USER root
-    # Install dependencies without replacing system packages
-    RUN microdnf upgrade -y && \
-        microdnf install -y gcc make pkg-config python3-devel systemd-devel \
-        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel packaging
+    RUN microdnf upgrade -y \
+      && microdnf install -y gcc make pkg-config python3-devel systemd-devel \
+      libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation \
+      && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
+      && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
 
   prepend_builder: |
     # Tell pip not to overwrite system packages
     ENV PIP_BREAK_SYSTEM_PACKAGES=0
     # Use --no-deps to prevent pip from attempting to upgrade dependencies
-    RUN pip3 install --user --upgrade --ignore-installed --no-deps packaging wheel setuptools pip
 
   prepend_final: |
     RUN microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc \
-        && python3 -m pip install --user --user --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --user --user --no-cache-dir ansible-core>=2.13.10 ansible-runner
+        && microdnf install -y python39-pip python39-devel gcc systemd-devel \
+        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel
 
   append_final: |
     RUN microdnf clean all \
-        && rm -rf /var/cache/{dnf,yum} \
-        && rm -rf /var/lib/dnf/history.* \
-        && rm -rf /var/log/dnf.* /var/log/hawkey.log \
-        && rm -rf /var/cache/dnf \
-        && rm -rf /root/.cache \
-        && rm -rf /etc/ansible/ansible.cfg
+      && rm -rf /var/cache/{dnf,yum} \
+      && rm -rf /var/lib/dnf/history.* \
+      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
+      && rm -rf /var/cache/dnf \
+      && rm -rf /root/.cache \
+      && rm -rf /etc/ansible/ansible.cfg

@@ -1,154 +1,125 @@
-# EE-Containers
+# Ansible Execution Environment Builder
 
-                                                                                     ..:-=*##*=-:..              
-                                                                                   .*%@@@@@@@@@@@@%*.            
-                                                                                .:#@@@@@@@@@@@@@@@@@@#:.         
-                                                                               .*@@@@@@@@@@*-@@@@@@@@@@*.        
-                                                                              .#@@@@@@@@@@*. =@@@@@@@@@@#.       
-                                                                             .%@@@@@@@@@@@ .# +@@@@@@@@@@%.      
-                                                                             -%@@@@@@@@@@..#%-.*@@@@@@@@@%-      
-    "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:#@@@@@@@@@+.     
-                                                                            .+@@@@@@@@@# ..:+@%.-@@@@@@@@@+.     
-                                                                            .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=      
-                                                                             .%@@@@@@@:.*@@@@%.  .+@@@@@@%.      
-                                                                              .@@@@@@= =@@@@@@@%=.:%@@@@@.       
-                                                                               :%@@@@@@@@@@@@@@@@@@@@@@%:        
-                                                                                .*@@@@@@@@@@@@@@@@@@@@*.         
-                                                                                  .+@@@@@@@@@@@@@@@@+..          
-                                                                                    ..+*%@@@@@@%*+..              
+A streamlined approach to building Ansible Execution Environments using Red Hat base images.
 
-A streamlined approach to building Ansible Execution Environments (EEs) with minimal effort. This repository automates the process of building EEs for different scenarios and platforms.
-
-## Current Direct/Active Contributors
-
-- Shadd Gallegos (<Shadd@redhat.com>)
-- Alexon Oliveira
-- Brady Thompson
-- Christopher Norville
-- Faith Chua
-- Juan Madina
-- Mark Lowcher
+![AAP Execution Environment Builder](https://example.com/ee-containers-logo.png)
 
 ## Overview
 
-This repository includes predefined execution environment configurations for both RHEL 8 and RHEL 9. The playbook automatically detects environments using naming conventions with `-de-` (Development Environment) or `-ee-` (Execution Environment) in the `environments` folder.
-It is a wrapper for Ansible-Builder that automates the manual parts and makes life a little easier.
+This project automates the creation of custom Ansible Execution Environments based on Red Hat Ansible Automation Platform base images. It provides a guided, interactive process for selecting and building execution environments with detailed progress monitoring and validation.
+
+## Features
+
+- **Interactive Environment Selection**: Choose RHEL 8, RHEL 9, or both distributions
+- **Live Build Monitoring**: Real-time progress through tmux display with status indicators
+- **Registry Authentication**: Automated login to Red Hat registries  
+- **Credential Management**: Securely store and reuse Red Hat credentials
+- **Build Validation**: Pre-validates YAML syntax to avoid build failures
+- **Detailed Summary**: Comprehensive build results with success/failure reporting
 
 ## Prerequisites
 
-### Required Accounts and Tokens
-
-- Red Hat Subscription
-- Red Hat CDN username and password
-- Authentication tokens from:
-  - [Automation Hub](https://console.redhat.com/ansible/automation-hub/token)
-  - [Ansible Galaxy](https://galaxy.ansible.com/ui/token) (optional)
-- Note: reccomend adding your CDN username password and tokens to your ansible.cfg and templates/ansible.cfg.j2 and using ansible vault to encrypt so you dont have to add the info each time.
-
-### Required Packages on your Development Node/Machine/Workstation/Dev-Container
-
-#### Needs to be pre installed
-
-- ansible-core
-
-#### Installed by the Ansible_Automation_Platform-ee_builder.yml
-
-- python3-pip
-- ansible-builder
-- git
-- podman
-- podman-docker
+- Red Hat subscription with access to Ansible Automation Platform
+- Podman installed and configured
+- Python 3.6+
+- Ansible Core 2.15+
+- ansible-builder 3.0+
 - tmux
-- xdg-utils
-- yum-utils
 
-## Required Files for Each Environment
+## Required Packages
 
-Each environment in the `environments` directory must include:
-
-1. `execution-environment.yml` - The main configuration file
-2. Any dependency files referenced in the execution-environment.yml:
-   - `requirements.txt` - Python package requirements
-   - `requirements.yml` - Ansible collection requirements
-   - `bindep.txt` - Binary dependencies
-
-## Current Working EE/DE Definitions
-
-### Environment Selection
-
-## RHEL 8 Environments
-
- rhel8-de-minimal-general
- rhel8-de-supported
- rhel8-ee-minimal
- rhel8-ee-minimal-terraform
-
-## RHEL 9 Environments
-
- rhel9-de-minimal-cloudstrike
- rhel9-de-supported
- rhel9-ee-minimal
- rhel9-ee-minimal-vmware
- rhel9-ee-minimal-windows
-
-## Running the Playbook
-
-### Basic Execution
-
-Run the playbook with:
-
-```
-sudo ansible-playbook Ansible_Automation_Platform-ee_builder.yml -K
+python3-pip
+ansible-builder
+ansible-core
+git
+podman
+podman-docker
+tmux
+xdg-utils
+yum-utils
 ```
 
-### Build Monitoring
+## Getting Started
 
-The playbook automatically creates a tmux session to monitor build progress. You can:
+### 1. Clone the repository
 
-1. View the monitoring session with:
+```bash
+git clone https://github.com/yourusername/ee-containers.git
+cd ee-containers
+```
 
-   ```
+### 2. Run the playbook
 
-   tmux attach -t podman-monitor
+```bash
+ansible-playbook site.yml
+```
 
-   ```
+### 3. View build progress
 
-    tmux attach -t podman-monitor  /tmp/podman-monitor.sh
+Once the playbook starts, it will create a tmux monitoring session. it should pop up "auto-magicly" or You can view it by:
 
-   ```
+```bash
+tmux attach -t podman-monitor
+```
 
-2. Alternative monitoring method:
+## How It Works
 
-   ```
+1. **Credential Setup**: First run will prompt for Red Hat CDN username/password
+2. **Environment Selection**: Choose which execution environments to build
+3. **Build Process**: The playbook:
+   - Pulls required base images
+   - Validates environment configurations
+   - Builds custom execution environments
+   - Tracks build status in real-time
+4. **Results Summary**: Displays successful and failed builds
 
-    /tmp/podman-monitor.sh
+## Environment Structure
 
-   ```
-### Registry Authentication Issues
+Each execution environment is defined in its own directory under environments, containing:
 
-If experiencing registry connection issues, ensure:
+- `execution-environment.yml`: Main configuration file
+- Additional requirements files (optional):
+  - `requirements.txt`: Python package requirements
+  - `requirements.yml`: Collection requirements
+  - `bindep.txt`: System dependencies
 
-- Your Red Hat credentials are correct
-- Your system can resolve and connect to registry.redhat.io
- 
-This playbook automates the process of building Ansible execution environment (EE) containers using `ansible-builder`. It handles:
+## Available Environments
 
-1. **Environment Preparation**: Sets up build directories and dependencies
-2. **Configuration Validation**: Checks and fixes common issues in configuration files
-3. **Build Process**: Runs ansible-builder with appropriate options
-4. **Error Handling**: Provides helpful messages when builds fail
+The playbook includes configurations for:
 
-After first run, all examples of definitions are cloned and stored at "examples/",
-the base images are stored localy
+- RHEL 8 minimal execution environments
+- RHEL 8 supported execution environments
+- RHEL 9 minimal execution environments
+- RHEL 9 supported execution environments
+- Various specialized environments (Cloud, Windows, VMware, etc.)
 
-- "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8"
-- "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9"
-- "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8"
-- "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9"
-- "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8"
-- "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9"
-- "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8"
-- "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9"
+## Monitoring Display
 
-so you don't need a connection other than for UBI updates for your image builds.
-git merge shaddsfixs -X theirs
+The build monitoring display shows:
+
+- ASCII art header
+- Current build status with progress spinner
+- List of available container images
+
+## Troubleshooting
+
+### Common Issues
+
+- **Registry Authentication Failures**: Verify your Red Hat credentials
+- **Missing Base Images**: Ensure internet connectivity to Red Hat registries
+- **YAML Validation Errors**: Check syntax in your execution-environment.yml files
+- **DNF/Package Manager Errors**: Some base images use microdnf instead of dnf
+
+### Logs
+
+- Build logs are displayed in the console output
+- Monitoring logs: `/tmp/monitor.log`
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- Red Hat Ansible Automation Platform team
+- Ansible Builder project

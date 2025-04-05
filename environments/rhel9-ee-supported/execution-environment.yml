@@ -52,8 +52,8 @@ additional_build_steps:
     USER root
     RUN microdnf upgrade -y && \
         microdnf install -y python3-pip python3-devel gcc krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --user --user --no-cache-dir --upgrade --ignore-installed pip setuptools wheel packaging && \
-        python3 -m pip install --user --user --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
 
   append_final: |
     USER root

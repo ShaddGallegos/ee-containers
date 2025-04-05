@@ -1,49 +1,114 @@
----
-- name: Process environment {{ current_env }}
+- name: Set work_dir for the current environment
+  ansible.builtin.set_fact:
+    work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
+
+- name: Debug work_dir
+  ansible.builtin.debug:
+    msg: "Work directory: {{ work_dir }}"
+  
+- name: Create work_dir for the current environment
+  ansible.builtin.file:
+    path: "{{ work_dir }}"
+    state: directory
+    mode: '0755'
+
+# Show that we're starting to build this environment in the monitoring display
+- name: Update build status file - starting build
+  ansible.builtin.shell: "BASENAME=$(basename {{ item }}) && echo $BASENAME > /tmp/current_env"
+  changed_when: false
+
+- name: Copy selected environment to work_dir
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ work_dir }}"
+    remote_src: true
+
+- name: Validate execution-environment.yml syntax
+  ansible.builtin.command:
+    cmd: "python3 -c \"import yaml; yaml.safe_load(open('{{ work_dir }}/execution-environment.yml'));\""
+  register: yaml_validation
+  changed_when: false
+  failed_when: false
+
+# Handle YAML validation failures
+- name: Handle YAML validation failures
+  when: yaml_validation.rc != 0
   block:
-    - name: Ensure build directories exist
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        mode: '0755'
-      loop:
-        - "{{ work_dir }}/files"
-        - "{{ work_dir }}/_build"
-        - "{{ work_dir }}/context"
-
-    - name: Set correct ownership for build directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        recurse: true
-        owner: "{{ ansible_user_id }}"
-        group: "{{ ansible_user_id }}"
-      loop:
-        - "{{ work_dir }}/files"
-        - "{{ work_dir }}/_build"
-        - "{{ work_dir }}/context"
-      become: true
-
-    # Include all the build environment tasks
-    - name: Include build environment tasks
-      ansible.builtin.include_tasks: tasks/build_environment.yml
-
-  rescue:
-    - name: Display build error
+    - name: Update build status file - skipping build due to YAML error
+      ansible.builtin.shell: "BASENAME=$(basename {{ item }}) && echo SKIPPED: $BASENAME \\(invalid YAML\\) > /tmp/current_env"
+      changed_when: false
+      
+    - name: Debug skip message
       ansible.builtin.debug:
-        msg: |
-          Build failed for {{ current_env | default('unknown') }}:
-          STDOUT:
-          {{ build_output.stdout_lines | default([]) | to_nice_yaml }}
-          STDERR:
-          {{ build_output.stderr_lines | default([]) | to_nice_yaml }}
+        msg: "SKIPPING BUILD due to invalid YAML in execution-environment.yml"
+        
+    - name: Record skipped build in results
+      ansible.builtin.set_fact:
+        build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': false, 'output': {'rc': 1, 'stderr': 'Invalid YAML syntax in execution-environment.yml', 'stderr_lines': ['Invalid YAML syntax in execution-environment.yml']}}] }}"
+        cacheable: true
+      changed_when: false
+      
+    - name: Skip remaining tasks for this environment
+      ansible.builtin.meta: end_play
+        
+# Only run build if YAML validation passed
+- name: Build container image using ansible-builder
+  ansible.builtin.command:
+    cmd: >-
+      ansible-builder build
+      --tag {{ item | basename }}
+      --container-runtime podman
+      --verbosity 3
+      --prune-images
+      --context {{ work_dir }}
+      -f {{ work_dir }}/execution-environment.yml
+    chdir: "{{ work_dir }}"
+  register: build_output
+  changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+  environment:
+    ANSIBLE_BUILDER_HOME: "{{ work_dir }}"
+    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+  ignore_errors: true
+  
+# Update build status file with the result for the monitoring display
+- name: Update build status file with build result
+  ansible.builtin.shell: >
+    if [ {{ build_output.rc }} -eq 0; then 
+      echo "COMPLETED: {{ item | basename }}" > /tmp/current_env;
+    else 
+      echo "FAILED: {{ item | basename }}" > /tmp/current_env;
+    fi
+  changed_when: false
 
-  always:
-    - name: Clean up build directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ work_dir }}/_build"
-        - "{{ work_dir }}/context"
-      failed_when: false
+# Record results for summary display later
+- name: Record build status
+  ansible.builtin.set_fact:
+    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output}] }}"
+    cacheable: true
+  changed_when: false
+
+# Clean up after build (consolidated cleanup tasks)
+- name: Clean up dangling images
+  ansible.builtin.shell: |
+    # Remove dangling images (<none>:<none>)
+    podman images | awk '$1=="<none>" {print $3}' | xargs -r podman rmi --force
+    # Also run a general image prune
+    podman image prune -f
+  register: prune_output
+  changed_when: "'Deleted' in prune_output.stdout or 'Total reclaimed space:' in prune_output.stdout and not 'Total reclaimed space: 0B' in prune_output.stdout"
+  ignore_errors: true
+  failed_when: false
+
+# Debug tasks to help troubleshoot build failures
+- name: Debug execution-environment.yml contents
+  ansible.builtin.shell: "cat {{ work_dir }}/execution-environment.yml"
+  register: ee_file_contents
+  changed_when: false
+  ignore_errors: true
+  when: build_output.rc != 0
+
+- name: Display execution-environment.yml contents for failed builds
+  ansible.builtin.debug:
+    msg: "{{ ee_file_contents.stdout_lines }}"
+  ignore_errors: true
+  when: build_output.rc != 0 and ee_file_contents is defined

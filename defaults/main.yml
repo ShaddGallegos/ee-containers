@@ -1,6 +1,0 @@
----
-# BEGIN ANSIBLE MANAGED PROTECTED IMAGES
-# This list is automatically generated from existing images
-# Images will NOT be deleted unless specifically selected from menu
-protected_images:
-# END ANSIBLE MANAGED PROTECTED IMAGES

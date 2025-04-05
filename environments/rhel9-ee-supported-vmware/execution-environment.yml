@@ -39,9 +39,10 @@ additional_build_steps:
     USER root
     # Use --ignore-installed to prevent attempts to uninstall system packages
     RUN microdnf upgrade -y && \
-        microdnf install -y gcc make pkg-config python3-devel systemd-devel \
+        microdnf install -y gcc make pkg-config python3-devel systemd-devel && \
         libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --user --user --upgrade --ignore-installed pip setuptools wheel
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
 
   prepend_builder: |
     # Add fix for packaging module issue
@@ -52,7 +53,6 @@ additional_build_steps:
     RUN microdnf install -y krb5-devel krb5-libs krb5-workstation && \
         pip3 install --user --upgrade --ignore-installed pip setuptools wheel && \
         # Create empty requirements-test.txt file to fix ncclient installation issues
-        touch /requirements-test.txt
     
     # Install VMware dependencies with --ignore-installed flag
     RUN pip3 install --user --no-cache-dir --ignore-installed pyvmomi vapi-client-bindings
