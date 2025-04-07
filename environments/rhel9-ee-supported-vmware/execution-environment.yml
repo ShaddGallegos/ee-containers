@@ -37,9 +37,8 @@ dependencies:
 additional_build_steps:
   prepend_base: |
     USER root
-    # Use --ignore-installed to prevent attempts to uninstall system packages
     RUN microdnf upgrade -y && \
-        microdnf install -y gcc make pkg-config python3-devel systemd-devel && \
+        microdnf install -y gcc make pkg-config python3-devel systemd-devel \
         libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
         python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
         python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner

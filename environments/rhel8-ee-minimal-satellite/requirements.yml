@@ -1,0 +1,9 @@
+---
+collections:
+  - name: ansible.utils
+  - name: ansible.posix
+  - name: community.general
+  - name: redhat.satellite
+  - name: redhat.satellite_operations
+  - name: infra.aap_configuration
+  - name: infra.aap_utilities

@@ -23,37 +23,30 @@ dependencies:
 additional_build_steps:
   prepend_base: |
     USER root
-    # Fix DNF missing
     RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then microdnf install -y dnf; fi
     
   prepend_final: |
     USER root
-    # Use microdnf for initial updates on minimal containers
     RUN if [ -f /usr/bin/microdnf ] && [ ! -f /usr/bin/dnf ]; then \
           microdnf upgrade -y && \
-          microdnf install -y python39-pip python39-devel gcc; \
+          microdnf install -y python39-pip python39-devel gcc curl unzip; \
         elif [ -f /usr/bin/dnf ]; then \
           dnf upgrade -y && \
-          dnf install -y python39-pip python39-devel gcc; \
+          dnf install -y python39-pip python39-devel gcc curl unzip; \
         fi
     
-    # Install Python packages
-    RUN python3 -m pip install --no-cache-dir terraform-inventory
-
-    # Install other pip packages
     RUN python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel
     
-    # Install terraform-inventory binary instead of pip package
     RUN TERRAFORM_INV_VERSION="0.10" && \
         mkdir -p /usr/local/bin && \
-        curl -L "https://github.com/adammck/terraform-inventory/releases/download/v${TERRAFORM_INV_VERSION}/terraform-inventory_v${TERRAFORM_INV_VERSION}_linux_amd64.zip" -o /tmp/terraform-inventory.zip && \
+        curl -L "https://github.com/adammck/terraform-inventory/archive/refs/heads/master.zip" -o /tmp/terraform-inventory.zip && \
+        # curl -L "https://github.com/adammck/terraform-inventory/releases/download/v${TERRAFORM_INV_VERSION}/terraform-inventory_v${TERRAFORM_INV_VERSION}_linux_amd64.zip" -o /tmp/terraform-inventory.zip && \
         unzip /tmp/terraform-inventory.zip -d /tmp && \
         mv /tmp/terraform-inventory /usr/local/bin/terraform-inventory && \
         chmod +x /usr/local/bin/terraform-inventory && \
         rm -f /tmp/terraform-inventory.zip
 
   append_final: |
-    # Final cleanup
     RUN if [ -f /usr/bin/microdnf ]; then \
           microdnf clean all; \
         elif [ -f /usr/bin/dnf ]; then \

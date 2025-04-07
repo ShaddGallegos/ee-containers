@@ -5,7 +5,7 @@ build_arg_defaults: {}
 
 images:
   base_image:
-    name: 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest'
+    name: 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest'
     options:
       pull_policy: missing
       tls_verify: false
@@ -24,11 +24,11 @@ options:
 
 additional_build_steps:
   prepend_final: |
-    RUN microdnf install -y python3 python3-pip && \
-      python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
-      python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner && \
-      microdnf upgrade -y && \
-      pip3 cache purge       
+      RUN microdnf install -y python3 python3-pip && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner && \
+        microdnf upgrade -y && \
+        pip3 cache purge    
 
   append_final: |
     ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"

@@ -1,0 +1,15 @@
+cryptography
+ansible
+azure
+boto3
+botocore
+ipaddr
+jmespath
+netaddr
+paramiko
+passlib
+petname
+pywinrm
+requests
+requests-credssp
+

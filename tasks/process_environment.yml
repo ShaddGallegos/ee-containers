@@ -1,6 +1,7 @@
 - name: Set work_dir for the current environment
   ansible.builtin.set_fact:
     work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
+    build_context: "/tmp/ee-builder/context/environments/{{ item | basename }}"
 
 - name: Debug work_dir
   ansible.builtin.debug:
@@ -54,61 +55,21 @@
 # Only run build if YAML validation passed
 - name: Build container image using ansible-builder
   ansible.builtin.command:
-    cmd: >-
+    cmd: >
       ansible-builder build
       --tag {{ item | basename }}
       --container-runtime podman
       --verbosity 3
       --prune-images
-      --context {{ work_dir }}
-      -f {{ work_dir }}/execution-environment.yml
-    chdir: "{{ work_dir }}"
-  register: build_output
-  changed_when: "'Downloaded newer image' in build_output.stdout or 'Successfully built' in build_output.stdout"
+      --context {{ build_context }}
+      -f {{ build_context }}/execution-environment.yml
+      --build-arg AH_TOKEN="{{ automation_hub_token }}"
+  args:
+    chdir: "{{ build_context }}"
   environment:
-    ANSIBLE_BUILDER_HOME: "{{ work_dir }}"
-    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
-  ignore_errors: true
-  
-# Update build status file with the result for the monitoring display
-- name: Update build status file with build result
-  ansible.builtin.shell: >
-    if [ {{ build_output.rc }} -eq 0; then 
-      echo "COMPLETED: {{ item | basename }}" > /tmp/current_env;
-    else 
-      echo "FAILED: {{ item | basename }}" > /tmp/current_env;
-    fi
-  changed_when: false
-
-# Record results for summary display later
-- name: Record build status
-  ansible.builtin.set_fact:
-    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output}] }}"
-    cacheable: true
-  changed_when: false
-
-# Clean up after build (consolidated cleanup tasks)
-- name: Clean up dangling images
-  ansible.builtin.shell: |
-    # Remove dangling images (<none>:<none>)
-    podman images | awk '$1=="<none>" {print $3}' | xargs -r podman rmi --force
-    # Also run a general image prune
-    podman image prune -f
-  register: prune_output
-  changed_when: "'Deleted' in prune_output.stdout or 'Total reclaimed space:' in prune_output.stdout and not 'Total reclaimed space: 0B' in prune_output.stdout"
-  ignore_errors: true
+    ANSIBLE_BUILDER_HOME: "{{ build_context }}"
+    PODMAN_IGNORE_CGROUPSV1_WARNING: 1
+  register: build_output
+  changed_when: build_output.rc == 0
+  # Don't make this task fail, we'll handle failures later
   failed_when: false
-
-# Debug tasks to help troubleshoot build failures
-- name: Debug execution-environment.yml contents
-  ansible.builtin.shell: "cat {{ work_dir }}/execution-environment.yml"
-  register: ee_file_contents
-  changed_when: false
-  ignore_errors: true
-  when: build_output.rc != 0
-
-- name: Display execution-environment.yml contents for failed builds
-  ansible.builtin.debug:
-    msg: "{{ ee_file_contents.stdout_lines }}"
-  ignore_errors: true
-  when: build_output.rc != 0 and ee_file_contents is defined
