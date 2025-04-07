@@ -516,6 +516,12 @@
         msg: "Work directory: Not yet defined (will be set during processing)"
       when: work_dir is not defined
 
+    - name: Debug selected basename
+      ansible.builtin.debug:
+        msg: "Selected basename: {{ item | basename }}"
+      loop: "{{ selected_environments }}"
+      when: selected_environments is defined and selected_environments | length > 0
+
     - name: Kill existing monitoring tmux session (if any)
       ansible.builtin.command: tmux has-session -t podman-monitor
       register: tmux_monitor_check

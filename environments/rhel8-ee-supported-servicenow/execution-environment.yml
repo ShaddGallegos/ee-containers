@@ -20,6 +20,18 @@ dependencies:
   system: bindep.txt
 
 additional_build_steps:
+  prepend_base: |
+    USER root
+    # Fix DNF missing
+    RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
+        microdnf install -y dnf; \
+    fi
+    
+    # Existing commands...
+    RUN microdnf upgrade -y && \
+        microdnf install -y gcc make pkg-config python3-devel systemd-devel \
+        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation
+
   prepend_final: |
     RUN /usr/bin/microdnf install -y yum-utils \
         && microdnf upgrade -y \

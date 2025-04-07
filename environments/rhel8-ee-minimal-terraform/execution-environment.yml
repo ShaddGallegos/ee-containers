@@ -21,12 +21,11 @@ dependencies:
   system: bindep.txt
 
 additional_build_steps:
-  prepend_base:
-    # Install DNF first so the assemble script can use it
-    - RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
-          microdnf install -y dnf; \
-      fi
-
+  prepend_base: |
+    USER root
+    # Fix DNF missing
+    RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then microdnf install -y dnf; fi
+    
   prepend_final: |
     USER root
     # Use microdnf for initial updates on minimal containers
