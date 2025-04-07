@@ -40,6 +40,18 @@ additional_build_steps:
     # Install Python packages
     RUN python3 -m pip install --no-cache-dir terraform-inventory
 
+    # Install other pip packages
+    RUN python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel
+    
+    # Install terraform-inventory binary instead of pip package
+    RUN TERRAFORM_INV_VERSION="0.10" && \
+        mkdir -p /usr/local/bin && \
+        curl -L "https://github.com/adammck/terraform-inventory/releases/download/v${TERRAFORM_INV_VERSION}/terraform-inventory_v${TERRAFORM_INV_VERSION}_linux_amd64.zip" -o /tmp/terraform-inventory.zip && \
+        unzip /tmp/terraform-inventory.zip -d /tmp && \
+        mv /tmp/terraform-inventory /usr/local/bin/terraform-inventory && \
+        chmod +x /usr/local/bin/terraform-inventory && \
+        rm -f /tmp/terraform-inventory.zip
+
   append_final: |
     # Final cleanup
     RUN if [ -f /usr/bin/microdnf ]; then \

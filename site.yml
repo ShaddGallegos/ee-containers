@@ -261,7 +261,7 @@
                 echo: false
               register: automation_hub_token_input
               when: stored_credentials is not defined or stored_credentials.automation_hub_token is not defined
-             #no_log: true
+              no_log: true
               
             - name: Collect Galaxy token
               ansible.builtin.pause:
@@ -269,7 +269,7 @@
                 echo: false
               register: galaxy_token_input
               when: stored_credentials is not defined or stored_credentials.galaxy_token is not defined
-              #no_log: true
+              no_log: true
               
             - name: Set collected credential facts
               ansible.builtin.set_fact:

@@ -9,7 +9,7 @@ images:
       tls_verify: false
 
 dependencies:
-  galaxy: requirements.yaml
+  galaxy: requirements.yml
   python: requirements.txt
 
 options:
