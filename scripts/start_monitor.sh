@@ -34,9 +34,9 @@ tmux split-window -v -t podman-monitor
 tmux split-window -v -t podman-monitor:0.1
 
 # Set pane sizes
-tmux resize-pane -t podman-monitor:0.0 -y 13
-tmux resize-pane -t podman-monitor:0.1 -y 1
-tmux resize-pane -t podman-monitor:0.2 -y 25
+tmux resize-pane -t podman-monitor:0.0 -y 15
+tmux resize-pane -t podman-monitor:0.1 -y 2
+tmux resize-pane -t podman-monitor:0.2 -y 20
 
 # Configure middle pane for current build status with spinner
 tmux select-pane -t podman-monitor:0.1
