@@ -16,8 +16,8 @@ additional_build_files:
   - src: ./ansible.cfg
     dest: configs
   - src: ./library/systemd
-    dest: python/systemd 
-    
+    dest: python/systemd
+
 dependencies:
   ansible_core:
     package_pip: ansible-core
@@ -35,6 +35,8 @@ additional_build_steps:
     # Modify assemble script to bypass systemd-python
     RUN if [ -f /output/scripts/assemble ]; then \
         sed -i 's/pip install/pip install --no-deps/g' /output/scripts/assemble; \
+        # Remove any --exclude flags that might cause issues
+        sed -i 's/--exclude systemd-python//g' /output/scripts/assemble; \
     fi
 
   prepend_base: |
@@ -45,21 +47,10 @@ additional_build_steps:
     fi
     
     # Copy systemd module to correct location
-    RUN if [ -d /output/python/systemd ]; then \
-        mkdir -p /usr/lib/python3.11/site-packages/ && \
-        cp -r /output/python/systemd /usr/lib/python3.11/site-packages/; \
-    fi
-    
-    # Install development tools but avoid systemd-python
-    RUN microdnf upgrade -y && \
-        microdnf install -y gcc make pkg-config python3-devel systemd-devel \
-        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
-        python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-        python3 -m pip install --no-cache-dir --ignore-installed ansible-core ansible-runner
-
-    # Create directory for systemd module if it doesn't exist via additional_build_files
-    RUN mkdir -p /usr/lib/python3.11/site-packages/systemd && \
-        touch /usr/lib/python3.11/site-packages/systemd/__init__.py
+    RUN mkdir -p /usr/lib/python3.11/site-packages/ && \
+        if [ -d /output/python/systemd ]; then \
+            cp -r /output/python/systemd /usr/lib/python3.11/site-packages/; \
+        fi
 
   prepend_final: |
     USER root

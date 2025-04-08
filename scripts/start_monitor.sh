@@ -1,12 +1,5 @@
 #!/bin/bash
 
-# Kill existing session if it exists
-if tmux has-session -t podman-monitor 2>/dev/null; then
-  tmux kill-session -t podman-monitor
-  pkill -f "tmux" || true
-  sleep 1
-fi
-
 # Create basic session with forced dimensions
 tmux new-session -d -s podman-monitor
 
@@ -16,8 +9,6 @@ echo "NOTHING BUILDING YET" > /tmp/current_env
 # Configure the top pane with ASCII art header
 tmux select-pane -t podman-monitor:0.0
 tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
-
-Starting Podman monitoring...
 
                   ●●●●●●●
                  ●●●●●●●●●
@@ -38,14 +29,14 @@ Starting Podman monitoring...
 ●●●●●●●
 EOF
 " C-m
-
 # Split into bottom panes
 tmux split-window -v -t podman-monitor
 tmux split-window -v -t podman-monitor:0.1
 
 # Set pane sizes
-tmux resize-pane -t podman-monitor:0.0 -y 25
-tmux resize-pane -t podman-monitor:0.1 -y 2
+tmux resize-pane -t podman-monitor:0.0 -y 13
+tmux resize-pane -t podman-monitor:0.1 -y 1
+tmux resize-pane -t podman-monitor:0.2 -y 25
 
 # Configure middle pane for current build status with spinner
 tmux select-pane -t podman-monitor:0.1
@@ -94,5 +85,6 @@ done
 tmux select-pane -t podman-monitor:0.2
 tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
 
-# Now, let's attach to the session
-tmux attach -t podman-monitor
+# Do NOT attach - let the session run detached
+# This way Ansible can continue and the monitor stays running
+echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."

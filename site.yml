@@ -381,6 +381,13 @@
   tasks:
     - name: Setup monitoring
       block:
+        - name: Kill existing monitoring tmux session (if any)
+          ansible.builtin.command: tmux has-session -t podman-monitor
+          register: tmux_monitor_check
+          changed_when: false
+          failed_when: false
+          tags: [monitoring, cleanup]
+
         - name: Create scripts directory if it doesn't exist
           ansible.builtin.file:
             path: "{{ playbook_dir }}/scripts"
@@ -403,9 +410,7 @@
               # Configure the top pane with ASCII art header
               tmux select-pane -t podman-monitor:0.0
               tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
-
-              Starting Podman monitoring...
-
+         
                                 ●●●●●●●
                                ●●●●●●●●●
                               ●●●●●●●●●●●
@@ -430,8 +435,9 @@
               tmux split-window -v -t podman-monitor:0.1
               
               # Set pane sizes
-              tmux resize-pane -t podman-monitor:0.0 -y 25
+              tmux resize-pane -t podman-monitor:0.0 -y 15
               tmux resize-pane -t podman-monitor:0.1 -y 2
+              tmux resize-pane -t podman-monitor:0.2 -y 20
               
               # Configure middle pane for current build status with spinner
               tmux select-pane -t podman-monitor:0.1
@@ -743,19 +749,6 @@
       when: force_rebuild is not defined or not force_rebuild
       tags: [images]
 
-    - name: Kill existing monitoring tmux session (if any)
-      ansible.builtin.command: tmux has-session -t podman-monitor
-      register: tmux_monitor_check
-      changed_when: false
-      failed_when: false
-      tags: [monitoring, cleanup]
-
-    - name: Close existing monitoring tmux session
-      ansible.builtin.shell: tmux kill-session -t podman-monitor
-      when: tmux_monitor_check.rc == 0
-      changed_when: true
-      tags: [monitoring, cleanup]
-
     - name: Create scripts directory
       ansible.builtin.file:
         path: "{{ playbook_dir }}/scripts"
@@ -940,6 +933,19 @@
       register: cleanup_output
       changed_when: cleanup_output.stdout != ""
       ignore_errors: true
+      tags: [cleanup, post_build]
+
+    - name: Kill existing monitoring tmux session (if any)
+      ansible.builtin.command: tmux has-session -t podman-monitor
+      register: tmux_monitor_check
+      changed_when: false
+      failed_when: false
+      tags: [cleanup, post_build]
+
+    - name: Close existing monitoring tmux session
+      ansible.builtin.shell: tmux kill-session -t podman-monitor
+      when: tmux_monitor_check.rc == 0
+      changed_when: true
       tags: [cleanup, post_build]
     
     - name: Show cleanup results
