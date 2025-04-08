@@ -11,15 +11,13 @@ collections:
     version: ">=7.0.0"
   - name: community.postgresql
   - name: community.vmware
-    version: ">=3.6.0"
+    version: ">=3.8.0"
   - name: containers.podman
   - name: oneidentity.safeguardcollection
   - name: vmware.vmware
     version: ">=1.0.0"
-  - name: vmware.vmware_content
-    version: ">=1.0.0"
   - name: vmware.vmware_rest
-    version: ">=2.2.0"
+    version: ">=2.3.0"
   - name: vmware.vmware_vcenter
     version: ">=1.0.0"
   - name: vmware.vmware_vmc
@@ -31,4 +29,6 @@ collections:
   - name: vmware.vmware_vsphere
     version: ">=1.0.0"
 #  - name: cloud.vmware_ops
-#    version: ">=0.7.0,<0.9.0" 
+#    version: ">=0.7.0,<0.9.0"
+#  - name: vmware.vmware_content
+#    version: ">=1.0.0"
