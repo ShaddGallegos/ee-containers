@@ -1,66 +1,22 @@
-# Try to load credentials file
-- name: Load credentials from config file
-  ansible.builtin.include_vars:
-    file: "{{ ansible_env.HOME }}/.ansible/vars/config"
-  ignore_errors: true
-  no_log: true
+- name: Update /tmp/current_env for monitoring
+  ansible.builtin.copy:
+    content: "{{ item | basename }}"
+    dest: /tmp/current_env
+  changed_when: false
 
-# Check for required variables and prompt if missing
-- name: Check for automation_hub_token
-  block:
-    - name: Set default token value if undefined
-      ansible.builtin.set_fact:
-        automation_hub_token: "{{ automation_hub_token | default('') }}"
-      no_log: true
-    
-    - name: Prompt for Automation Hub token if missing
-      ansible.builtin.pause:
-        prompt: "Enter your Automation Hub token (or press enter to build without it)"
-        echo: false
-      register: ah_token_input
-      when: not automation_hub_token or automation_hub_token == ''
-      no_log: true
-    
-    - name: Set token from prompt (only if provided)
-      ansible.builtin.set_fact:
-        automation_hub_token: "{{ ah_token_input.user_input }}"
-      when: ah_token_input is defined and ah_token_input.user_input | default('') != ''
-      no_log: true
-      
-    - name: Save updated token to config (only if provided)
-      ansible.builtin.copy:
-        dest: "{{ ansible_env.HOME }}/.ansible/vars/config"
-        content: |
-          ---
-          # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
-          rh_username: '{{ rh_username | default('') }}'
-          rh_password: '{{ rh_password | default('') }}'
-          automation_hub_token: '{{ automation_hub_token | default('') }}'
-          galaxy_token: '{{ galaxy_token | default('') }}'
-        mode: '0600'
-      when: ah_token_input is defined and ah_token_input.user_input | default('') != ''
-      no_log: true
-            
-# Rest of your task remains the same
 - name: Set work_dir for the current environment
   ansible.builtin.set_fact:
     work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
-    build_context: "/tmp/ee-builder/context/environments/{{ item | basename }}"
 
 - name: Debug work_dir
   ansible.builtin.debug:
     msg: "Work directory: {{ work_dir }}"
-  
-- name: Create work_dir for the current environment
+
+- name: Create work_dir if it doesn't exist
   ansible.builtin.file:
     path: "{{ work_dir }}"
     state: directory
     mode: '0755'
-
-# Show that we're starting to build this environment in the monitoring display
-- name: Update build status file - starting build
-  ansible.builtin.shell: "BASENAME=$(basename {{ item }}) && echo $BASENAME > /tmp/current_env"
-  changed_when: false
 
 - name: Copy selected environment to work_dir
   ansible.builtin.copy:
@@ -68,71 +24,29 @@
     dest: "{{ work_dir }}"
     remote_src: true
 
-- name: Validate execution-environment.yml syntax
-  ansible.builtin.command:
-    cmd: "python3 -c \"import yaml; yaml.safe_load(open('{{ work_dir }}/execution-environment.yml'));\""
-  register: yaml_validation
-  changed_when: false
-  failed_when: false
-
-# Handle YAML validation failures
-- name: Handle YAML validation failures
-  when: yaml_validation.rc != 0
-  block:
-    - name: Update build status file - skipping build due to YAML error
-      ansible.builtin.shell: "BASENAME=$(basename {{ item }}) && echo SKIPPED: $BASENAME \\(invalid YAML\\) > /tmp/current_env"
-      changed_when: false
-      
-    - name: Debug skip message
-      ansible.builtin.debug:
-        msg: "SKIPPING BUILD due to invalid YAML in execution-environment.yml"
-        
-    - name: Record skipped build in results
-      ansible.builtin.set_fact:
-        build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': false, 'output': {'rc': 1, 'stderr': 'Invalid YAML syntax in execution-environment.yml', 'stderr_lines': ['Invalid YAML syntax in execution-environment.yml']}}] }}"
-        cacheable: true
-      changed_when: false
-      
-    - name: Skip remaining tasks for this environment
-      ansible.builtin.meta: end_play
-        
-# Only run build if YAML validation passed
 - name: Build container image using ansible-builder
-  ansible.builtin.command:
-    cmd: >
-      ansible-builder build
-      --tag {{ item | basename }}
-      --container-runtime podman
-      --verbosity 3
-      --prune-images
-      --context {{ build_context }}
-      -f {{ build_context }}/execution-environment.yml
-      {{ (automation_hub_token is defined and automation_hub_token | length > 0) | ternary('--build-arg AH_TOKEN="' + automation_hub_token + '"', '') }}
-  args:
-    chdir: "{{ build_context }}"
-  environment:
-    ANSIBLE_BUILDER_HOME: "{{ build_context }}"
-    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
+  ansible.builtin.shell: |
+    cd {{ work_dir }} && \
+    ansible-builder build \
+      --tag {{ item | basename }} \
+      --container-runtime podman \
+      --verbosity 2 \
+      --prune-images \
+      --context . \
+      -f execution-environment.yml
   register: build_output
-  changed_when: build_output.rc == 0
-  # Don't make this task fail, we'll handle failures later
-  failed_when: false
-        
-# Update build status file with the result for the monitoring display
-- name: Update build status file - build complete
-  ansible.builtin.shell: >
-    if [ {{ build_output.rc }} -eq 0; then 
-      echo "COMPLETED: {{ item | basename }}" > /tmp/current_env;
-    else 
-      echo "FAILED: {{ item | basename }}" > /tmp/current_env;
-    fi
-  changed_when: false
-  when: build_output is defined
+  environment:
+    ANSIBLE_BUILDER_HOME: "{{ work_dir }}"
+  ignore_errors: true
 
-# Record build results for summary display later
 - name: Record build status
   ansible.builtin.set_fact:
-    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output}] }}"
+    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}"
     cacheable: true
   changed_when: false
-  when: build_output is defined
+
+- name: Update /tmp/current_env showing build completed
+  ansible.builtin.copy:
+    content: "COMPLETED: {{ item | basename }}"
+    dest: /tmp/current_env
+  changed_when: false

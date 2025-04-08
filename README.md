@@ -28,15 +28,6 @@ This project automates the creation of custom Ansible Execution Environments bas
 
 ## Required Packages
 
-python3-pip
-ansible-builder
-ansible-core
-git
-podman
-podman-docker
-tmux
-xdg-utils
-yum-utils
 ```
 
 ## Getting Started
@@ -102,6 +93,31 @@ The build monitoring display shows:
 - List of available container images
 
 ## Troubleshooting
+
+### Key tags to add strategically throughout the playbook
+
+#### Core functionality tags
+
+- setup       # Initial setup tasks
+- creds       # Credential management
+- images      # Image building tasks
+- monitoring  # Terminal monitoring tasks
+- cleanup     # Cleanup tasks
+- report      # Summary reporting
+
+#### Process stage tags
+
+- init        # Initialization tasks
+- selection   # Environment selection tasks
+- build       # Build processing
+- post_build  # Post-build actions
+
+#### Specialized operation tags
+
+- always      # Tasks that should always run
+- validation  # Validation checks
+- pull        # Registry authentication and image pulling
+- security    # Security-related tasks
 
 ### Common Issues
 

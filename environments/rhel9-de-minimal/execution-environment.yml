@@ -33,10 +33,13 @@ options:
 
 additional_build_steps:
   prepend_final: |
-    RUN microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc systemd-devel \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
+    USER root
+    # Install additional dependencies but avoid systemd-python
+    RUN /usr/bin/microdnf install -y yum-utils && \
+        microdnf upgrade -y && \
+        microdnf install -y python3-pip python3-devel gcc && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
 
   append_final: |
     ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"

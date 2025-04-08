@@ -72,7 +72,7 @@
       register: connectivity_check
       failed_when: connectivity_check.status != 200  
       changed_when: false
-      tags: [connectivity, validation]
+      tags: [connectivity, validation, init]
       
     # Create static ansible.cfg before any template processing
     - name: Create static ansible.cfg file for initial setup
@@ -100,7 +100,7 @@
 
           [galaxy_server.galaxy]
           url=https://galaxy.ansible.com/
-      tags: [always]
+      tags: [always, setup, init]
 
     - name: Create collections requirements file
       ansible.builtin.copy:
@@ -114,7 +114,7 @@
             - name: community.general
             - name: infra.aap_configuration
             - name: infra.aap_utilities
-      tags: [setup, always, collections]
+      tags: [setup, always, collections, init]
 
     - name: Create requirements.txt file
       ansible.builtin.copy:
@@ -124,7 +124,7 @@
           ansible-builder>=3.0.0
           ansible-core>=2.15.0,<2.16
           ansible-lint>=24.0.0
-      tags: [setup, always, collections]
+      tags: [setup, always, collections, init]
 
     - name: Create inventory file
       ansible.builtin.copy:
@@ -134,7 +134,7 @@
         content: |
           [devnode]
           localhost ansible_connection=localhost
-      tags: [always, setup]
+      tags: [always, setup, init]
      
     - name: Force install community.general collection system-wide
       ansible.builtin.command:
@@ -142,16 +142,19 @@
       register: galaxy_install
       changed_when: galaxy_install.rc == 0
       failed_when: galaxy_install.rc != 0
+      tags: [setup, init]
 
     - name: Verify community.general collection installation
       ansible.builtin.command:
         cmd: "ansible-galaxy collection list community.general"
       register: collection_verify
       failed_when: collection_verify.rc != 0
+      tags: [setup, validation, init]
 
     - name: Show installation path
       ansible.builtin.debug:
         msg: "Collection installed at: {{ collection_verify.stdout_lines | select('search', 'Path:') | first | default('Unknown location') }}"
+      tags: [setup, init]
 
     # Improved user detection logic
     - name: Get effective and real user info
@@ -170,23 +173,24 @@
         echo "HOME=$HOME"
       register: user_info_output
       changed_when: false
-      tags: [always]
+      tags: [always, init]
     
     - name: Parse user info
       ansible.builtin.set_fact:
         parsed_user_info: "{{ dict(user_info_output.stdout_lines | map('regex_replace', '^([^=]+)=(.*)$', '\\1:\\2') | map('split', ':') | list) }}"
-      tags: [always]
+      tags: [always, init]
     
     - name: Set user facts
       ansible.builtin.set_fact:
         is_root: "{{ ansible_user_id == '0' }}"
         actual_user: "{{ ansible_user_id }}"
         user_home: "{{ ansible_env.HOME }}"
-      tags: [always]
+      tags: [always, init]
     
     - name: Set current_user fact
       ansible.builtin.set_fact:
         current_user: "{{ actual_user }}"
+      tags: [always, init]
     
     - name: Debug user detection
       ansible.builtin.debug:
@@ -196,18 +200,18 @@
           - Running as root: {{ is_root }}
           - Original user: {{ actual_user }}
           - User home: {{ user_home }}
-      tags: [always]
+      tags: [always, init]
 
     # Skip credential setup if running as root directly (not via sudo)
     - name: Skip credential setup if running as root directly
       ansible.builtin.set_fact:
         skip_credential_setup: "{{ ansible_user_id == 'root' and lookup('env', 'SUDO_USER') == '' }}"
-      tags: [always]
+      tags: [always, creds]
 
     - name: Show credential setup status
       ansible.builtin.debug:
         msg: "{{ skip_credential_setup | ternary('Running as direct root user - skipping credential setup', 'Setting up credentials for user ' + actual_user) }}"
-      tags: [always]
+      tags: [always, creds]
 
     - name: Setup user credentials properly
       when: not skip_credential_setup
@@ -217,13 +221,13 @@
             path: "{{ user_home }}/.ansible/vars"
             state: directory
             mode: '0700'
-          tags: [setup, credential_setup]
+          tags: [setup, credential_setup, creds]
 
         - name: Check if credentials file exists
           ansible.builtin.stat:
             path: "{{ user_home }}/.ansible/vars/config"
           register: config_file
-          tags: [always]
+          tags: [always, creds]
 
         - name: Create empty config file if it doesn't exist
           ansible.builtin.copy:
@@ -237,13 +241,13 @@
               galaxy_token: ''
             mode: '0600'
           when: not config_file.stat.exists
-          tags: [setup, credential_setup]
+          tags: [setup, credential_setup, creds]
 
         - name: Load stored credentials
           ansible.builtin.include_vars:
             file: "{{ user_home }}/.ansible/vars/config"
             name: stored_credentials
-          tags: [always]
+          tags: [always, creds]
 
         - name: Check if config file has required variables
           ansible.builtin.set_fact:
@@ -251,7 +255,7 @@
             has_rh_password: "{{ stored_credentials.rh_password is defined and stored_credentials.rh_password != '' }}"
             has_automation_hub_token: "{{ stored_credentials.automation_hub_token is defined }}"
             has_galaxy_token: "{{ stored_credentials.galaxy_token is defined }}"
-          tags: [always]
+          tags: [always, creds]
 
         - name: Collect Red Hat CDN username if missing
           ansible.builtin.pause:
@@ -259,6 +263,7 @@
             echo: true
           register: rh_username_input
           when: not has_rh_username
+          tags: [creds]
               
         - name: Collect Red Hat CDN password if missing
           ansible.builtin.pause:
@@ -267,6 +272,7 @@
           register: rh_password_input
           when: not has_rh_password
           no_log: true
+          tags: [creds]
               
         - name: Collect Automation Hub token if missing
           ansible.builtin.pause:
@@ -275,6 +281,7 @@
           register: automation_hub_token_input
           when: not has_automation_hub_token
           no_log: true
+          tags: [creds]
               
         - name: Collect Galaxy token if missing
           ansible.builtin.pause:
@@ -283,6 +290,7 @@
           register: galaxy_token_input
           when: not has_galaxy_token
           no_log: true
+          tags: [creds]
               
         - name: Update credentials while preserving existing values
           ansible.builtin.set_fact:
@@ -291,6 +299,7 @@
             automation_hub_token: "{{ automation_hub_token_input.user_input if automation_hub_token_input is defined else stored_credentials.automation_hub_token | default('') }}"
             galaxy_token: "{{ galaxy_token_input.user_input if galaxy_token_input is defined else stored_credentials.galaxy_token | default('') }}"
           no_log: true
+          tags: [creds]
 
         - name: Save updated credentials to file (preserving existing values)
           ansible.builtin.copy:
@@ -304,6 +313,7 @@
               galaxy_token: '{{ galaxy_token }}'
             mode: '0600'
           no_log: true
+          tags: [creds]
 
         - name: Show run mode
           ansible.builtin.debug:
@@ -316,13 +326,13 @@
               │ User: {{ actual_user | default('Unknown') }}                                            │
               │ Credentials: {{ "New" if first_run | default(false) else "Loaded from file" }}      │
               └────────────────────────────────────────────────────────────────────┘
-          tags: [always]
+          tags: [always, creds]
 
         # Use sudo_user's home directory for config in the main play
         - name: Set config path for main play
           ansible.builtin.set_fact:
             config_path: "{{ user_home }}/.ansible/vars/config"
-          tags: [always]
+          tags: [always, creds]
 
 # Play 2: Display title and introduction
 - name: Display title screen
@@ -356,12 +366,12 @@
           │                                                                                   .+@@@@@@@@@@@@@@@@+..      │
           │                                                                                     ..+*%@@@@@@%*+..         │
           └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-      tags: [always]
+      tags: [always, init]
 
     - name: Title screen
       ansible.builtin.pause:
         seconds: 3
-      tags: [always]
+      tags: [always, init]
 
 # Play 2: Environment Selection
 - name: Environment Selection
@@ -369,23 +379,100 @@
   connection: local
   gather_facts: false
   tasks:
+    - name: Setup monitoring
+      block:
+        - name: Kill any existing tmux session
+          ansible.builtin.shell: |
+            if tmux has-session -t podman-monitor 2>/dev/null; then
+              tmux kill-session -t podman-monitor
+            fi
+          changed_when: true
+          failed_when: false
+          tags: [monitoring, cleanup]
+
+        - name: Launch monitoring in terminal window
+          ansible.builtin.shell: >
+            tmux new-session -d -s podman-monitor || true
+          changed_when: true
+          ignore_errors: true
+          tags: [monitoring]
+
+        - name: Launch podman monitor in background
+          ansible.builtin.shell: >
+            nohup {{ playbook_dir }}/scripts/start_monitor.sh > /tmp/monitor.log 2>&1 &
+          args:
+            executable: /bin/bash
+          register: term_launch
+          changed_when: true
+          ignore_errors: true
+          tags: [monitoring]
+
+        - name: Detect environment type for terminal selection
+          ansible.builtin.set_fact:
+            is_wsl: "{{ ansible_kernel is search('Microsoft') }}"
+            is_linux_desktop: "{{ lookup('env', 'DISPLAY') != '' }}"
+            is_mac: "{{ ansible_os_family == 'Darwin' if ansible_os_family is defined else false }}"
+          tags: [monitoring]
+
+        - name: Try to open terminal with tmux session (WSL)
+          ansible.builtin.shell: |
+            powershell.exe -Command "Start-Process wt -ArgumentList 'wsl.exe', '-d', 'Ubuntu', '-e', 'tmux', 'attach', '-t', 'podman-monitor'" 
+          when: is_wsl | bool
+          ignore_errors: true
+          tags: [monitoring]
+
+        - name: Try to open terminal with tmux session (Linux Desktop)
+          ansible.builtin.shell: |
+            for term in gnome-terminal konsole xfce4-terminal terminator xterm; do
+              if command -v $term >/dev/null 2>&1; then
+                case $term in
+                  gnome-terminal)
+                    $term -- tmux attach -t podman-monitor &
+                    ;;
+                  *)
+                    $term -e "tmux attach -t podman-monitor" &
+                    ;;
+                esac
+                echo "Opened terminal: $term"
+                exit 0
+              fi
+            done
+          when: is_linux_desktop | bool and not is_wsl | bool
+          register: term_open
+          ignore_errors: true
+          changed_when: term_open.rc == 0
+          tags: [monitoring]
+
+        - name: Provide manual instructions if terminal couldn't be opened automatically
+          ansible.builtin.debug:
+            msg: |
+              Could not open terminal window automatically.
+              To view the build monitor, open a new terminal and run:
+                tmux attach -t podman-monitor
+          when: (term_open.rc != 0 if term_open is defined else true) and (is_linux_desktop | bool or is_wsl | bool)
+          tags: [monitoring]
+      tags: [monitoring, setup]
+
     - name: Prompt for distribution selection
       ansible.builtin.pause:
         prompt: |
           Please select the distribution:
           Enter '8' for RHEL 8, '9' for RHEL 9, or 'all' for both
       register: user_input
+      tags: [selection]
 
     - name: Set distribution_selection based on user input
       ansible.builtin.set_fact:
         distribution_selection: "{{ user_input.user_input }}"
       when: user_input.user_input is defined
+      tags: [selection]
 
     - name: Set default values for build_rhel8 and build_rhel9
       ansible.builtin.set_fact:
         build_rhel8: false
         build_rhel9: false
       when: build_rhel8 is not defined or build_rhel9 is not defined
+      tags: [selection]
 
     - name: Filter available environments based on distribution selection
       block:
@@ -394,12 +481,14 @@
             paths: "environments"
             file_type: directory
           register: all_environments
+          tags: [selection]
 
         - name: Process environments for filtering
           ansible.builtin.set_fact:
             rhel8_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel8') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
             rhel9_environments: "{{ all_environments.files | selectattr('path', 'search', 'rhel9') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
             neutral_environments: "{{ all_environments.files | rejectattr('path', 'search', 'rhel[89]') | rejectattr('path', 'search', '\\.bak$') | map(attribute='path') | list }}"
+          tags: [selection]
 
         - name: Set available environments based on distribution selection
           ansible.builtin.set_fact:
@@ -410,6 +499,7 @@
                 (distribution_selection == 'all') | ternary(rhel8_environments + rhel9_environments, []) +
                 neutral_environments
               }}
+          tags: [selection]
 
     - name: Display environment selection menu header
       ansible.builtin.debug:
@@ -424,6 +514,7 @@
           {{ loop.index }}. {{ env | basename }}
           {% endfor %}
           **************************************************
+      tags: [selection]
 
     - name: Prompt for environment selection
       ansible.builtin.pause:
@@ -443,11 +534,13 @@
           Enter 'all' to select all environments
           Enter 'q' to quit without selecting:
       register: user_input
+      tags: [selection]
 
     - name: Parse user input for environment selection
       ansible.builtin.set_fact:
         selected_environments: "{{ (user_input.user_input == 'all') | ternary(available_environments, []) }}"
       when: user_input.user_input == 'all'
+      tags: [selection]
 
     - name: Parse numeric selection input 
       block:
@@ -455,43 +548,52 @@
           ansible.builtin.set_fact:
             selected_numbers: "{{ user_input.user_input.split(',') | map('trim') | map('int') | list }}"
           when: user_input.user_input != 'all' and user_input.user_input != ''
+          tags: [selection]
 
         - name: Map numbers to environments
           ansible.builtin.set_fact:
             selected_environments: "{{ selected_environments | default([]) + [available_environments[item|int - 1]] }}"
           loop: "{{ selected_numbers }}"
           when: selected_numbers is defined
+          tags: [selection]
       when: user_input.user_input != 'all' and user_input.user_input != ''
+      tags: [selection]
 
     - name: Debug parsed selection
       ansible.builtin.debug:
         msg: "Selected environment numbers: {{ selected_numbers | default([]) }}"
       when: selected_numbers is defined
+      tags: [selection]
 
     - name: Set basename for the selected environment
       ansible.builtin.set_fact:
         basename: "{{ selected_environments | first | basename }}"
       when: selected_environments is defined and selected_environments | length > 0
+      tags: [selection]
       
     - name: Debug selected basename
       ansible.builtin.debug:
         msg: "Selected environment basename: {{ basename | default('None') }}"
       when: basename is defined
+      tags: [selection]
 
     - name: Debug selected environments
       ansible.builtin.debug:
         var: selected_environments
+      tags: [selection]
 
     - name: Debug work_dir
       ansible.builtin.debug:
         msg: "Work directory: Not yet defined (will be set during processing)"
       when: work_dir is not defined
+      tags: [selection]
 
     - name: Debug selected basename
       ansible.builtin.debug:
         msg: "Selected basename: {{ item | basename }}"
       loop: "{{ selected_environments }}"
       when: selected_environments is defined and selected_environments | length > 0
+      tags: [selection]
 
     - name: Debug environment selection
       ansible.builtin.debug:
@@ -503,6 +605,7 @@
           NO ENVIRONMENTS SELECTED!
           {% endfor %}
         verbosity: 0  # Always show this
+      tags: [selection]
 
     - name: Check if image already exists for each selected environment
       ansible.builtin.command:
@@ -512,27 +615,34 @@
       changed_when: false
       failed_when: false
       when: force_rebuild is not defined or not force_rebuild
+      tags: [images, validation]
 
     - name: Filter missing environments
       ansible.builtin.set_fact:
-        missing_environment_images: "{{ selected_environments }}"
-      when: force_rebuild is defined and force_rebuild
-
-    - name: Filter missing environments based on existing images
-      ansible.builtin.set_fact:
-        missing_environment_images: "{{ selected_environments | select('basename') | list | difference(existing_images.results | selectattr('rc', 'eq', 0) | map(attribute='item') | map('basename') | list) }}"
+        missing_environment_images: >-
+          {{ selected_environments | 
+             difference(
+               existing_images.results | 
+               selectattr('rc', 'eq', 0) | 
+               map(attribute='item') | 
+               list
+             )
+          }}
       when: force_rebuild is not defined or not force_rebuild
+      tags: [images]
 
     - name: Kill existing monitoring tmux session (if any)
       ansible.builtin.command: tmux has-session -t podman-monitor
       register: tmux_monitor_check
       changed_when: false
       failed_when: false
+      tags: [monitoring, cleanup]
 
     - name: Close existing monitoring tmux session
       ansible.builtin.shell: tmux kill-session -t podman-monitor
       when: tmux_monitor_check.rc == 0
       changed_when: true
+      tags: [monitoring, cleanup]
 
     - name: Create scripts directory
       ansible.builtin.file:
@@ -548,6 +658,7 @@
       changed_when: "'Total reclaimed space:' in prune_output.stdout and not 'Total reclaimed space: 0B' in prune_output.stdout"
       ignore_errors: true
       failed_when: false
+      tags: [cleanup]
 
     - name: Copy environment directories to required locations
       ansible.builtin.copy:
@@ -573,14 +684,15 @@
         path: "{{ playbook_dir }}/tasks"
         state: directory
         mode: '0755'
+      tags: [setup, build]
 
     - name: Create process_environment.yml for build
       ansible.builtin.copy:
         dest: "{{ playbook_dir }}/tasks/process_environment.yml"
         content: |
-          - name: Update /tmp/current_env for monitoring
+          - name: Update /tmp/current_env for monitoring showing build start
             ansible.builtin.copy:
-              content: "{{ item | basename }}"
+              content: "STARTING: {% raw %}{{ item | basename }}{% endraw %}"
               dest: /tmp/current_env
             changed_when: false
 
@@ -588,57 +700,76 @@
             ansible.builtin.set_fact:
               work_dir: "/tmp/ee-builder/context/environments/{% raw %}{{ item | basename }}{% endraw %}"
 
-          - name: Debug work_dir
-            ansible.builtin.debug:
-              msg: "Work directory: {% raw %}{{ work_dir }}{% endraw %}"
+          # Wrap the build process in a block with rescue
+          - name: Build environment {% raw %}{{ item | basename }}{% endraw %}
+            block:
+              - name: Debug work_dir
+                ansible.builtin.debug:
+                  msg: "Work directory: {% raw %}{{ work_dir }}{% endraw %}"
 
-          - name: Create work_dir if it doesn't exist
-            ansible.builtin.file:
-              path: "{% raw %}{{ work_dir }}{% endraw %}"
-              state: directory
-              mode: '0755'
+              - name: Create work_dir if it doesn't exist
+                ansible.builtin.file:
+                  path: "{% raw %}{{ work_dir }}{% endraw %}"
+                  state: directory
+                  mode: '0755'
 
-          - name: Build container image using ansible-builder
-            ansible.builtin.shell: |
-              cd {% raw %}{{ work_dir }}{% endraw %} && \
-              ansible-builder build \
-                --tag {% raw %}{{ item | basename }}{% endraw %} \
-                --container-runtime podman \
-                --verbosity 2 \
-                --prune-images \
-                --context . \
-                -f execution-environment.yml
-            register: build_output
-            environment:
-              ANSIBLE_BUILDER_HOME: "{% raw %}{{ work_dir }}{% endraw %}"
-            ignore_errors: true
+              - name: Copy selected environment to work_dir
+                ansible.builtin.copy:
+                  src: "{% raw %}{{ item }}{% endraw %}"
+                  dest: "{% raw %}{{ work_dir }}{% endraw %}"
+                  remote_src: true
 
-          - name: Record build status
-            ansible.builtin.set_fact:
-              build_results: "{% raw %}{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}{% endraw %}"
-              cacheable: true
-            changed_when: false
+              - name: Update /tmp/current_env showing active build
+                ansible.builtin.copy:
+                  content: "{% raw %}{{ item | basename }}{% endraw %}"
+                  dest: /tmp/current_env
+                changed_when: false
 
-          - name: Update /tmp/current_env showing build completed
-            ansible.builtin.copy:
-              content: "COMPLETED: {% raw %}{{ item | basename }}{% endraw %}"
-              dest: /tmp/current_env
-            changed_when: false
+              - name: Build container image using ansible-builder
+                ansible.builtin.shell: |
+                  cd {% raw %}{{ work_dir }}{% endraw %} && \
+                  ansible-builder build \
+                    --tag {% raw %}{{ item | basename }}{% endraw %} \
+                    --container-runtime podman \
+                    --verbosity 2 \
+                    --prune-images \
+                    --context . \
+                    -f execution-environment.yml
+                register: build_output
+                environment:
+                  ANSIBLE_BUILDER_HOME: "{% raw %}{{ work_dir }}{% endraw %}"
+                ignore_errors: true
+
+              - name: Record build status
+                ansible.builtin.set_fact:
+                  build_results: "{% raw %}{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}{% endraw %}"
+                  cacheable: true
+                changed_when: false
+
+              - name: Update /tmp/current_env showing build completed
+                ansible.builtin.copy:
+                  content: "COMPLETED: {% raw %}{{ item | basename }}{% endraw %}"
+                  dest: /tmp/current_env
+                changed_when: false
         mode: '0644'
+      tags: [setup, build]
 
     - name: Show "NOTHING BUILDING YET"
       ansible.builtin.debug:
         msg: "NOTHING BUILDING YET"
+      tags: [build]
 
     - name: Process each selected environment
       ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
       loop: "{{ missing_environment_images }}"
       loop_control:
         label: "{{ item | basename }}"
+      tags: [build]
 
     - name: Show "BUILD COMPLETE"
       ansible.builtin.debug:
         msg: "BUILD COMPLETE"
+      tags: [build, post_build]
 
     - name: Create Podman monitoring script
       ansible.builtin.copy:
@@ -740,11 +871,13 @@
           # Now, let's attach to the session rather than detaching from it
           tmux attach -t podman-monitor
         mode: '0755'
+      tags: [monitoring, setup]
 
     - name: Make script executable
       ansible.builtin.file:
         path: "{{ playbook_dir }}/scripts/start_monitor.sh"
         mode: '0755'
+      tags: [monitoring, setup]
       
     - name: Kill any existing tmux session
       ansible.builtin.shell: |
@@ -753,6 +886,7 @@
         fi
       changed_when: true
       failed_when: false
+      tags: [monitoring, cleanup]
 
     - name: Launch monitoring in terminal window
       ansible.builtin.shell: >
@@ -795,11 +929,13 @@
       register: term_open
       ignore_errors: true
       changed_when: term_open.stdout is search("Opened terminal")
+      tags: [monitoring]
 
     - name: Force build_results to be visible in summary
       ansible.builtin.set_fact:
         build_results: "{{ build_results | default([]) }}"
         cacheable: true
+      tags: [post_build]
 
 # Play 3: Summary and Status Report
 - name: Summary and Status Report
@@ -837,9 +973,11 @@
           {% endfor %}
           {% endif %}
       when: build_results is defined
+      tags: [report]
 
     - name: Show no build results message
       ansible.builtin.debug:
         msg: "No build results available. Did you select any environments to build?"
       when: build_results is not defined or build_results | length == 0
+      tags: [report]
 
