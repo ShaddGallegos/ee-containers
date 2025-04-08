@@ -381,75 +381,187 @@
   tasks:
     - name: Setup monitoring
       block:
-        - name: Kill any existing tmux session
-          ansible.builtin.shell: |
-            if tmux has-session -t podman-monitor 2>/dev/null; then
-              tmux kill-session -t podman-monitor
-            fi
-          changed_when: true
-          failed_when: false
-          tags: [monitoring, cleanup]
+        - name: Create scripts directory if it doesn't exist
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/scripts"
+            state: directory
+            mode: '0755'
+          tags: [setup, monitoring]
 
-        - name: Launch monitoring in terminal window
-          ansible.builtin.shell: >
-            tmux new-session -d -s podman-monitor || true
-          changed_when: true
-          ignore_errors: true
+        - name: Create unified Podman monitoring script
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
+            content: |
+              #!/bin/bash
+              
+              # Kill existing session if it exists
+              if tmux has-session -t podman-monitor 2>/dev/null; then
+                tmux kill-session -t podman-monitor
+                pkill -f "tmux" || true
+                sleep 1
+              fi
+              
+              # Create basic session with forced dimensions
+              tmux new-session -d -s podman-monitor
+              
+              # Create initial status file with default message
+              echo "NOTHING BUILDING YET" > /tmp/current_env
+              
+              # Configure the top pane with ASCII art header
+              tmux select-pane -t podman-monitor:0.0
+              tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
+
+              Starting Podman monitoring...
+
+                                ●●●●●●●
+                               ●●●●●●●●●
+                              ●●●●●●●●●●●
+                             ●●●●●  ●●●●●●
+                  ╔═════════●●●●●════●●●●●●════════════════════════════════════════════════════╗
+                  ║        ●●●●●      ●●●●●●                                                   ║
+                  ║       ●●●●●        ●●●●●●                                                  ║
+                  ║      ●●●●●          ●●●●●●                                                 ║
+                  ║     ●●●●●●           ●●●●●●●                                               ║
+                  ║    ●●●●●●              ●●●●●●                                              ║
+                  ║   ●●●●●●●●●             ●●●●●●                                             ║
+                  ║  ●●●●●● ●●●●●●●●         ●●●●●●                                            ║
+                  ║ ●●●●●●      ●●●●●●●       ●●●●●● ANSIBLE & PODMAN                          ║
+                  ╠●●●●●●══════════●●●●●●●════●●●●●●●══════════════════════════════════════════╣
+                  ●●●●●●              ●●●●●●●●●●●●●●● EXECUTION BUILD MONITOR                  ║
+                ●●●●●●══════════════════●●●●●●●●●●●●═══════════════════════════════════════════╝
+              ●●●●●●●
+              EOF
+              " C-m
+              
+              # Split into bottom panes
+              tmux split-window -v -t podman-monitor
+              tmux split-window -v -t podman-monitor:0.1
+              
+              # Set pane sizes
+              tmux resize-pane -t podman-monitor:0.0 -y 25
+              tmux resize-pane -t podman-monitor:0.1 -y 2
+              
+              # Configure middle pane for current build status with spinner
+              tmux select-pane -t podman-monitor:0.1
+              tmux send-keys -t podman-monitor:0.1 "
+              while true; do
+                BUILDING_FILE=/tmp/current_env
+                if [ -f \"\$BUILDING_FILE\" ]; then
+                  BUILDING_ENV=\$(cat \"\$BUILDING_FILE\")
+                  
+                  # Default output with no spinner
+                  OUTPUT=\"\$BUILDING_ENV\"
+                  
+                  # Check if this is an active build (not SKIPPED, COMPLETED, or default message)
+                  if [[ \"\$BUILDING_ENV\" != \"SKIPPED\"* && 
+                        \"\$BUILDING_ENV\" != \"COMPLETED\"* && 
+                        \"\$BUILDING_ENV\" != \"NOTHING BUILDING YET\" && 
+                        \"\$BUILDING_ENV\" != \"FAILED\"* ]]; then
+                    # Add spinner only for active builds
+                    SPINNER_CHARS=(\"|\" \"/\" \"-\" \"\\\\\")
+                    SPINNER_INDEX=\$(( (SECONDS / 1) % 4 ))
+                    SPINNER=\${SPINNER_CHARS[\$SPINNER_INDEX]}
+                    
+                    # Format with 'Building:' prefix and spinner suffix
+                    OUTPUT=\"Building: \$BUILDING_ENV \${SPINNER}\"
+                  elif [[ \"\$BUILDING_ENV\" == \"FAILED\"* ]]; then
+                    # Red for failed builds
+                    OUTPUT=\"\033[1;31m\$BUILDING_ENV\033[0m\"
+                  elif [[ \"\$BUILDING_ENV\" == \"COMPLETED\"* ]]; then
+                    # Green for completed builds
+                    OUTPUT=\"\033[1;32m\$BUILDING_ENV\033[0m\"
+                  fi
+                  
+                  # Clear line and print output
+                  clear
+                  printf \" %b\" \"\$OUTPUT\"
+                else
+                  # Fallback if file doesn't exist
+                  clear
+                  printf \" NOTHING BUILDING YET\"
+                fi
+                sleep 0.5
+              done
+              " C-m
+              
+              # Configure bottom pane for podman images
+              tmux select-pane -t podman-monitor:0.2
+              tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
+              
+              # Do NOT attach - let the session run detached
+              # This way Ansible can continue and the monitor stays running
+              echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
+            mode: '0755'
           tags: [monitoring]
 
-        - name: Launch podman monitor in background
+        - name: Launch monitoring script in the background
           ansible.builtin.shell: >
-            nohup {{ playbook_dir }}/scripts/start_monitor.sh > /tmp/monitor.log 2>&1 &
-          args:
-            executable: /bin/bash
+            {{ playbook_dir }}/scripts/start_monitor.sh
           register: term_launch
           changed_when: true
           ignore_errors: true
           tags: [monitoring]
 
-        - name: Detect environment type for terminal selection
-          ansible.builtin.set_fact:
-            is_wsl: "{{ ansible_kernel is search('Microsoft') }}"
-            is_linux_desktop: "{{ lookup('env', 'DISPLAY') != '' }}"
-            is_mac: "{{ ansible_os_family == 'Darwin' if ansible_os_family is defined else false }}"
-          tags: [monitoring]
-
-        - name: Try to open terminal with tmux session (WSL)
-          ansible.builtin.shell: |
-            powershell.exe -Command "Start-Process wt -ArgumentList 'wsl.exe', '-d', 'Ubuntu', '-e', 'tmux', 'attach', '-t', 'podman-monitor'" 
-          when: is_wsl | bool
-          ignore_errors: true
-          tags: [monitoring]
-
-        - name: Try to open terminal with tmux session (Linux Desktop)
-          ansible.builtin.shell: |
-            for term in gnome-terminal konsole xfce4-terminal terminator xterm; do
-              if command -v $term >/dev/null 2>&1; then
-                case $term in
-                  gnome-terminal)
-                    $term -- tmux attach -t podman-monitor &
-                    ;;
-                  *)
-                    $term -e "tmux attach -t podman-monitor" &
-                    ;;
-                esac
-                echo "Opened terminal: $term"
-                exit 0
-              fi
-            done
-          when: is_linux_desktop | bool and not is_wsl | bool
-          register: term_open
-          ignore_errors: true
-          changed_when: term_open.rc == 0
-          tags: [monitoring]
-
-        - name: Provide manual instructions if terminal couldn't be opened automatically
+        - name: Show monitoring script location and instructions
           ansible.builtin.debug:
             msg: |
-              Could not open terminal window automatically.
+              ======================================================
+              MONITORING SETUP
+              
+              Monitor script: {{ playbook_dir }}/scripts/start_monitor.sh
+              
               To view the build monitor, open a new terminal and run:
                 tmux attach -t podman-monitor
-          when: (term_open.rc != 0 if term_open is defined else true) and (is_linux_desktop | bool or is_wsl | bool)
+              ======================================================
+          tags: [monitoring]
+
+        # Try to automatically open a terminal window
+        - name: Try to open terminal with tmux session
+          ansible.builtin.shell: |
+            # Try to detect the environment
+            is_wsl=0
+            is_gui=0
+            
+            # Check for WSL
+            if grep -qi microsoft /proc/version 2>/dev/null; then
+              is_wsl=1
+            fi
+            
+            # Check for GUI
+            if [ -n "$DISPLAY" ]; then
+              is_gui=1
+            fi
+            
+            # For WSL, try Windows Terminal
+            if [ $is_wsl -eq 1 ]; then
+              powershell.exe -Command "Start-Process wt -ArgumentList 'wsl.exe', '-e', 'tmux', 'attach', '-t', 'podman-monitor'" >/dev/null 2>&1
+              echo "Attempted to open Windows Terminal"
+              exit 0
+            fi
+            
+            # For GUI Linux, try various terminals
+            if command -v $term >/dev/null 2>&1; then
+              for term in gnome-terminal konsole xfce4-terminal terminator xterm; do
+                if command -v $term >/dev/null 2>&1; then
+                  case $term in
+                    gnome-terminal)
+                      $term -- tmux attach -t podman-monitor &
+                      ;;
+                    *)
+                      $term -e "tmux attach -t podman-monitor" &
+                      ;;
+                  esac
+                  echo "Opened terminal: $term"
+                  exit 0
+                fi
+              done
+            fi
+            
+            echo "No suitable terminal found - use manual command"
+            exit 1
+          register: term_open
+          ignore_errors: true
+          changed_when: term_open.stdout is search("Opened terminal")
           tags: [monitoring]
       tags: [monitoring, setup]
 
@@ -702,6 +814,7 @@
             ansible.builtin.shell: podman image prune -f
             register: pre_prune
             changed_when: pre_prune.stdout is search("deleted")
+            ignore_errors: true
           
           - name: Update /tmp/current_env for monitoring showing build start
             ansible.builtin.copy:
@@ -725,7 +838,33 @@
                   cd {% raw %}{{ work_dir }}{% endraw %} && \
                   ansible-builder build \
                     --tag {% raw %}{{ item | basename }}{% endraw %} \
-                    --
+                    --container-runtime podman \
+                    --verbosity 2 \
+                    --prune-images \
+                    --context . \
+                    -f execution-environment.yml
+                register: build_output
+                environment:
+                  ANSIBLE_BUILDER_HOME: "{% raw %}{{ work_dir }}{% endraw %}"
+                ignore_errors: true
+                
+              - name: Record build status
+                ansible.builtin.set_fact:
+                  build_results: "{% raw %}{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}{% endraw %}"
+                  cacheable: true
+                
+            rescue:
+              - name: Record failed build
+                ansible.builtin.set_fact:
+                  build_results: "{% raw %}{{ build_results | default([]) + [{'image': item | basename, 'success': false, 'output': {'rc': 999} }] }}{% endraw %}"
+                  cacheable: true
+                  
+            always:
+              - name: Update /tmp/current_env showing build completed
+                ansible.builtin.copy:
+                  content: "COMPLETED: {% raw %}{{ item | basename }}{% endraw %}"
+                  dest: /tmp/current_env
+                changed_when: false
         mode: '0644'
       tags: [setup, build]
 
@@ -745,166 +884,6 @@
       ansible.builtin.debug:
         msg: "BUILD COMPLETE"
       tags: [build, post_build]
-
-    - name: Create Podman monitoring script
-      ansible.builtin.copy:
-        dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
-        content: |
-          #!/bin/bash
-          
-          # Kill existing session if it exists
-          if tmux has-session -t podman-monitor 2>/dev/null; then
-            tmux kill-session -t podman-monitor
-            pkill -f "tmux" || true
-            sleep 1
-          fi
-          
-          # Create basic session with forced dimensions
-          tmux new-session -d -s podman-monitor
-          
-          # IMPORTANT: First split into top and bottom
-          # Then split the top portion to create the middle line
-          # This approach gives better control over the middle pane height
-          tmux split-window -t podman-monitor:0.0 -v -p 60  # Bottom pane is 60% of the screen
-          tmux split-window -t podman-monitor:0.0 -v -l 1   # Middle pane is exactly 1 line tall
-          
-          # Create initial status file with default message
-          echo "NOTHING BUILDING YET" > /tmp/current_env
-          
-          # Now we have:
-          # podman-monitor:0.0 - Top pane (header)
-          # podman-monitor:0.1 - Middle pane (build info - exactly one line)
-          # podman-monitor:0.2 - Bottom pane (podman images)
-          
-          # Configure the top pane with ASCII art header (pane 0)
-          tmux select-pane -t podman-monitor:0.0
-          tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
-
-          Starting Podman monitoring...
-          
-
-                            ●●●●●●●
-                           ●●●●●●●●●
-                          ●●●●●●●●●●●
-                         ●●●●●  ●●●●●●
-              ╔═════════●●●●●════●●●●●●════════════════════════════════════════════════════╗
-              ║        ●●●●●      ●●●●●●                                                   ║
-              ║       ●●●●●        ●●●●●●                                                  ║
-              ║      ●●●●●          ●●●●●●                                                 ║
-              ║     ●●●●●●           ●●●●●●●                                               ║
-              ║    ●●●●●●              ●●●●●●                                              ║
-              ║   ●●●●●●●●●             ●●●●●●                                             ║
-              ║  ●●●●●● ●●●●●●●●         ●●●●●●                                            ║
-              ║ ●●●●●●      ●●●●●●●       ●●●●●● ANSIBLE & PODMAN                          ║
-              ╠●●●●●●══════════●●●●●●●════●●●●●●●══════════════════════════════════════════╣
-              ●●●●●●              ●●●●●●●●●●●●●●● EXECUTION BUILD MONITOR                  ║
-            ●●●●●●══════════════════●●●●●●●●●●●●═══════════════════════════════════════════╝
-          ●●●●●●●
-          EOF
-          " C-m
-          
-          # Configure middle pane for Build info with progress spinner (pane 1) - exactly one line
-          tmux select-pane -t podman-monitor:0.1
-          tmux send-keys -t podman-monitor:0.1 "
-          while true; do
-            BUILDING_FILE=/tmp/current_env
-            if [ -f \"\$BUILDING_FILE\" ]; then
-              BUILDING_ENV=\$(cat \"\$BUILDING_FILE\")
-              
-              # Default output with no spinner
-              OUTPUT=\"\$BUILDING_ENV\"
-              
-              # Check if this is an active build (not SKIPPED, COMPLETED, or default message)
-              if [[ \"\$BUILDING_ENV\" != \"SKIPPED\"* && 
-                    \"\$BUILDING_ENV\" != \"COMPLETED\"* && 
-                    \"\$BUILDING_ENV\" != \"NOTHING BUILDING YET\" ]]; then
-                # Add spinner only for active builds
-                SPINNER_CHARS=(\"|\" \"/\" \"-\" \"\\\\\")
-                SPINNER_INDEX=\$(( (SECONDS / 1) % 4 ))
-                SPINNER=\${SPINNER_CHARS[\$SPINNER_INDEX]}
-                
-                # Format with 'Building:' prefix and spinner suffix
-                OUTPUT=\"Building: \$BUILDING_ENV \${SPINNER}\"
-              fi
-              
-              # Clear line and print output
-              clear
-              printf \" %s\" \"\$OUTPUT\"
-            else
-              # Fallback if file doesn't exist
-              clear
-              printf \" NOTHING BUILDING YET\"
-            fi
-            sleep 0.5
-          done
-          " C-m
-          
-          # Configure bottom pane for podman images with continuous update
-          tmux select-pane -t podman-monitor:0.2
-          tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
-          
-          # Now, let's attach to the session rather than detaching from it
-          tmux attach -t podman-monitor
-        mode: '0755'
-      tags: [monitoring, setup]
-
-    - name: Make script executable
-      ansible.builtin.file:
-        path: "{{ playbook_dir }}/scripts/start_monitor.sh"
-        mode: '0755'
-      tags: [monitoring, setup]
-      
-    - name: Kill any existing tmux session
-      ansible.builtin.shell: |
-        if tmux has-session -t podman-monitor 2>/dev/null; then
-          tmux kill-session -t podman-monitor
-        fi
-      changed_when: true
-      failed_when: false
-      tags: [monitoring, cleanup]
-
-    - name: Launch monitoring in terminal window
-      ansible.builtin.shell: >
-        nohup {{ playbook_dir }}/scripts/start_monitor.sh > /tmp/monitor.log 2>&1 &
-      args:
-        executable: /bin/bash
-      register: term_launch
-      changed_when: true
-      ignore_errors: true
-      tags: [monitoring]
-
-    - name: Show terminal launch status
-      ansible.builtin.debug:
-        msg: "Monitoring launched in terminal: {{ term_launch.stdout }}"
-      when: term_launch is not skipped
-      tags: [monitoring]
-
-    - name: Show monitoring script location
-      ansible.builtin.debug:
-        msg: "Monitoring script location: {{ playbook_dir }}/scripts/start_monitor.sh"
-      tags: [monitoring]
-
-    - name: Try to open terminal with tmux session
-      ansible.builtin.shell: |
-        for term in gnome-terminal konsole xfce4-terminal terminator xterm; do
-          if command -v $term >/dev/null 2>&1; then
-            case $term in
-              gnome-terminal)
-                $term -- tmux attach -t podman-monitor &
-                ;;
-              *)
-                $term -e "tmux attach -t podman-monitor" &
-                ;;
-            esac
-            echo "Opened terminal: $term"
-            exit 0
-          fi
-        done
-        echo "No suitable terminal found"
-      register: term_open
-      ignore_errors: true
-      changed_when: term_open.stdout is search("Opened terminal")
-      tags: [monitoring]
 
     - name: Force build_results to be visible in summary
       ansible.builtin.set_fact:

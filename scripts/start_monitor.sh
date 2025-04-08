@@ -10,26 +10,14 @@ fi
 # Create basic session with forced dimensions
 tmux new-session -d -s podman-monitor
 
-# IMPORTANT: First split into top and bottom
-# Then split the top portion to create the middle line
-# This approach gives better control over the middle pane height
-tmux split-window -t podman-monitor:0.0 -v -p 60  # Bottom pane is 60% of the screen
-tmux split-window -t podman-monitor:0.0 -v -l 1   # Middle pane is exactly 1 line tall
-
 # Create initial status file with default message
 echo "NOTHING BUILDING YET" > /tmp/current_env
 
-# Now we have:
-# podman-monitor:0.0 - Top pane (header)
-# podman-monitor:0.1 - Middle pane (build info - exactly one line)
-# podman-monitor:0.2 - Bottom pane (podman images)
-
-# Configure the top pane with ASCII art header (pane 0)
+# Configure the top pane with ASCII art header
 tmux select-pane -t podman-monitor:0.0
 tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
 
 Starting Podman monitoring...
-
 
                   ●●●●●●●
                  ●●●●●●●●●
@@ -51,7 +39,15 @@ Starting Podman monitoring...
 EOF
 " C-m
 
-# Configure middle pane for Build info with progress spinner (pane 1) - exactly one line
+# Split into bottom panes
+tmux split-window -v -t podman-monitor
+tmux split-window -v -t podman-monitor:0.1
+
+# Set pane sizes
+tmux resize-pane -t podman-monitor:0.0 -y 25
+tmux resize-pane -t podman-monitor:0.1 -y 2
+
+# Configure middle pane for current build status with spinner
 tmux select-pane -t podman-monitor:0.1
 tmux send-keys -t podman-monitor:0.1 "
 while true; do
@@ -65,7 +61,8 @@ while true; do
     # Check if this is an active build (not SKIPPED, COMPLETED, or default message)
     if [[ \"\$BUILDING_ENV\" != \"SKIPPED\"* && 
           \"\$BUILDING_ENV\" != \"COMPLETED\"* && 
-          \"\$BUILDING_ENV\" != \"NOTHING BUILDING YET\" ]]; then
+          \"\$BUILDING_ENV\" != \"NOTHING BUILDING YET\" && 
+          \"\$BUILDING_ENV\" != \"FAILED\"* ]]; then
       # Add spinner only for active builds
       SPINNER_CHARS=(\"|\" \"/\" \"-\" \"\\\\\")
       SPINNER_INDEX=\$(( (SECONDS / 1) % 4 ))
@@ -73,11 +70,17 @@ while true; do
       
       # Format with 'Building:' prefix and spinner suffix
       OUTPUT=\"Building: \$BUILDING_ENV \${SPINNER}\"
+    elif [[ \"\$BUILDING_ENV\" == \"FAILED\"* ]]; then
+      # Red for failed builds
+      OUTPUT=\"\033[1;31m\$BUILDING_ENV\033[0m\"
+    elif [[ \"\$BUILDING_ENV\" == \"COMPLETED\"* ]]; then
+      # Green for completed builds
+      OUTPUT=\"\033[1;32m\$BUILDING_ENV\033[0m\"
     fi
     
     # Clear line and print output
     clear
-    printf \" %s\" \"\$OUTPUT\"
+    printf \" %b\" \"\$OUTPUT\"
   else
     # Fallback if file doesn't exist
     clear
@@ -87,9 +90,9 @@ while true; do
 done
 " C-m
 
-# Configure bottom pane for podman images with continuous update
+# Configure bottom pane for podman images
 tmux select-pane -t podman-monitor:0.2
 tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
 
-# Now, let's attach to the session rather than detaching from it
+# Now, let's attach to the session
 tmux attach -t podman-monitor
