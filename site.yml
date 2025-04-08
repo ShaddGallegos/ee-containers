@@ -454,9 +454,11 @@
       tags: [monitoring, setup]
 
     - name: Clean up dangling images before starting builds
-      ansible.builtin.shell: podman image prune -f
-      register: prune_output
-      changed_when: prune_output.stdout is search("deleted")
+      ansible.builtin.shell: |
+        podman image prune -f
+      register: pre_prune
+      changed_when: pre_prune.stdout is search("deleted")
+      ignore_errors: true
       tags: [cleanup, build, pre_build]
 
     - name: Prompt for distribution selection
@@ -954,4 +956,31 @@
         msg: "No build results available. Did you select any environments to build?"
       when: build_results is not defined or build_results | length == 0
       tags: [report]
+
+# Play 4: Final cleanup
+- name: Final cleanup
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Force remove images with <none> tag
+      ansible.builtin.shell: |
+        # Find any images with "<none>" tag and remove them forcefully
+        podman images | awk '$1=="<none>" {print $3}' | xargs -r podman rmi --force
+      register: cleanup_output
+      changed_when: cleanup_output.stdout != ""
+      ignore_errors: true
+      tags: [cleanup, post_build]
+    
+    - name: Show cleanup results
+      ansible.builtin.debug:
+        msg: "Cleanup completed: {{ 'No dangling images found' if cleanup_output.stdout == '' else cleanup_output.stdout }}"
+      tags: [cleanup, post_build]
+
+    - name: Final image pruning
+      ansible.builtin.shell: podman image prune -f
+      register: final_prune
+      changed_when: final_prune.stdout is search("deleted")
+      ignore_errors: true
+      tags: [cleanup, post_build]
 
