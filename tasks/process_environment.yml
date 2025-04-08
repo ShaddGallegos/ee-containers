@@ -63,7 +63,7 @@
       --prune-images
       --context {{ build_context }}
       -f {{ build_context }}/execution-environment.yml
-      --build-arg AH_TOKEN="{{ automation_hub_token }}"
+      {{ (automation_hub_token is defined and automation_hub_token | length > 0) | ternary('--build-arg AH_TOKEN="' + automation_hub_token + '"', '') }}
   args:
     chdir: "{{ build_context }}"
   environment:
@@ -73,3 +73,22 @@
   changed_when: build_output.rc == 0
   # Don't make this task fail, we'll handle failures later
   failed_when: false
+        
+# Update build status file with the result for the monitoring display
+- name: Update build status file - build complete
+  ansible.builtin.shell: >
+    if [ {{ build_output.rc }} -eq 0; then 
+      echo "COMPLETED: {{ item | basename }}" > /tmp/current_env;
+    else 
+      echo "FAILED: {{ item | basename }}" > /tmp/current_env;
+    fi
+  changed_when: false
+  when: build_output is defined
+
+# Record build results for summary display later
+- name: Record build status
+  ansible.builtin.set_fact:
+    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output}] }}"
+    cacheable: true
+  changed_when: false
+  when: build_output is defined

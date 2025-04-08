@@ -339,14 +339,6 @@
             galaxy_token: "{{ stored_credentials.galaxy_token | default('') }}"
           no_log: true
 
-        - name: Debug credentials
-          ansible.builtin.debug:
-            msg:
-              - "Red Hat username: {{ rh_username }}"
-              - "Red Hat password: {{ rh_password | regex_replace('.+', '******') }}"
-              - "Automation Hub token: {{ automation_hub_token | regex_replace('.+', '******') }}"
-              - "Galaxy token: {{ galaxy_token | regex_replace('.+', '******') }}"
-
     - name: Show run mode
       ansible.builtin.debug:
         msg: |

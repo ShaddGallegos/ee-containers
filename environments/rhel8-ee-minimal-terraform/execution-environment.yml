@@ -40,7 +40,6 @@ additional_build_steps:
     RUN TERRAFORM_INV_VERSION="0.10" && \
         mkdir -p /usr/local/bin && \
         curl -L "https://github.com/adammck/terraform-inventory/archive/refs/heads/master.zip" -o /tmp/terraform-inventory.zip && \
-        # curl -L "https://github.com/adammck/terraform-inventory/releases/download/v${TERRAFORM_INV_VERSION}/terraform-inventory_v${TERRAFORM_INV_VERSION}_linux_amd64.zip" -o /tmp/terraform-inventory.zip && \
         unzip /tmp/terraform-inventory.zip -d /tmp && \
         mv /tmp/terraform-inventory /usr/local/bin/terraform-inventory && \
         chmod +x /usr/local/bin/terraform-inventory && \

@@ -10,10 +10,6 @@ images:
       pull_policy: missing
       tls_verify: false
 
-additional_build_files:
-  - src: ./ansible.cfg
-    dest: configs
-
 dependencies:
   galaxy: requirements.yml
   python: requirements.txt
