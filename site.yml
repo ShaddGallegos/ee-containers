@@ -394,13 +394,6 @@
             content: |
               #!/bin/bash
               
-              # Kill existing session if it exists
-              if tmux has-session -t podman-monitor 2>/dev/null; then
-                tmux kill-session -t podman-monitor
-                pkill -f "tmux" || true
-                sleep 1
-              fi
-              
               # Create basic session with forced dimensions
               tmux new-session -d -s podman-monitor
               
@@ -432,7 +425,6 @@
               ●●●●●●●
               EOF
               " C-m
-              
               # Split into bottom panes
               tmux split-window -v -t podman-monitor
               tmux split-window -v -t podman-monitor:0.1
