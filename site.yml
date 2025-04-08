@@ -129,7 +129,7 @@
     - name: Create inventory file
       ansible.builtin.copy:
         dest: "/tmp/inventory"
-        state: presant
+        state: present
         mode: '0644'
         content: |
           [devnode]
@@ -209,8 +209,7 @@
         msg: "{{ skip_credential_setup | ternary('Running as direct root user - skipping credential setup', 'Setting up credentials for user ' + actual_user) }}"
       tags: [always]
 
-    # Only run credential setup if not skipping
-    - name: Setup user credentials
+    - name: Setup user credentials properly
       when: not skip_credential_setup
       block:
         - name: Ensure ansible vars directory exists in user's home
@@ -219,144 +218,111 @@
             state: directory
             mode: '0700'
           tags: [setup, credential_setup]
-    
+
         - name: Check if credentials file exists
           ansible.builtin.stat:
             path: "{{ user_home }}/.ansible/vars/config"
           register: config_file
           tags: [always]
-    
-        - name: Set first run flag 
-          ansible.builtin.set_fact:
-            first_run: "{{ not config_file.stat.exists }}"
-          tags: [always]
-    
-        - name: Load stored credentials if they exist
+
+        - name: Create empty config file if it doesn't exist
+          ansible.builtin.copy:
+            dest: "{{ user_home }}/.ansible/vars/config"
+            content: |
+              ---
+              # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+              rh_username: ''
+              rh_password: ''
+              automation_hub_token: ''
+              galaxy_token: ''
+            mode: '0600'
+          when: not config_file.stat.exists
+          tags: [setup, credential_setup]
+
+        - name: Load stored credentials
           ansible.builtin.include_vars:
             file: "{{ user_home }}/.ansible/vars/config"
             name: stored_credentials
-          when: config_file.stat.exists
-          tags: [always]
-    
-        - name: Request credentials if needed
-          block:
-            - name: Collect Red Hat CDN username
-              ansible.builtin.pause:
-                prompt: "Enter your Red Hat CDN username"
-                echo: true
-              register: rh_username_input
-              when: stored_credentials is not defined or stored_credentials.rh_username is not defined
-              
-            - name: Collect Red Hat CDN password
-              ansible.builtin.pause:
-                prompt: "Enter your Red Hat CDN password"
-                echo: false
-              register: rh_password_input
-              when: stored_credentials is not defined or stored_credentials.rh_password is not defined
-              no_log: true
-              
-            - name: Collect Automation Hub token
-              ansible.builtin.pause:
-                prompt: "Enter your Automation Hub token (or press enter to skip)"
-                echo: false
-              register: automation_hub_token_input
-              when: stored_credentials is not defined or stored_credentials.automation_hub_token is not defined
-              no_log: true
-              
-            - name: Collect Galaxy token
-              ansible.builtin.pause:
-                prompt: "Enter your Galaxy token (or press enter to skip)"
-                echo: false
-              register: galaxy_token_input
-              when: stored_credentials is not defined or stored_credentials.galaxy_token is not defined
-              no_log: true
-              
-            - name: Set collected credential facts
-              ansible.builtin.set_fact:
-                rh_username: "{{ rh_username_input.user_input | default(stored_credentials.rh_username | default('')) }}"
-                rh_password: "{{ rh_password_input.user_input | default(stored_credentials.rh_password | default('')) }}"
-                automation_hub_token: "{{ automation_hub_token_input.user_input | default(stored_credentials.automation_hub_token | default('')) }}"
-                galaxy_token: "{{ galaxy_token_input.user_input | default(stored_credentials.galaxy_token | default('')) }}"
-              no_log: true  # Ensure sensitive data is not logged
-
-            - name: Create credentials file
-              ansible.builtin.copy:
-                dest: "{{ user_home }}/.ansible/vars/config"
-                content: |
-                  ---
-                  # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
-                  rh_username: '{{ rh_username }}'
-                  rh_password: '{{ rh_password }}'
-                  automation_hub_token: '{{ automation_hub_token }}'
-                  galaxy_token: '{{ galaxy_token }}'
-                mode: '0600'
-              no_log: true  # Prevent sensitive data from being logged
-
-            - name: Recreate ansible.cfg in the current ee-containers directory
-              ansible.builtin.template:
-                src: templates/ansible.cfg.j2
-                dest: "{{ playbook_dir }}/ansible.cfg"
-                mode: '0644'
-
-            - name: Recreate ansible.cfg in the working directory
-              ansible.builtin.template:
-                src: templates/ansible.cfg.j2
-                dest: "/tmp/ee-containers/_build/ansible.cfg"
-                mode: '0644'
-
-            - name: Create ansible.cfg in /tmp/ee-containers/
-              ansible.builtin.template:
-                src: templates/ansible.cfg.j2
-                dest: /tmp/ee-containers/ansible.cfg
-                         
-            - name: Set proper ownership on credentials file when needed
-              ansible.builtin.file:
-                path: "{{ user_home }}/.ansible/vars/config"
-                owner: "{{ actual_user }}"
-                group: "{{ actual_user }}"
-                mode: '0600'
-              when: actual_user != 'root' and actual_user != ''
-              no_log: true  # Ensure no sensitive data is logged
-              
-            - name: Report stored credentials
-              ansible.builtin.debug:
-                msg: |
-                  ┌────────────────────────────────────────────────────────────────┐
-                  │                  CREDENTIALS STORED                            │
-                  ├────────────────────────────────────────────────────────────────┤
-                  │ Credentials have been stored at: {{ user_home }}/.ansible/vars/config │
-                  │ These will be used for future runs.                            │
-                  └────────────────────────────────────────────────────────────────┘
-              when: not no_log  # Avoid logging sensitive data if no_log is true
-          when: first_run or (stored_credentials is not defined)
           tags: [always]
 
-        - name: Set collected credential facts
+        - name: Check if config file has required variables
           ansible.builtin.set_fact:
-            rh_username: "{{ stored_credentials.rh_username | default('') }}"
-            rh_password: "{{ stored_credentials.rh_password | default('') }}"
-            automation_hub_token: "{{ stored_credentials.automation_hub_token | default('') }}"
-            galaxy_token: "{{ stored_credentials.galaxy_token | default('') }}"
+            has_rh_username: "{{ stored_credentials.rh_username is defined and stored_credentials.rh_username != '' }}"
+            has_rh_password: "{{ stored_credentials.rh_password is defined and stored_credentials.rh_password != '' }}"
+            has_automation_hub_token: "{{ stored_credentials.automation_hub_token is defined }}"
+            has_galaxy_token: "{{ stored_credentials.galaxy_token is defined }}"
+          tags: [always]
+
+        - name: Collect Red Hat CDN username if missing
+          ansible.builtin.pause:
+            prompt: "Enter your Red Hat CDN username"
+            echo: true
+          register: rh_username_input
+          when: not has_rh_username
+              
+        - name: Collect Red Hat CDN password if missing
+          ansible.builtin.pause:
+            prompt: "Enter your Red Hat CDN password"
+            echo: false
+          register: rh_password_input
+          when: not has_rh_password
+          no_log: true
+              
+        - name: Collect Automation Hub token if missing
+          ansible.builtin.pause:
+            prompt: "Enter your Automation Hub token (or press enter to skip)"
+            echo: false
+          register: automation_hub_token_input
+          when: not has_automation_hub_token
+          no_log: true
+              
+        - name: Collect Galaxy token if missing
+          ansible.builtin.pause:
+            prompt: "Enter your Galaxy token (or press enter to skip)"
+            echo: false
+          register: galaxy_token_input
+          when: not has_galaxy_token
+          no_log: true
+              
+        - name: Update credentials while preserving existing values
+          ansible.builtin.set_fact:
+            rh_username: "{{ rh_username_input.user_input if rh_username_input is defined else stored_credentials.rh_username | default('') }}"
+            rh_password: "{{ rh_password_input.user_input if rh_password_input is defined else stored_credentials.rh_password | default('') }}"
+            automation_hub_token: "{{ automation_hub_token_input.user_input if automation_hub_token_input is defined else stored_credentials.automation_hub_token | default('') }}"
+            galaxy_token: "{{ galaxy_token_input.user_input if galaxy_token_input is defined else stored_credentials.galaxy_token | default('') }}"
           no_log: true
 
-    - name: Show run mode
-      ansible.builtin.debug:
-        msg: |
-          ┌────────────────────────────────────────────────────────────────────┐
-          │                     RUN MODE INFORMATION                           │
-          ├────────────────────────────────────────────────────────────────────┤
-          │ {{ "FIRST RUN DETECTED: Running full setup" if first_run | default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
-          │                                                                    │
-          │ User: {{ actual_user | default('Unknown') }}                                            │
-          │ Credentials: {{ "New" if first_run | default(false) else "Loaded from file" }}      │
-          └────────────────────────────────────────────────────────────────────┘
-      tags: [always]
+        - name: Save updated credentials to file (preserving existing values)
+          ansible.builtin.copy:
+            dest: "{{ user_home }}/.ansible/vars/config"
+            content: |
+              ---
+              # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+              rh_username: '{{ rh_username }}'
+              rh_password: '{{ rh_password }}'
+              automation_hub_token: '{{ automation_hub_token }}'
+              galaxy_token: '{{ galaxy_token }}'
+            mode: '0600'
+          no_log: true
 
-    # Use sudo_user's home directory for config in the main play
-    - name: Set config path for main play
-      ansible.builtin.set_fact:
-        config_path: "{{ user_home }}/.ansible/vars/config"
-      tags: [always]
+        - name: Show run mode
+          ansible.builtin.debug:
+            msg: |
+              ┌────────────────────────────────────────────────────────────────────┐
+              │                     RUN MODE INFORMATION                           │
+              ├────────────────────────────────────────────────────────────────────┤
+              │ {{ "FIRST RUN DETECTED: Running full setup" if first_run | default(false) else "SUBSEQUENT RUN: Using stored configuration" }} │
+              │                                                                    │
+              │ User: {{ actual_user | default('Unknown') }}                                            │
+              │ Credentials: {{ "New" if first_run | default(false) else "Loaded from file" }}      │
+              └────────────────────────────────────────────────────────────────────┘
+          tags: [always]
+
+        # Use sudo_user's home directory for config in the main play
+        - name: Set config path for main play
+          ansible.builtin.set_fact:
+            config_path: "{{ user_home }}/.ansible/vars/config"
+          tags: [always]
 
 # Play 2: Display title and introduction
 - name: Display title screen
@@ -480,24 +446,37 @@
 
     - name: Parse user input for environment selection
       ansible.builtin.set_fact:
-        selected_environments: >-
-          {{
-            available_environments if user_input.user_input == 'all' else
-            available_environments | zip(range(1, available_environments | length + 1)) |
-            selectattr(1, 'in', user_input.user_input.split(',')) |
-            map(attribute=0) | list
-          }}
-      vars:
-        user_input: "{{ user_input.user_input | default('') }}"
+        selected_environments: "{{ (user_input.user_input == 'all') | ternary(available_environments, []) }}"
+      when: user_input.user_input == 'all'
+
+    - name: Parse numeric selection input 
+      block:
+        - name: Convert input to list of numbers
+          ansible.builtin.set_fact:
+            selected_numbers: "{{ user_input.user_input.split(',') | map('trim') | map('int') | list }}"
+          when: user_input.user_input != 'all' and user_input.user_input != ''
+
+        - name: Map numbers to environments
+          ansible.builtin.set_fact:
+            selected_environments: "{{ selected_environments | default([]) + [available_environments[item|int - 1]] }}"
+          loop: "{{ selected_numbers }}"
+          when: selected_numbers is defined
+      when: user_input.user_input != 'all' and user_input.user_input != ''
+
+    - name: Debug parsed selection
+      ansible.builtin.debug:
+        msg: "Selected environment numbers: {{ selected_numbers | default([]) }}"
+      when: selected_numbers is defined
 
     - name: Set basename for the selected environment
       ansible.builtin.set_fact:
         basename: "{{ selected_environments | first | basename }}"
-      when: selected_environments | length > 0
-
+      when: selected_environments is defined and selected_environments | length > 0
+      
     - name: Debug selected basename
       ansible.builtin.debug:
-        msg: "Selected environment basename: {{ basename }}"
+        msg: "Selected environment basename: {{ basename | default('None') }}"
+      when: basename is defined
 
     - name: Debug selected environments
       ansible.builtin.debug:
@@ -513,6 +492,26 @@
         msg: "Selected basename: {{ item | basename }}"
       loop: "{{ selected_environments }}"
       when: selected_environments is defined and selected_environments | length > 0
+
+    - name: Debug environment selection
+      ansible.builtin.debug:
+        msg: |
+          Selected environments: {{ selected_environments | length }} items
+          {% for env in selected_environments %}
+          - {{ env | basename }} ({{ env }})
+          {% else %}
+          NO ENVIRONMENTS SELECTED!
+          {% endfor %}
+        verbosity: 0  # Always show this
+
+    - name: Check if image already exists for each selected environment
+      ansible.builtin.command:
+        cmd: "podman image exists {{ item | basename }}"
+      loop: "{{ selected_environments }}"
+      register: existing_images
+      changed_when: false
+      failed_when: false
+      when: force_rebuild is not defined or not force_rebuild
 
     - name: Kill existing monitoring tmux session (if any)
       ansible.builtin.command: tmux has-session -t podman-monitor
@@ -539,6 +538,25 @@
       changed_when: "'Total reclaimed space:' in prune_output.stdout and not 'Total reclaimed space: 0B' in prune_output.stdout"
       ignore_errors: true
       failed_when: false
+
+    - name: Copy environment directories to required locations
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/environments"
+        dest: "{{ item }}"
+        remote_src: true
+        mode: '0755'
+      loop:
+        - "/tmp/ee-builder/context"
+        - "/tmp/ee-containers/_build"
+      tags: [setup, build]
+
+    - name: Copy ansible.cfg to each build context
+      ansible.builtin.template:
+        src: templates/ansible.cfg.j2
+        dest: "/tmp/ee-builder/context/environments/{{ item | basename }}/ansible.cfg"
+      loop: "{{ selected_environments | default([]) }}"
+      when: selected_environments is defined and selected_environments | length > 0
+      tags: [setup, build]
 
     - name: Create Podman monitoring script
       ansible.builtin.copy:
@@ -635,7 +653,7 @@
           
           # Configure bottom pane for podman images with continuous update
           tmux select-pane -t podman-monitor:0.2
-          tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                            TAG       IMAGE ID      CREATED       SIZE\" && echo \"--------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
+          tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
           
           # Now, let's attach to the session rather than detaching from it
           tmux attach -t podman-monitor
@@ -696,622 +714,8 @@
       ignore_errors: true
       changed_when: term_open.stdout is search("Opened terminal")
 
-- name: Registry Authentication
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars:
-    container_registries:
-      - registry.redhat.io
-      - registry.access.redhat.com
-      - registry.connect.redhat.com
-  tasks:
-    - name: Verify Podman is working properly
-      ansible.builtin.command:
-        cmd: >-
-          {% raw %}podman info --format '{{ .Store.GraphDriverName }}'{% endraw %}
-      environment:
-        PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
-      register: podman_check
-      failed_when: podman_check.rc != 0
-      tags: [podman, validation]
-
-    - name: Load Automation Hub token from config
-      ansible.builtin.include_vars:
-        file: "{{ ansible_env.HOME }}/.ansible/vars/config"
-      ignore_errors: true
-
-    - name: Check if the config file exists
-      ansible.builtin.stat:
-        path: "{{ ansible_env.HOME }}/.ansible/vars/config"
-      register: config_file
-
-    - name: Load variables from config file
-      ansible.builtin.include_vars:
-        file: "{{ ansible_env.HOME }}/.ansible/vars/config"
-      when: config_file.stat.exists
-      no_log: true
-
-    - name: Set default value for container_registries
+    - name: Force build_results to be visible in summary
       ansible.builtin.set_fact:
-        container_registries: "{{ container_registries | default(['registry.redhat.io', 'registry.access.redhat.com', 'quay.io', 'registry.connect.redhat.com']) }}"
-
-    - name: Login to each container registry
-      ansible.builtin.command:
-        cmd: "podman login -u {{ rh_username }} -p {{ rh_password }} {{ item }}"
-      loop: "{{ container_registries }}"
-      register: registry_login_results
-      no_log: true
-
-    - name: Initialize registry login success
-      ansible.builtin.set_fact:
-        registry_login_success: false
-
-    - name: Process registry login results
-      ansible.builtin.set_fact:
-        registry_login_success: >-
-          {{ registry_login_success or
-              (item.item != 'quay.io' and item.rc == 0) }}
-        registry_login_results: "{{ registry_login_results | combine({item.item: (item.rc == 0)}) }}"
-      loop: "{{ registry_login_results.results }}"
-      loop_control:
-        label: "{{ item.item }}"
-      no_log: true
-
-    - name: Display registry login results
-      ansible.builtin.debug:
-        msg: |
-          Registry Authentication Results:
-          {% for registry, success in registry_login_results.items() %}
-          - {{ registry }}: {{ 'SUCCESS' if success else 'FAILED' }}
-          {% endfor %}
-
-    - name: Fail if authentication failed for all critical registries
-      ansible.builtin.fail:
-        msg: |
-          CRITICAL ERROR: Failed to authenticate with any required container registries.
-          Authentication to at least one Red Hat registry is required for this playbook to function.
-          Please check your Red Hat credentials and network connectivity.
-      when: not registry_login_success
-
-# Play 3: Build Execution Environments
-- name: Build Execution Environments
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Initialize build_results
-      ansible.builtin.set_fact:
-        build_results: []
-        cacheable: true  # This makes the variable available across plays
-
-    - name: Ensure /tmp/ee-builder/context directory exists
-      ansible.builtin.file:
-        path: "/tmp/ee-builder/context"
-        state: directory
-        mode: '0755'
-
-    - name: Ensure /tmp/ee-builder/context/environments directory exists
-      ansible.builtin.file:
-        path: "/tmp/ee-builder/context/environments"
-        state: directory
-        mode: '0755'
-        
-    - name: Ensure consistent path structures
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        mode: '0755'
-      loop:
-        - "/tmp/ee-builder"
-        - "/tmp/ee-builder/context"
-        - "/tmp/ee-builder/context/environments"
-
-    - name: Ensure /tmp/ee-containers/_build/environments directory exists
-      ansible.builtin.file:
-        path: "/tmp/ee-containers/_build/environments"
-        state: directory
-        mode: '0755'
-      tags: [setup, build]
-
-    - name: Ensure tasks/ folder exists in the playbook directory
-      ansible.builtin.file:
-        path: "{{ playbook_dir }}/tasks"
-        state: directory
-        mode: '0755'
-
-    - name: Create process_environment.yml dynamically in tasks/ folder
-      ansible.builtin.copy:
-        dest: "{{ playbook_dir }}/tasks/process_environment.yml"
-        content: |
-          - name: Set work_dir for the current environment
-            ansible.builtin.set_fact:
-              work_dir: "/tmp/ee-builder/context/environments/{{ '{{' }} item | basename {{ '}}' }}"
-              build_context: "/tmp/ee-builder/context/environments/{{ '{{' }} item | basename {{ '}}' }}"
-          
-          - name: Debug work_dir
-            ansible.builtin.debug:
-              msg: "Work directory: {{ '{{' }} work_dir {{ '}}' }}"
-            
-          - name: Create work_dir for the current environment
-            ansible.builtin.file:
-              path: "{{ '{{' }} work_dir {{ '}}' }}"
-              state: directory
-              mode: '0755'
-
-          # Show that we're starting to build this environment in the monitoring display
-          - name: Update build status file - starting build
-            ansible.builtin.shell: "BASENAME=$(basename {{ '{{' }} item {{ '}}' }}) && echo $BASENAME > /tmp/current_env"
-            changed_when: false
-          
-          - name: Copy selected environment to work_dir
-            ansible.builtin.copy:
-              src: "{{ '{{' }} item {{ '}}' }}"
-              dest: "{{ '{{' }} work_dir {{ '}}' }}"
-              remote_src: true
-
-          - name: Validate execution-environment.yml syntax
-            ansible.builtin.command:
-              cmd: "python3 -c \"import yaml; yaml.safe_load(open('{{ '{{' }} work_dir {{ '}}' }}/execution-environment.yml'));\""
-            register: yaml_validation
-            changed_when: false
-            failed_when: false
-
-          # Handle YAML validation failures
-          - name: Handle YAML validation failures
-            when: yaml_validation.rc != 0
-            block:
-              - name: Update build status file - skipping build due to YAML error
-                ansible.builtin.shell: "BASENAME=$(basename {{ '{{' }} item {{ '}}' }}) && echo SKIPPED: $BASENAME \\(invalid YAML\\) > /tmp/current_env"
-                changed_when: false
-                
-              - name: Debug skip message
-                ansible.builtin.debug:
-                  msg: "SKIPPING BUILD due to invalid YAML in execution-environment.yml"
-                  
-              - name: Record skipped build in results
-                ansible.builtin.set_fact:
-                  build_results: "{{ '{{' }} build_results | default([]) + [{'image': item | basename, 'success': false, 'output': {'rc': 1, 'stderr': 'Invalid YAML syntax in execution-environment.yml', 'stderr_lines': ['Invalid YAML syntax in execution-environment.yml']}}] {{ '}}' }}"
-                  cacheable: true
-                changed_when: false
-                
-              - name: Skip remaining tasks for this environment
-                ansible.builtin.meta: end_play
-                  
-          # Only run build if YAML validation passed
-          - name: Build container image using ansible-builder
-            ansible.builtin.command:
-              cmd: >
-                ansible-builder build
-                --tag {{ '{{' }} item | basename {{ '}}' }}
-                --container-runtime podman
-                --verbosity 3
-                --prune-images
-                --context {{ '{{' }} build_context {{ '}}' }}
-                -f {{ '{{' }} build_context {{ '}}' }}/execution-environment.yml
-                --build-arg AH_TOKEN="{{ '{{' }} automation_hub_token {{ '}}' }}"
-            args:
-              chdir: "{{ '{{' }} build_context {{ '}}' }}"
-            environment:
-              ANSIBLE_BUILDER_HOME: "{{ '{{' }} build_context {{ '}}' }}"
-              PODMAN_IGNORE_CGROUPSV1_WARNING: 1
-            register: build_output
-            changed_when: build_output.rc == 0
-            # Don't make this task fail, we'll handle failures later
-            failed_when: false
-        mode: '0644'
-
-    - name: Copy environment directories to /tmp/ee-builder/context
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/environments"
-        dest: "/tmp/ee-builder/context"
-        remote_src: true
-        mode: '0755'
-
-    - name: Copy environment directories to _build directory
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/environments"
-        dest: "/tmp/ee-containers/_build"
-        remote_src: true
-        mode: '0755'
-      tags: [setup, build]
-
-    - name: Debug copied environments
-      ansible.builtin.debug:
-        msg: "Environment directories copied to /tmp/ee-builder/context"
-
-    - name: Check if image already exists for each selected environment
-      ansible.builtin.command:
-        cmd: "podman image exists {{ item | basename }}"
-      loop: "{{ selected_environments }}"
-      register: existing_images
-      changed_when: false
-      failed_when: false
-
-    - name: Filter images that do not exist
-      ansible.builtin.set_fact:
-        missing_environment_images: "{{ existing_images.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
-
-    - name: Show "NOTHING BUILDING YET"
-      ansible.builtin.debug:
-        msg: "NOTHING BUILDING YET"
-
-    - name: Process each selected environment (skip images already present)
-      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
-      loop: "{{ missing_environment_images }}"
-      loop_control:
-        label: "{{ item | basename }}"
-
-    - name: Copy execution-environment.yml to the build context
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/environments/{{ basename }}/execution-environment.yml"
-        dest: "{{ work_dir }}/context/execution-environment.yml"
-        remote_src: true
-      tags: [setup, build]
-
-    - name: Copy ansible.cfg to build context
-      ansible.builtin.template:
-        src: templates/ansible.cfg.j2
-        dest: "/tmp/ee-builder/context/environments/{{ basename }}/ansible.cfg"
-
-    - name: Show "BUILD COMPLETE"
-      ansible.builtin.debug:
-        msg: "BUILD COMPLETE"
-
-    - name: Enable verbose ansible-builder output
-      ansible.builtin.set_fact:
-        ansible_builder_verbose: "--verbosity 3"  # Use highest verbosity
-
-# Play 4: Build Execution Environments for Ansible Automation Platform
-- name: Build Execution Environments for Ansible Automation Platform
-  hosts: localhost
-  become: true
-  gather_facts: true
-  vars:
-    protected_images:
-      - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest"
-      - "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest"
-
-  vars_files:
-    - "{{ hostvars.localhost.config_path | default('~/.ansible/vars/config') }}"
-
-  pre_tasks:
-    - name: Check root status
-      ansible.builtin.command: id -u
-      register: user_id
-      changed_when: false
-
-    - name: Set root flag
-      ansible.builtin.set_fact:
-        is_root: "{{ user_id.stdout == '0' }}"
-      failed_when: false
-      tags: [setup, env_config, podman_warnings]
-      
-    - name: Add Podman warning suppression to environment files
-      ansible.builtin.lineinfile:
-        path: "{{ item }}"
-        regexp: '^export PODMAN_IGNORE_CGROUPSV1_WARNING='
-        line: 'export PODMAN_IGNORE_CGROUPSV1_WARNING=1'
-        create: true
-        mode: '0644'
-      with_items:
-        - /etc/environment
-
-    # Include TMUX Header Display
-    - name: Clear screen and display tmux header
-      ansible.builtin.shell: |
-        clear
-        cat "{{ playbook_dir }}/files/tmux_header.txt"
-      changed_when: false
-      tags: [tmux, display]
-
-    - name: Fail if required variables are missing
-      ansible.builtin.fail:
-        msg: >
-          Required variables are missing:
-          - rh_username: {{ rh_username is not defined }}
-          - rh_password: {{ rh_password is not defined }}
-          - container_registries: {{ container_registries is not defined }}
-          - protected_images: {{ protected_images is not defined }}
-      when:
-        - rh_username is not defined or rh_username == ''
-        - rh_password is not defined or rh_password == ''
-        - container_registries is not defined or container_registries | length == 0
-        - protected_images is not defined or protected_images | length == 0
-
-    - name: Pull missing protected images
-      block:
-        - name: Check if protected images exist locally
-          ansible.builtin.command:
-            cmd: "podman image exists {{ item }}"
-          loop: "{{ protected_images }}"
-          register: image_check_results
-          changed_when: false
-          failed_when: false
-          tags: [images, check]
-
-        - name: Identify missing images
-          ansible.builtin.set_fact:
-            missing_images: "{{ image_check_results.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
-          tags: [images, identify_missing]
-
-        - name: Pull missing images
-          ansible.builtin.command:
-            cmd: "podman pull {{ item }}"
-          loop: "{{ missing_images }}"
-          register: pull_results
-          retries: 3
-          delay: 5
-          until: pull_results is succeeded
-          tags: [images, pull]
-
-        - name: Display image pull results
-          ansible.builtin.debug:
-            msg: |
-              Image pull results:
-              {% for result in pull_results.results %}
-              - {{ result.item }}: {{ 'SUCCESS' if result.rc == 0 else 'FAILED' }}
-              {% endfor %}
-          tags: [images, pull]
-
-    - name: Fail if any required images could not be pulled
-      ansible.builtin.fail:
-        msg: |
-          Failed to download the following required images:
-          {% for result in pull_results.results if result.rc != 0 %}
-          - {{ result.item }}
-          {% endfor %}
-      when: pull_results.results | default([]) | selectattr('rc', 'ne', 0) | list | length > 0
-      tags: [images, pull]
-
-    # Build Container Images
-    - name: Define required variables
-      ansible.builtin.set_fact:
-        image_name: "my_execution_environment"
-        work_dir: "/tmp/build"
-        playbook_dir: "{{ playbook_dir | default(ansible_playbook_dir) }}"
-
-    - name: Define work_dir variable
-      ansible.builtin.set_fact:
-        work_dir: "/tmp/ee-containers"
-
-    - name: Generate ansible.cfg for the _build/ directory
-      ansible.builtin.template:
-        src: templates/ansible.cfg.j2
-        dest: "{{ work_dir }}/_build/ansible.cfg"
-        mode: '0644'
-      tags: [setup, build]
-
-# Play 5: Image Pull
-- name: Image Pull
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  vars_files:
-    - "{{ hostvars.localhost.config_path | default('~/.ansible/vars/config') }}"
-  vars:
-    required_images:
-      - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
-      - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
-      - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
- 
-  tasks:
-    - name: Check if protected images exist locally
-      ansible.builtin.command:
-        cmd: "podman image exists {{ item }}"
-      loop: "{{ required_images }}"
-      register: image_check_results
-      changed_when: false
-      failed_when: false
-
-    - name: Identify missing images
-      ansible.builtin.set_fact:
-        missing_images: "{{ image_check_results.results | selectattr('rc', 'ne', 0) | map(attribute='item') | list }}"
-
-    - name: Pull missing images
-      block:
-        - name: Pull each missing image
-          ansible.builtin.command:
-            cmd: "podman pull {{ item }}"
-          loop: "{{ missing_images }}"
-          register: pull_results
-          retries: 3
-          delay: 5
-          until: pull_results is succeeded
-
-        - name: Display image pull results
-          ansible.builtin.debug:
-            msg: |
-              Image pull results:
-              {% for result in pull_results.results %}
-              - {{ result.item }}: {{ 'SUCCESS' if result.rc == 0 else 'FAILED' }}
-              {% endfor %}
-
-# Play 6: Cleanup
-- name: Cleanup
-  hosts: localhost
-  become: true
-  gather_facts: false
-  tasks:
-    - name: Remove temporary build files
-      ansible.builtin.file:
-        path: "{{ work_dir }}"
-        state: absent
-      tags: [cleanup]
-
-    - name: Remove dangling images
-      ansible.builtin.shell: |
-        podman images | awk '$1=="<none>" {print $3}' | xargs -r podman rmi -f
-      args:
-        executable: /bin/bash
-      register: prune_results
-      changed_when: prune_results.stdout is search("Deleted")
-      failed_when: false
-      ignore_errors: true
-      tags: [cleanup]
-
-    - name: Display cleanup completion message
-      ansible.builtin.debug:
-        msg: "Cleanup completed successfully."
-
-- name: Persist all variables to ~/.ansible/vars/config
-  hosts: localhost
-  tasks:
-    - name: Write variables to ~/.ansible/vars/config
-      ansible.builtin.copy:
-        dest: "{{ ansible_env.HOME }}/.ansible/vars/config"
-        content: |
-          ---
-          container_registries:
-            - registry.redhat.io
-            - registry.access.redhat.com
-            - registry.connect.redhat.com
-
-          required_images:
-            - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
-            - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
-            - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
-            - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
-            - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
-            - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
-            - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
-            - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
-
-          dns_servers:
-            - '8.8.8.8'
-            - '8.8.4.4'
-
-          required_packages:
-            - python3-pip
-            - ansible-builder
-            - ansible-core
-            - git
-            - podman
-            - podman-docker
-            - tmux
-            - xdg-utils
-            - yum-utils
-
-          update_protected_list: true
-
-          rh_username: "{{ rh_username | default('') }}"
-          rh_password: "{{ rh_password | default('') }}"
-          automation_hub_token: "{{ automation_hub_token | default('') }}"
-          galaxy_token: "{{ automation_hub_token | default('') }}"
-        mode: '0600'
-      no_log: true  # Prevent sensitive data from being logged
-
-- name: Load stored credentials
-  hosts: localhost
-  tasks:
-    - name: Check if the config file exists
-      ansible.builtin.stat:
-        path: "{{ ansible_env.HOME }}/.ansible/vars/config"
-      register: config_file
-
-    - name: Load credentials from config file
-      ansible.builtin.include_vars:
-        file: "{{ ansible_env.HOME }}/.ansible/vars/config"
-      when: config_file.stat.exists
-
-    - name: Prompt for missing credentials
-      block:
-        - name: Prompt for Red Hat username
-          ansible.builtin.pause:
-            prompt: "Enter your Red Hat CDN username"
-            echo: true
-          register: rh_username_input
-          when: rh_username is not defined
-
-        - name: Prompt for Red Hat password
-          ansible.builtin.pause:
-            prompt: "Enter your Red Hat CDN password"
-            echo: false
-          register: rh_password_input
-          when: rh_password is not defined
-          no_log: true
-
-        - name: Set collected credentials
-          ansible.builtin.set_fact:
-            rh_username: "{{ rh_username_input.user_input | default(rh_username) }}"
-            rh_password: "{{ rh_password_input.user_input | default(rh_password) }}"
-          no_log: true
-
-    - name: Save credentials to config file
-      ansible.builtin.copy:
-        dest: "{{ ansible_env.HOME }}/.ansible/vars/config"
-        content: |
-          ---
-          rh_username: "{{ rh_username }}"
-          rh_password: "{{ rh_password }}"
-        mode: '0600'
-      when: rh_username is defined and rh_password is defined
-      no_log: true
-
-- name: Setup default variables
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Set default work_dir
-      ansible.builtin.set_fact:
-        work_dir: "/tmp/ee-builder/context"
-
-- name: Summarize build results
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Display build summary
-      ansible.builtin.debug:
-        msg: |
-          =================================================
-          EXECUTION ENVIRONMENT BUILD SUMMARY
-          =================================================
-          
-          SUCCESSFUL BUILDS:
-          {% for result in build_results | selectattr('success', 'equalto', true) | list %}
-          ✅ {{ result.image }}
-          {% else %}
-          (none)
-          {% endfor %}
-          
-          FAILED BUILDS:
-          {% for result in build_results | selectattr('success', 'equalto', false) | list %}
-          ❌ {{ result.image }}
-          {% else %}
-          (none)
-          {% endfor %}
-          
-          =================================================
-          
-          Total successful: {{ build_results | selectattr('success', 'equalto', true) | list | length }}
-          Total failed: {{ build_results | selectattr('success', 'equalto', false) | list | length }}
-          
-          {% if build_results | selectattr('success', 'equalto', false) | list | length > 0 %}
-          For details on failed builds, look at the full playbook output above.
-          {% endif %}
-
-    - name: Display detailed failure information
-      ansible.builtin.debug:
-        msg: |
-          FAILURE DETAILS FOR: {{ result.image }}
-          
-          Exit code: {{ result.output.rc }}
-          
-          ERROR OUTPUT:
-          {{ result.output.stderr_lines | join('\n') }}
-          
-          -------------------------------------------------
-      loop: "{{ build_results | selectattr('success', 'equalto', false) | list }}"
-      loop_control:
-        loop_var: result
-        label: "{{ result.image }}"
-      when: build_results | selectattr('success', 'equalto', false) | list | length > 0
+        build_results: "{{ build_results | default([]) }}"
+        cacheable: true
 

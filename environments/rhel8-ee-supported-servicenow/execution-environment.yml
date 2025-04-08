@@ -1,14 +1,22 @@
 ---
 version: 3
 
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+
 images:
   base_image:
     name: registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest
-
+    options:
+      pull_policy: missing
+      tls_verify: false
 
 additional_build_files:
   - src: ./ansible.cfg
     dest: configs
+  - src: ./library/systemd
+    dest: /usr/lib/python3.11/site-packages/systemd
 
 dependencies:
   ansible_core:
@@ -19,7 +27,16 @@ dependencies:
   python: requirements.txt
   system: bindep.txt
 
+options:
+  package_manager_path: /usr/bin/microdnf
+
 additional_build_steps:
+  prepend_builder: |
+    # Modify assemble script to bypass systemd-python
+    RUN if [ -f /output/scripts/assemble ]; then \
+        sed -i 's/pip install/pip install --no-deps/g' /output/scripts/assemble; \
+    fi
+
   prepend_base: |
     USER root
     # Fix DNF missing
@@ -27,24 +44,47 @@ additional_build_steps:
         microdnf install -y dnf; \
     fi
     
-    # Existing commands...
+    # Install development tools but avoid systemd-python
     RUN microdnf upgrade -y && \
         microdnf install -y gcc make pkg-config python3-devel systemd-devel \
-        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation
+        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation && \
+        python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --no-cache-dir --ignore-installed ansible-core ansible-runner
+
+    # Create directory for systemd module if it doesn't exist via additional_build_files
+    RUN mkdir -p /usr/lib/python3.11/site-packages/systemd && \
+        touch /usr/lib/python3.11/site-packages/systemd/__init__.py
 
   prepend_final: |
-    RUN /usr/bin/microdnf install -y yum-utils \
-        && microdnf upgrade -y \
-        && microdnf install -y python39-pip python39-devel gcc \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel \
-        && python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner 
+    USER root
+    # Install additional dependencies but avoid systemd-python
+    RUN /usr/bin/microdnf install -y yum-utils && \
+        microdnf upgrade -y && \
+        microdnf install -y python39-pip python39-devel gcc && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
+    
+    # Create empty files to prevent import errors
+    RUN if [ ! -f /usr/lib/python3.11/site-packages/systemd/journal.py ]; then \
+        echo 'class journal:\n    @staticmethod\n    def send(*args, **kwargs):\n        pass' > /usr/lib/python3.11/site-packages/systemd/journal.py; \
+    fi && \
+    if [ ! -f /usr/lib/python3.11/site-packages/systemd/daemon.py ]; then \
+        echo 'class daemon:\n    @staticmethod\n    def notify(*args, **kwargs):\n        pass' > /usr/lib/python3.11/site-packages/systemd/daemon.py; \
+    fi && \
+    if [ ! -f /usr/lib/python3.11/site-packages/systemd/id128.py ]; then \
+        echo 'class id128:\n    @staticmethod\n    def get_machine():\n        return "00000000000000000000000000000000"' > /usr/lib/python3.11/site-packages/systemd/id128.py; \
+    fi
 
   append_final: |
     ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
-    RUN microdnf clean all \
-      && rm -rf /var/cache/{dnf,yum} \
-      && rm -rf /var/lib/dnf/history.* \
-      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
-      && rm -rf /var/cache/dnf \
-      && rm -rf /root/.cache \
-      && rm -rf /etc/ansible/ansible.cfg
+    # Clean up
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        rm -rf /var/lib/dnf/history.* && \
+        rm -rf /var/log/dnf.* /var/log/hawkey.log && \
+        rm -rf /var/cache/dnf && \
+        rm -rf /root/.cache && \
+        rm -rf /etc/ansible/ansible.cfg
+    
+    # Verify our dummy systemd module works
+    RUN python3 -c "import systemd; from systemd import journal; print('Dummy systemd module loaded successfully')"

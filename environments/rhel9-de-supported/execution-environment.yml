@@ -15,9 +15,9 @@ images:
 
 dependencies:
   ansible_core:
-    package_pip: "ansible-core>=2.15.0,<2.16"
+    package_pip: ansible-core
   ansible_runner:
-    package_pip: "ansible-runner>=2.3.1"
+    package_pip: ansible-runner
   python: requirements.txt
   system: bindep.txt
   galaxy: requirements.yml

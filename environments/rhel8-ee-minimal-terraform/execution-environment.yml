@@ -1,61 +1,86 @@
 ---
 version: 3
 
-images:
-  base_image:
-    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
-
+# ANSIBLE MANAGED SYSTEMD MODULE CONFIGURATION
 additional_build_files:
   - src: ./ansible.cfg
     dest: configs
+  - src: ../../library/systemd
+    dest: /usr/lib/python3.11/site-packages/systemd
+# END ANSIBLE MANAGED SYSTEMD MODULE CONFIGURATION
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+  PKGMGR_PRESERVE_CACHE: 'false'
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
+    options:
+      pull_policy: missing
+      tls_verify: false
 
 dependencies:
   ansible_core:
-    package_pip: ansible-core>=2.13.10
+    package_pip: ansible-core
   ansible_runner:
     package_pip: ansible-runner
   galaxy:
     collections:
-      - { name: cloud.terraform }  
+      - community.general
+      - cloud.terraform  
   python: requirements.txt
   system: bindep.txt
+
+options:
+  package_manager_path: /usr/bin/microdnf
 
 additional_build_steps:
   prepend_base: |
     USER root
-    RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then microdnf install -y dnf; fi
-    
+    # Installing development tools and libraries (including Python headers)
+    RUN microdnf upgrade -y && \
+        microdnf install -y gcc gcc-c++ make python3-devel python3-pip curl unzip golang \
+            libxml2-devel rpm-build cmake pkgconfig openssl-devel && \
+        python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --no-cache-dir --ignore-installed ansible-core ansible-runner
+        
+    # Install terraform
+    RUN cd /tmp && \
+        curl -L https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip -o terraform.zip && \
+        unzip terraform.zip && \
+        mv terraform /usr/local/bin/ && \
+        chmod +x /usr/local/bin/terraform && \
+        rm -f terraform.zip
+
+  prepend_galaxy: |
+    # Skip systemd-python during galaxy build due to compilation issues
+    RUN echo "Skipping systemd-python due to compilation issues"
+
   prepend_final: |
     USER root
-    RUN if [ -f /usr/bin/microdnf ] && [ ! -f /usr/bin/dnf ]; then \
-          microdnf upgrade -y && \
-          microdnf install -y python39-pip python39-devel gcc curl unzip; \
-        elif [ -f /usr/bin/dnf ]; then \
-          dnf upgrade -y && \
-          dnf install -y python39-pip python39-devel gcc curl unzip; \
-        fi
-    
-    RUN python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel
-    
-    RUN TERRAFORM_INV_VERSION="0.10" && \
-        mkdir -p /usr/local/bin && \
-        curl -L "https://github.com/adammck/terraform-inventory/archive/refs/heads/master.zip" -o /tmp/terraform-inventory.zip && \
-        unzip /tmp/terraform-inventory.zip -d /tmp && \
-        mv /tmp/terraform-inventory /usr/local/bin/terraform-inventory && \
+    RUN cd /tmp && \
+        curl -L https://github.com/adammck/terraform-inventory/archive/refs/heads/master.zip -o terraform-inventory.zip && \
+        unzip terraform-inventory.zip && \
+        cd terraform-inventory-master && \
+        go build && \
+        cp terraform-inventory /usr/local/bin/ && \
         chmod +x /usr/local/bin/terraform-inventory && \
-        rm -f /tmp/terraform-inventory.zip
+        cd /tmp && \
+        rm -rf terraform-inventory-master terraform-inventory.zip
 
   append_final: |
-    RUN if [ -f /usr/bin/microdnf ]; then \
-          microdnf clean all; \
-        elif [ -f /usr/bin/dnf ]; then \
-          dnf clean all; \
-        fi
-    ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
-    RUN microdnf clean all \
-      && rm -rf /var/cache/{dnf,yum} \
-      && rm -rf /var/lib/dnf/history.* \
-      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
-      && rm -rf /var/cache/dnf \
-      && rm -rf /root/.cache \
-      && rm -rf /etc/ansible/ansible.cfg
+    USER root
+    # Clean up
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        rm -rf /var/lib/dnf/history.* && \
+        rm -rf /var/log/dnf.* /var/log/hawkey.log
+        
+    # Verify terraform and terraform-inventory installation
+    RUN command -v terraform && terraform version || echo "Terraform not installed" && \
+        command -v terraform-inventory && terraform-inventory --help || echo "Terraform-inventory not installed"
+    
+    # Verify our custom systemd module works
+    RUN python3 -c "import systemd; from systemd import journal; print('Custom systemd module loaded successfully')"

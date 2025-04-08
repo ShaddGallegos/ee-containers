@@ -1,3 +1,47 @@
+# Try to load credentials file
+- name: Load credentials from config file
+  ansible.builtin.include_vars:
+    file: "{{ ansible_env.HOME }}/.ansible/vars/config"
+  ignore_errors: true
+  no_log: true
+
+# Check for required variables and prompt if missing
+- name: Check for automation_hub_token
+  block:
+    - name: Set default token value if undefined
+      ansible.builtin.set_fact:
+        automation_hub_token: "{{ automation_hub_token | default('') }}"
+      no_log: true
+    
+    - name: Prompt for Automation Hub token if missing
+      ansible.builtin.pause:
+        prompt: "Enter your Automation Hub token (or press enter to build without it)"
+        echo: false
+      register: ah_token_input
+      when: not automation_hub_token or automation_hub_token == ''
+      no_log: true
+    
+    - name: Set token from prompt (only if provided)
+      ansible.builtin.set_fact:
+        automation_hub_token: "{{ ah_token_input.user_input }}"
+      when: ah_token_input is defined and ah_token_input.user_input | default('') != ''
+      no_log: true
+      
+    - name: Save updated token to config (only if provided)
+      ansible.builtin.copy:
+        dest: "{{ ansible_env.HOME }}/.ansible/vars/config"
+        content: |
+          ---
+          # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+          rh_username: '{{ rh_username | default('') }}'
+          rh_password: '{{ rh_password | default('') }}'
+          automation_hub_token: '{{ automation_hub_token | default('') }}'
+          galaxy_token: '{{ galaxy_token | default('') }}'
+        mode: '0600'
+      when: ah_token_input is defined and ah_token_input.user_input | default('') != ''
+      no_log: true
+            
+# Rest of your task remains the same
 - name: Set work_dir for the current environment
   ansible.builtin.set_fact:
     work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
@@ -68,7 +112,7 @@
     chdir: "{{ build_context }}"
   environment:
     ANSIBLE_BUILDER_HOME: "{{ build_context }}"
-    PODMAN_IGNORE_CGROUPSV1_WARNING: 1
+    PODMAN_IGNORE_CGROUPSV1_WARNING: "1"
   register: build_output
   changed_when: build_output.rc == 0
   # Don't make this task fail, we'll handle failures later

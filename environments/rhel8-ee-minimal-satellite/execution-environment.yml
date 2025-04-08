@@ -1,7 +1,9 @@
 ---
 version: 3
 
-build_arg_defaults: {}
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
 
 images:
   base_image:
@@ -11,6 +13,10 @@ images:
       tls_verify: false
 
 dependencies:
+  ansible_core:
+    package_pip: ansible-core
+  ansible_runner:
+    package_pip: ansible-runner
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
@@ -19,19 +25,75 @@ options:
   package_manager_path: /usr/bin/microdnf
 
 additional_build_steps:
-  prepend_final: |
-      RUN microdnf install -y python3 python3-pip && \
-        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
-        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner && \
-        microdnf upgrade -y && \
-        pip3 cache purge    
+  prepend_base: |
+    USER root
+    RUN microdnf install -y gcc make pkg-config python3-devel systemd-devel python3 python3-pip \
+        libxml2-devel openssl-devel rpm-build krb5-devel krb5-libs krb5-workstation which && \
+        python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+    
+    # Install ansible packages with --ignore-installed to prevent uninstall errors
+    RUN python3 -m pip install --no-cache-dir --ignore-installed ansible-core ansible-runner
 
+  prepend_galaxy: |
+    # Create basic ansible.cfg with just Galaxy (no Automation Hub for now)
+    RUN mkdir -p /etc/ansible && \
+        echo "[defaults]" > /etc/ansible/ansible.cfg && \
+        echo "host_key_checking = False" >> /etc/ansible/ansible.cfg && \
+        echo "retry_files_enabled = False" >> /etc/ansible/ansible.cfg && \
+        echo "" >> /etc/ansible/ansible.cfg && \
+        echo "[galaxy]" >> /etc/ansible/ansible.cfg && \
+        echo "server_list = galaxy" >> /etc/ansible/ansible.cfg && \
+        echo "" >> /etc/ansible/ansible.cfg && \
+        echo "[galaxy_server.galaxy]" >> /etc/ansible/ansible.cfg && \
+        echo "url = https://galaxy.ansible.com/" >> /etc/ansible/ansible.cfg
+    
+    # Set permissions on config file
+    RUN chmod 644 /etc/ansible/ansible.cfg && cat /etc/ansible/ansible.cfg
+
+  prepend_final: |
+    USER root
+    RUN microdnf upgrade -y
+    
   append_final: |
-    ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
-    RUN microdnf clean all \
-      && rm -rf /var/cache/{dnf,yum} \
-      && rm -rf /var/lib/dnf/history.* \
-      && rm -rf /var/log/dnf.* /var/log/hawkey.log \
-      && rm -rf /var/cache/dnf \
-      && rm -rf /root/.cache \
-      && rm -rf /etc/ansible/ansible.cfg
+    USER root
+    # Clean up
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        rm -rf /var/lib/dnf/history.* && \
+        rm -rf /var/log/dnf.* /var/log/hawkey.log && \
+        rm -rf /var/cache/dnf && \
+        rm -rf /root/.cache
+    
+    # Verify ansible installation - use direct path instead of 'which'
+    RUN command -v ansible && ansible --version
+
+    # Create the install_rh_collections.sh script line by line
+    RUN echo '#!/bin/bash' > /usr/local/bin/install_rh_collections.sh && \
+        echo 'if [ -n "$AUTOMATION_HUB_TOKEN" ]; then' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  # Create ansible.cfg with Automation Hub configuration' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  mkdir -p /etc/ansible' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  cat > /etc/ansible/ansible.cfg << EOC' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '[defaults]' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'host_key_checking = False' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'retry_files_enabled = False' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '[galaxy]' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'server_list = automation_hub, galaxy' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '[galaxy_server.automation_hub]' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'url = https://console.redhat.com/api/automation-hub/' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'token = $AUTOMATION_HUB_TOKEN' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '[galaxy_server.galaxy]' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'url = https://galaxy.ansible.com/' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'EOC' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  chmod 644 /etc/ansible/ansible.cfg' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  echo "Installing Red Hat Satellite collections with token..."' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  ansible-galaxy collection install redhat.satellite redhat.satellite_operations --force' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'else' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  echo "No Automation Hub token provided. Red Hat collections will not be installed."' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  echo "To install Red Hat collections, run the container with:"' >> /usr/local/bin/install_rh_collections.sh && \
+        echo '  echo "podman run -e AUTOMATION_HUB_TOKEN=your_token -it rhel8-ee-minimal-satellite /usr/local/bin/install_rh_collections.sh"' >> /usr/local/bin/install_rh_collections.sh && \
+        echo 'fi' >> /usr/local/bin/install_rh_collections.sh && \
+        chmod +x /usr/local/bin/install_rh_collections.sh

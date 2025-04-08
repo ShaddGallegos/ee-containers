@@ -89,7 +89,7 @@ done
 
 # Configure bottom pane for podman images with continuous update
 tmux select-pane -t podman-monitor:0.2
-tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                            TAG       IMAGE ID      CREATED       SIZE\" && echo \"--------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
+tmux send-keys -t podman-monitor:0.2 "watch -n 0.5 'podman images | (echo \"REPOSITORY                                                            TAG            IMAGE ID      CREATED       SIZE\" && echo \"----------------------------------------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")'" C-m
 
 # Now, let's attach to the session rather than detaching from it
 tmux attach -t podman-monitor
