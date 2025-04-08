@@ -1,6 +1,10 @@
 ---
 version: 3
 
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
+
 images:
   base_image:
     name: 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest'

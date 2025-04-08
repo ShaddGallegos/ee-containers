@@ -513,6 +513,16 @@
       failed_when: false
       when: force_rebuild is not defined or not force_rebuild
 
+    - name: Filter missing environments
+      ansible.builtin.set_fact:
+        missing_environment_images: "{{ selected_environments }}"
+      when: force_rebuild is defined and force_rebuild
+
+    - name: Filter missing environments based on existing images
+      ansible.builtin.set_fact:
+        missing_environment_images: "{{ selected_environments | select('basename') | list | difference(existing_images.results | selectattr('rc', 'eq', 0) | map(attribute='item') | map('basename') | list) }}"
+      when: force_rebuild is not defined or not force_rebuild
+
     - name: Kill existing monitoring tmux session (if any)
       ansible.builtin.command: tmux has-session -t podman-monitor
       register: tmux_monitor_check
@@ -557,6 +567,78 @@
       loop: "{{ selected_environments | default([]) }}"
       when: selected_environments is defined and selected_environments | length > 0
       tags: [setup, build]
+
+    - name: Create process_environment.yml dynamically in tasks/ folder
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/tasks"
+        state: directory
+        mode: '0755'
+
+    - name: Create process_environment.yml for build
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/tasks/process_environment.yml"
+        content: |
+          - name: Update /tmp/current_env for monitoring
+            ansible.builtin.copy:
+              content: "{{ item | basename }}"
+              dest: /tmp/current_env
+            changed_when: false
+
+          - name: Set work_dir for the current environment
+            ansible.builtin.set_fact:
+              work_dir: "/tmp/ee-builder/context/environments/{% raw %}{{ item | basename }}{% endraw %}"
+
+          - name: Debug work_dir
+            ansible.builtin.debug:
+              msg: "Work directory: {% raw %}{{ work_dir }}{% endraw %}"
+
+          - name: Create work_dir if it doesn't exist
+            ansible.builtin.file:
+              path: "{% raw %}{{ work_dir }}{% endraw %}"
+              state: directory
+              mode: '0755'
+
+          - name: Build container image using ansible-builder
+            ansible.builtin.shell: |
+              cd {% raw %}{{ work_dir }}{% endraw %} && \
+              ansible-builder build \
+                --tag {% raw %}{{ item | basename }}{% endraw %} \
+                --container-runtime podman \
+                --verbosity 2 \
+                --prune-images \
+                --context . \
+                -f execution-environment.yml
+            register: build_output
+            environment:
+              ANSIBLE_BUILDER_HOME: "{% raw %}{{ work_dir }}{% endraw %}"
+            ignore_errors: true
+
+          - name: Record build status
+            ansible.builtin.set_fact:
+              build_results: "{% raw %}{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}{% endraw %}"
+              cacheable: true
+            changed_when: false
+
+          - name: Update /tmp/current_env showing build completed
+            ansible.builtin.copy:
+              content: "COMPLETED: {% raw %}{{ item | basename }}{% endraw %}"
+              dest: /tmp/current_env
+            changed_when: false
+        mode: '0644'
+
+    - name: Show "NOTHING BUILDING YET"
+      ansible.builtin.debug:
+        msg: "NOTHING BUILDING YET"
+
+    - name: Process each selected environment
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
+      loop: "{{ missing_environment_images }}"
+      loop_control:
+        label: "{{ item | basename }}"
+
+    - name: Show "BUILD COMPLETE"
+      ansible.builtin.debug:
+        msg: "BUILD COMPLETE"
 
     - name: Create Podman monitoring script
       ansible.builtin.copy:
@@ -718,4 +800,46 @@
       ansible.builtin.set_fact:
         build_results: "{{ build_results | default([]) }}"
         cacheable: true
+
+# Play 3: Summary and Status Report
+- name: Summary and Status Report
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Generate build summary report
+      ansible.builtin.debug:
+        msg: |
+          ┌──────────────────────────────────────────────────────────────────────────┐
+          │                       EXECUTION ENVIRONMENT BUILD REPORT                 │
+          ├──────────────────────────────────────────────────────────────────────────┤
+          │ STATUS │ ENVIRONMENT                                                     │
+          ├──────────────────────────────────────────────────────────────────────────┤
+          {% for result in build_results | default([]) %}
+          │ {{ '✅ PASS' if result.success else '❌ FAIL' }} │ {{ '%-65s' | format(result.image) }} │
+          {% else %}
+          │                       No environments were built                         │
+          {% endfor %}
+          └──────────────────────────────────────────────────────────────────────────┘
+          
+          {% set successful = build_results | default([]) | selectattr('success') | list %}
+          {% set failed = build_results | default([]) | rejectattr('success') | list %}
+          
+          Summary:
+          - Total environments processed: {{ build_results | default([]) | length }}
+          - Successfully built: {{ successful | length }}
+          - Failed builds: {{ failed | length }}
+          
+          {% if failed %}
+          Failed environments:
+          {% for result in failed %}
+          - {{ result.image }} (exit code: {{ result.output.rc }})
+          {% endfor %}
+          {% endif %}
+      when: build_results is defined
+
+    - name: Show no build results message
+      ansible.builtin.debug:
+        msg: "No build results available. Did you select any environments to build?"
+      when: build_results is not defined or build_results | length == 0
 

@@ -1,7 +1,9 @@
 ---
 version: 3
 
-build_arg_defaults: {}
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
 
 images:
   base_image:

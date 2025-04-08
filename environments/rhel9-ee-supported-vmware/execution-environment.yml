@@ -2,8 +2,8 @@
 version: 3
 
 build_arg_defaults:
-  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force --no-deps'
-  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
   PKGMGR_PRESERVE_CACHE: 'false'
 
 images:

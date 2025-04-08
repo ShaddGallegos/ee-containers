@@ -4,7 +4,13 @@ version: 3
 images:
   base_image:
     name: registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest
-    #name: quay.io/acme_corp/windows-ee:latest
+    options:
+      pull_policy: missing
+      tls_verify: false
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
 
 additional_build_files:
   - src: ./ansible.cfg
