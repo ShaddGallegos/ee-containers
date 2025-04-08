@@ -702,31 +702,30 @@
             ansible.builtin.shell: podman image prune -f
             register: pre_prune
             changed_when: pre_prune.stdout is search("deleted")
-        
+          
           - name: Update /tmp/current_env for monitoring showing build start
             ansible.builtin.copy:
               content: "STARTING: {% raw %}{{ item | basename }}{% endraw %}"
               dest: /tmp/current_env
             changed_when: false
-        
+          
           - name: Set work_dir for the current environment
             ansible.builtin.set_fact:
               work_dir: "/tmp/ee-builder/context/environments/{% raw %}{{ item | basename }}{% endraw %}"
 
           # Wrap the build process in a block with rescue
-          - name: Build environment {% raw %}{{ item | basename }}{% endraw %}
+          - name: "Build environment {% raw %}{{ item | basename }}{% endraw %}"
             block:
-              # Your existing build tasks here...
-          
-            rescue:
-              # Your existing rescue block...
-        
-            always:
-              - name: Clean up after build attempt
-                ansible.builtin.shell: podman image prune -f
-                register: post_prune
-                changed_when: post_prune.stdout is search("deleted")
-                ignore_errors: true
+              - name: Debug work_dir
+                ansible.builtin.debug:
+                  msg: "Work directory: {% raw %}{{ work_dir }}{% endraw %}"
+              
+              - name: Build container image using ansible-builder
+                ansible.builtin.shell: |
+                  cd {% raw %}{{ work_dir }}{% endraw %} && \
+                  ansible-builder build \
+                    --tag {% raw %}{{ item | basename }}{% endraw %} \
+                    --
         mode: '0644'
       tags: [setup, build]
 

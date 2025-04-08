@@ -1,6 +1,11 @@
-- name: Update /tmp/current_env for monitoring
+- name: Clean dangling images before building
+  ansible.builtin.shell: podman image prune -f
+  register: pre_prune
+  changed_when: pre_prune.stdout is search("deleted")
+
+- name: Update /tmp/current_env for monitoring showing build start
   ansible.builtin.copy:
-    content: "{{ item | basename }}"
+    content: "STARTING: {{ item | basename }}"
     dest: /tmp/current_env
   changed_when: false
 
@@ -8,45 +13,16 @@
   ansible.builtin.set_fact:
     work_dir: "/tmp/ee-builder/context/environments/{{ item | basename }}"
 
-- name: Debug work_dir
-  ansible.builtin.debug:
-    msg: "Work directory: {{ work_dir }}"
-
-- name: Create work_dir if it doesn't exist
-  ansible.builtin.file:
-    path: "{{ work_dir }}"
-    state: directory
-    mode: '0755'
-
-- name: Copy selected environment to work_dir
-  ansible.builtin.copy:
-    src: "{{ item }}"
-    dest: "{{ work_dir }}"
-    remote_src: true
-
-- name: Build container image using ansible-builder
-  ansible.builtin.shell: |
-    cd {{ work_dir }} && \
-    ansible-builder build \
-      --tag {{ item | basename }} \
-      --container-runtime podman \
-      --verbosity 2 \
-      --prune-images \
-      --context . \
-      -f execution-environment.yml
-  register: build_output
-  environment:
-    ANSIBLE_BUILDER_HOME: "{{ work_dir }}"
-  ignore_errors: true
-
-- name: Record build status
-  ansible.builtin.set_fact:
-    build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': build_output.rc == 0, 'output': build_output }] }}"
-    cacheable: true
-  changed_when: false
-
-- name: Update /tmp/current_env showing build completed
-  ansible.builtin.copy:
-    content: "COMPLETED: {{ item | basename }}"
-    dest: /tmp/current_env
-  changed_when: false
+# Wrap the build process in a block with rescue
+- name: "Build environment {{ item | basename }}"
+  block:
+    - name: Debug work_dir
+      ansible.builtin.debug:
+        msg: "Work directory: {{ work_dir }}"
+    
+    - name: Build container image using ansible-builder
+      ansible.builtin.shell: |
+        cd {{ work_dir }} && \
+        ansible-builder build \
+          --tag {{ item | basename }} \
+          --
