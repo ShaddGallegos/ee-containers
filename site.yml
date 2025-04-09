@@ -52,12 +52,18 @@
       - '8.8.4.4'
 
     required_packages:
-      - python3-pip
       - ansible-builder
       - ansible-core
+      - autoconf
+      - automake
+      - bison
+      - gcc
       - git
+      - make
+      - ncurses
       - podman
       - podman-docker
+      - python3-pip
       - tmux
       - xdg-utils
       - yum-utils
@@ -404,8 +410,6 @@
         - "{{ playbook_dir }}/library"
         - "{{ playbook_dir }}/tasks"
         - "{{ playbook_dir }}/templates"
-        - "{{ playbook_dir }}/roles"
-        - "{{ playbook_dir }}/vars"
         - "{{ playbook_dir }}/files"
     
         # Runtime directories
@@ -419,6 +423,516 @@
         - "~/.ansible/vars"
         - "~/.ansible/tmp"
       tags: [setup, init, pre_reqs]
+
+    - name: Create all required project files
+      block:
+        - name: Create start_monitor.sh script
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/scripts/start_monitor.sh"
+            mode: '0755'
+            content: |
+              #!/bin/bash
+              
+              # Kill any existing session to ensure clean slate
+              tmux kill-session -t podman-monitor 2>/dev/null || true
+              
+              # Create initial status file with default message
+              echo "NOTHING BUILDING YET" > /tmp/current_env
+              
+              # Create new session with dynamic dimensions
+              tmux new-session -d -s podman-monitor
+              
+              # Split window into three panes with optimized sizes:
+              tmux split-window -v -t podman-monitor:0.0 -p 85
+              tmux split-window -v -t podman-monitor:0.1 -p 5
+              
+              # Top pane: ASCII art header
+              tmux select-pane -t podman-monitor:0.0
+              tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
+              ┌──────────────────────────────────────────────────────────────────────────┐
+              │              ●●●●●●●                                                     │
+              │             ●●●●●●●●●                                                    │
+              │            ●●●●●●●●●●●                                                   │
+              │    ╔══════●●●●●●═●●●●●●══════╗                                           │
+              │    ║     ●●●●●●    ●●●●●● NSIBLE & PODMAN                                │
+              │    ║    ●●●●●●      ●●●●●●    ║ EXECUTION ENVIRONMENT BUILD MONITOR      │
+            EOF
+            " C-m
+            
+            # Middle pane: Single-line status display
+            tmux select-pane -t podman-monitor:0.1
+            tmux send-keys -t podman-monitor:0.1 'while true; do
+              clear
+              BUILDING_FILE=/tmp/current_env
+              if [ -f "$BUILDING_FILE" ]; then
+                BUILDING_ENV=$(cat "$BUILDING_FILE")
+                
+                OUTPUT="$BUILDING_ENV"
+                
+                if [[ "$BUILDING_ENV" != "SKIPPED"* && 
+                      "$BUILDING_ENV" != "COMPLETED"* && 
+                      "$BUILDING_ENV" != "NOTHING BUILDING YET" && 
+                      "$BUILDING_ENV" != "FAILED"* ]]; then
+                  SPINNER_CHARS=("|" "/" "-" "\\")
+                  SPINNER_INDEX=$(( (SECONDS / 1) % 4 ))
+                  SPINNER=${SPINNER_CHARS[$SPINNER_INDEX]}
+                  OUTPUT="⏳ Building: $BUILDING_ENV ${SPINNER}"
+                elif [[ "$BUILDING_ENV" == "FAILED"* ]]; then
+                  OUTPUT="❌ $BUILDING_ENV"
+                elif [[ "$BUILDING_ENV" == "COMPLETED"* ]]; then
+                  OUTPUT="✅ $BUILDING_ENV"
+                elif [[ "$BUILDING_ENV" == "NOTHING BUILDING YET" ]]; then
+                  OUTPUT="💤 $BUILDING_ENV"
+                fi
+                
+                COLS=$(tput cols)
+                printf "%*s\n" $(( (${#OUTPUT} + COLS) / 2 )) "$OUTPUT"
+              else
+                COLS=$(tput cols)
+                MSG="NOTHING BUILDING YET"
+                printf "%*s\n" $(( (${#MSG} + COLS) / 2 )) "💤 $MSG"
+              fi
+              sleep 0.5
+            done' C-m
+            
+            # Bottom pane: Maximize image list space with custom formatting
+            tmux select-pane -t podman-monitor:0.2
+            tmux send-keys -t podman-monitor:0.2 'watch -n 1 "podman images | sort"' C-m
+            
+            echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
+            EOFMARKER
+            
+            chmod +x "{{ playbook_dir }}/scripts/start_monitor.sh"
+          args:
+            executable: /bin/bash
+          changed_when: true
+          tags: [setup, files, monitoring]
+
+        - name: Create templates directory and files
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/templates/assemble.sh.j2"
+            mode: '0755'
+            content: |
+              #!/bin/bash
+              set -ex
+              
+              {% raw %}
+              echo "Running custom assemble script for {{ item | basename }}"
+              
+              # Use proper package manager based on availability
+              if command -v microdnf &> /dev/null; then
+                  PKG_MGR="microdnf"
+              elif command -v dnf &> /dev/null; then
+                  PKG_MGR="dnf"
+              else
+                  PKG_MGR="yum"
+              fi
+              
+              echo "Using package manager: $PKG_MGR"
+              
+              # Install any required system packages
+              if [ -f /tmp/src/bindep.txt ]; then
+                  echo "Installing packages from bindep.txt"
+                  $PKG_MGR install -y $(cat /tmp/src/bindep.txt | grep -v "^#" | xargs)
+              fi
+              
+              # Install Python requirements
+              if [ -f /tmp/src/requirements.txt ]; then
+                  echo "Installing Python requirements"
+                  {% endraw %}
+                  {% raw %}{% if "terraform" in (item | basename) %}{% endraw %}
+                  # Fix terraform requirements
+                  echo "Original requirements.txt:"
+                  cat /tmp/src/requirements.txt
+                  grep -v -- "--exclude" /tmp/src/requirements.txt > /tmp/requirements.clean.txt
+                  echo "Cleaned requirements.txt:"
+                  cat /tmp/requirements.clean.txt
+                  pip3 install --no-cache-dir -r /tmp/requirements.clean.txt
+                  {% raw %}{% else %}{% endraw %}
+                  pip3 install --no-cache-dir -r /tmp/src/requirements.txt
+                  {% raw %}{% endif %}{% endraw %}
+              fi
+              
+              # Add environment-specific customizations
+              {% raw %}{% if "terraform" in (item | basename) %}{% endraw %}
+              echo "Adding Terraform-specific configuration"
+              $PKG_MGR install -y unzip curl wget which
+              TERRAFORM_VERSION="1.5.7"
+              cd /tmp
+              curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+              unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+              mv terraform /usr/local/bin/
+              chmod +x /usr/local/bin/terraform
+              pip3 install --no-cache-dir terraform-provider python-terraform
+              {% raw %}{% endif %}{% endraw %}
+              
+              {% raw %}{% if "servicenow" in (item | basename) %}{% endraw %}
+              echo "Adding ServiceNow-specific configuration"
+              pip3 install --no-cache-dir pysnow servicenow_client
+              {% raw %}{% endif %}{% endraw %}
+              
+              echo "Custom assemble script completed successfully"
+              exit 0
+          tags: [setup, files]
+
+        - name: Create task files
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/tasks/process_environment.yml"
+            mode: '0644'
+            content: |
+              ---
+              # This file is generated dynamically by site.yml
+              # Tasks for processing individual execution environments
+              
+              - name: Get environment name
+                ansible.builtin.set_fact:
+                  env_name: "{{ environment | basename }}"
+                  
+              - name: Update current build status for monitoring
+                ansible.builtin.copy:
+                  dest: /tmp/current_env
+                  content: "{{ env_name }}"
+                  mode: '0644'
+                changed_when: true
+                  
+              - name: Create execution environment directory
+                ansible.builtin.file:
+                  path: "/tmp/ee-containers/context/environments/{{ env_name }}"
+                  state: directory
+                  mode: '0755'
+              
+              - name: Create scripts directory for execution environment
+                ansible.builtin.file:
+                  path: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts"
+                  state: directory
+                  mode: '0755'
+              
+              - name: Ensure assemble script content
+                ansible.builtin.template:
+                  src: "{{ playbook_dir }}/templates/assemble.sh.j2"
+                  dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
+                  mode: '0755'
+              
+              - name: Copy environment files to build context
+                ansible.builtin.shell: |
+                  cp -r {{ environment }}/* /tmp/ee-containers/context/environments/{{ env_name }}/
+                changed_when: true
+              
+              - name: Build execution environment image
+                ansible.builtin.shell: |
+                  cd /tmp/ee-containers/context/environments/{{ env_name }} && \
+                  ansible-builder build \
+                    --tag {{ env_name }} \
+                    --container-runtime podman \
+                    --verbosity 2 \
+                    --prune-images \
+                    --context . \
+                    -f execution-environment.yml
+                register: build_result
+                failed_when: build_result.rc != 0
+                changed_when: build_result.rc == 0
+              
+              - name: Record build result
+                ansible.builtin.set_fact:
+                  build_status: "{{ build_result.rc == 0 }}"
+                  build_output: "{{ build_result }}"
+                changed_when: false
+              
+              - name: Update status file with completion
+                ansible.builtin.copy:
+                  dest: /tmp/current_env
+                  content: "COMPLETED: {{ env_name }}"
+                  mode: '0644'
+                changed_when: true
+                when: build_status
+                
+              - name: Update status file with failure
+                ansible.builtin.copy:
+                  dest: /tmp/current_env
+                  content: "FAILED: {{ env_name }}"
+                  mode: '0644'
+                changed_when: true
+                when: not build_status
+          tags: [setup, files]
+          
+        - name: Create library directory and custom module
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/library/podman_image_info.py"
+            mode: '0755'
+            content: |
+              #!/usr/bin/python
+              
+              # Copyright: (c) 2023, Your Name <your.email@example.com>
+              # GNU General Public License v3.0+ (see COPYING or https://www.gnu.org/licenses/gpl-3.0.txt)
+              
+              from __future__ import (absolute_import, division, print_function)
+              __metaclass__ = type
+              
+              DOCUMENTATION = r'''
+              ---
+              module: podman_image_info
+              short_description: Gather information about Podman images
+              description:
+                  - Gather information about Podman images.
+                  - Lists images and their attributes.
+              options:
+                  name:
+                      description:
+                          - Filter by image name.
+                      type: str
+                      required: false
+                  tag:
+                      description:
+                          - Filter by image tag.
+                      type: str
+                      required: false
+              author:
+                  - "Your Name (@yourGitHubHandle)"
+              '''
+              
+              EXAMPLES = r'''
+              - name: Get info about all images
+                podman_image_info:
+                register: image_info
+              
+              - name: Get info about a specific image
+                podman_image_info:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
+                register: specific_image_info
+              '''
+              
+              RETURN = r'''
+              images:
+                  description: List of image dictionaries
+                  returned: always
+                  type: list
+                  elements: dict
+                  contains:
+                      id:
+                          description: Image ID
+                          type: str
+                          sample: "sha256:f9a9f253f6798722d9e692c2b1429aa1"
+                      names:
+                          description: Image names and tags
+                          type: list
+                          sample: ["registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"]
+                      created:
+                          description: When the image was created
+                          type: str
+                          sample: "2023-04-20T10:15:30Z"
+                      size:
+                          description: Image size in bytes
+                          type: int
+                          sample: 358974135
+              '''
+              
+              import json
+              import re
+              import subprocess
+              
+              from ansible.module_utils.basic import AnsibleModule
+              
+              
+              def run_command(module, command):
+                  """Run a Podman command and return the output."""
+                  try:
+                      result = subprocess.run(
+                          command,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE,
+                          check=False,
+                          universal_newlines=True
+                      )
+                      if result.returncode != 0:
+                          module.fail_json(
+                              msg="Failed to execute command",
+                              command=command,
+                              stdout=result.stdout,
+                              stderr=result.stderr,
+                              rc=result.returncode
+                          )
+                      return result.stdout
+                  except Exception as e:
+                      module.fail_json(msg=f"Command execution error: {e}", command=command)
+              
+              
+              def get_image_info(module, name=None, tag=None):
+                  """Get image information using podman images."""
+                  command = ["podman", "images", "--format", "json"]
+                  
+                  if name:
+                      command.append(name)
+                      if tag:
+                          command[-1] = f"{name}:{tag}"
+                  
+                  output = run_command(module, command)
+                  
+                  try:
+                      return json.loads(output)
+                  except json.JSONDecodeError:
+                      module.fail_json(msg="Failed to parse podman images output", output=output)
+              
+              
+              def main():
+                  """Main module function."""
+                  module_args = {
+                      'name': {'type': 'str', 'required': False},
+                      'tag': {'type': 'str', 'required': False}
+                  }
+                  
+                  result = {'changed': False}
+                  module = AnsibleModule(argument_spec=module_args, supports_check_mode=True)
+                  
+                  # In check mode, return empty list
+                  if module.check_mode:
+                      result['images'] = []
+                      module.exit_json(**result)
+                  
+                  name = module.params['name']
+                  tag = module.params['tag']
+                  
+                  result['images'] = get_image_info(module, name, tag)
+                  module.exit_json(**result)
+              
+              
+              if __name__ == '__main__':
+                  main()
+          tags: [setup, files]
+
+        - name: Create files directory and content
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/files/build-banner.txt"
+            mode: '0644'
+            content: |
+              ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+              │                                                                                      ..:-=@@@@=-:..          │
+              │                                                                                    .*%@@@@@@@@@@@@%*.        │
+              │                                                                                 .:@@@@@@@@@@@@@@@@@@@@:.     │
+              │                                                                                .*@@@@@@@@@@*-@@@@@@@@@@*.    │
+              │                                                                               .@@@@@@@@@@@*. =@@@@@@@@@@@.   │
+              │                                                                              .%@@@@@@@@@@@ .@ +@@@@@@@@@@%.  │
+              │                                                                              -%@@@@@@@@@@..@%-.*@@@@@@@@@%-  │
+              │     "A Streamlined Approach to Building Ansible Execution Environments"     .+@@@@@@@@@@= =@@@.:@@@@@@@@@@+. │
+              │                                                                             .+@@@@@@@@@@ ..:+@%.-@@@@@@@@@+. │
+              │                                                                             .=@@@@@@@@@ .@@+. *+.-@@@@@@@%=  │
+              │                                                                              .%@@@@@@@:.*@@@@%.  .+@@@@@@%.  │
+              │                                                                               .@@@@@@= =@@@@@@@%=.:%@@@@@.   │
+              │                                                                                :%@@@@@@@@@@@@@@@@@@@@@@%:    │
+              │                                                                                 .*@@@@@@@@@@@@@@@@@@@@*.     │
+              │                                                                                   .+@@@@@@@@@@@@@@@@+..      │
+              │                                                                                     ..+*%@@@@@@%*+..         │
+              └──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+          tags: [setup, files]
+          
+        - name: Create sample environment files (if directory is empty)
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/rhel8-ee-minimal/execution-environment.yml"
+            force: false # Don't overwrite if exists
+            mode: '0644'
+            content: |
+              ---
+              version: 3
+              
+              images:
+                base_image:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
+              
+              dependencies:
+                python:
+                  - kubernetes>=12.0.0
+                  - PyYAML>=5.1
+                  - jmespath>=1.0.0
+                system:
+                  - which
+                galaxy:
+                  collections:
+                    - ansible.builtin
+                    - community.general
+              
+              additional_build_steps:
+                prepend_base:
+                  - USER root
+                  - COPY scripts/assemble /output/scripts/assemble
+                  - RUN chmod +x /output/scripts/assemble
+          tags: [setup, files]
+          
+        - name: Create rhel9 sample environment
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/rhel9-ee-minimal/execution-environment.yml"
+            content: |
+              ---
+              version: 3
+              
+              images:
+                base_image:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+              
+              dependencies:
+                python:
+                  - kubernetes>=12.0.0
+                  - PyYAML>=5.1
+                  - jmespath>=1.0.0
+                system:
+                  - which
+                galaxy:
+                  collections:
+                    - ansible.builtin
+                    - community.general
+              
+              additional_build_steps:
+                prepend_base:
+                  - USER root
+                  - COPY scripts/assemble /output/scripts/assemble
+                  - RUN chmod +x /output/scripts/assemble
+          tags: [setup, files]
+          
+        - name: Create terraform sample environment
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/rhel8-terraform/execution-environment.yml"
+            force: false # Don't overwrite if exists
+            mode: '0644'
+            content: |
+              ---
+              version: 3
+              
+              images:
+                base_image:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
+              
+              dependencies:
+                python:
+                  - kubernetes>=12.0.0
+                  - PyYAML>=5.1
+                  - jmespath>=1.0.0
+                  - python-terraform>=0.10.1
+                system:
+                  - which
+                  - unzip
+                  - wget
+                  - curl
+                galaxy:
+                  collections:
+                    - ansible.builtin
+                    - community.general
+              
+              additional_build_steps:
+                prepend_base:
+                  - USER root
+                  - COPY scripts/assemble /output/scripts/assemble
+                  - RUN chmod +x /output/scripts/assemble
+          tags: [setup, files]
+          
+        - name: Create environment directories if they don't exist
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ playbook_dir }}/environments/rhel8-ee-minimal"
+            - "{{ playbook_dir }}/environments/rhel9-ee-minimal"
+            - "{{ playbook_dir }}/environments/rhel8-terraform"
+          tags: [setup, files]
+      tags: [setup, files]
 
     - name: Create script directories
       ansible.builtin.file:
@@ -437,14 +951,44 @@
           IS_WSL="${1:-False}"
           
           if [ "$IS_WSL" = "True" ]; then
-            # WSL-specific approaches
-            if command -v powershell.exe >/dev/null 2>&1; then
-              powershell.exe -Command "Start-Process wt.exe -ArgumentList 'wsl.exe', '-d', 'Ubuntu', 'bash', '-c', 'tmux attach -t podman-monitor || echo No tmux session found'" &
-            elif command -v cmd.exe >/dev/null 2>&1; then
-              cmd.exe /c "start wt.exe wsl.exe -d Ubuntu bash -c \"tmux attach -t podman-monitor\"" &
-            elif command -v wt.exe >/dev/null 2>&1; then
-              wt.exe wsl.exe tmux attach -t podman-monitor &
+            echo "Trying to open Windows Terminal with tmux monitor session..."
+            
+            # Try multiple methods to launch Windows Terminal (simplest to most complex)
+            
+            # Method 1: Direct wt.exe approach
+            if command -v wt.exe >/dev/null 2>&1; then
+              wt.exe bash -c "tmux attach -t podman-monitor || echo No tmux session found" &
+              exit_code=$?
+              if [ $exit_code -eq 0 ]; then
+                echo "Launched with direct wt.exe method"
+                exit 0
+              fi
             fi
+            
+            # Method 2: PowerShell approach
+            if command -v powershell.exe >/dev/null 2>&1; then
+              echo "Trying PowerShell approach..."
+              powershell.exe -Command "Start-Process wt.exe -ArgumentList 'bash', '-c', 'tmux attach -t podman-monitor || echo No tmux session found'" &
+              exit_code=$?
+              if [ $exit_code -eq 0 ]; then
+                echo "Launched with PowerShell method"
+                exit 0
+              fi
+            fi
+            
+            # Method 3: CMD approach
+            if command -v cmd.exe >/dev/null 2>&1; then
+              echo "Trying CMD approach..."
+              cmd.exe /c "start wt.exe bash -c \"tmux attach -t podman-monitor\"" &
+              exit_code=$?
+              if [ $exit_code -eq 0 ]; then
+                echo "Launched with CMD method"
+                exit 0
+              fi
+            fi
+            
+            echo "All Windows Terminal launch methods failed"
+            echo "Please run manually: tmux attach -t podman-monitor"
           else
             # Standard Linux approaches
             if command -v x-terminal-emulator >/dev/null 2>&1; then
@@ -465,6 +1009,14 @@
       ansible.builtin.file:
         path: "{{ playbook_dir }}/scripts/open_terminal.sh"
         mode: '0755'
+      tags: [monitoring]
+      
+    # Fix for WSL environments - direct shell command to set executable
+    - name: Make terminal launch script executable (WSL fix)
+      ansible.builtin.shell: chmod +x {{ playbook_dir }}/scripts/open_terminal.sh
+      args:
+        executable: /bin/bash
+      changed_when: true
       tags: [monitoring]
 
     - name: Attempt to open terminal window (WSL-specific)
@@ -949,4 +1501,36 @@
       ansible.builtin.shell: podman image prune -f
       register: final_prune
       changed_when: final_prune.stdout is search("deleted")
+      tags: [cleanup, post_build]
+
+    - name: Clean up generated files
+      block:
+        - name: Ask for confirmation to clean up files
+          ansible.builtin.pause:
+            prompt: |
+              Do you want to clean up all generated files and directories?
+              This will remove everything except for:
+              - README.md
+              - environments/ directory (your EE definitions)
+              - site.yml (this playbook)
+              
+              Enter 'yes' to clean up, or anything else to keep files
+          register: cleanup_confirmation
+          
+        - name: Remove generated files and directories
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/{{ item }}"
+            state: absent
+          loop:
+            - "templates"
+            - "library"
+            - "tasks"
+            - "scripts"
+            - "files"
+            - "/tmp/ee-containers"
+          when: cleanup_confirmation.user_input == "yes"
+          
+        - name: Show cleanup results
+          ansible.builtin.debug:
+            msg: "{{ 'Files cleaned up successfully.' if cleanup_confirmation.user_input == 'yes' else 'Files were kept.' }}"
       tags: [cleanup, post_build]
