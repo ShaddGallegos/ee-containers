@@ -37,6 +37,7 @@ ansible-playbook site.yml
 ```
 
 This will:
+
 1. Prompt for Red Hat credentials if needed
 2. Ask you to select RHEL 8, RHEL 9, or both distributions
 3. Display available environments you can build
@@ -47,6 +48,7 @@ This will:
 ### Monitoring Dashboard
 
 The monitoring dashboard has three sections:
+
 - **Top Pane**: ASCII art header with logo and title
 - **Middle Pane**: Single-line status indicator showing current build progress
 - **Bottom Pane**: Live updating container image list
@@ -70,12 +72,14 @@ ansible-playbook site.yml --tags cleanup    # Clean up containers and images
 ## Environment Types
 
 ### Standard Environments
+
 - `rhel8-ee-minimal`: Basic EE with minimal packages
 - `rhel8-ee-supported`: Full-featured EE with additional dependencies
 - `rhel9-ee-minimal`: RHEL 9 version of the minimal EE
 - `rhel9-ee-supported`: RHEL 9 version of the supported EE
 
 ### Specialized Environments
+
 - **Terraform**: `rhel8-ee-minimal-terraform` - Includes Terraform binary, terraform-inventory, and Python terraform libraries
 - **ServiceNow**: `rhel8-ee-supported-servicenow` - Includes ServiceNow API client libraries
 - **Cloud Platforms**: Specialized environments for AWS, Azure, and GCP integrations

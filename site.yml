@@ -379,6 +379,20 @@
   connection: local
   gather_facts: false
   tasks:
+    # Add WSL detection at the beginning
+    - name: Determine if running in WSL (global)
+      ansible.builtin.shell: |
+        grep -q Microsoft /proc/version 2>/dev/null || grep -q WSL /proc/version 2>/dev/null
+      register: is_wsl_global
+      changed_when: false
+      failed_when: false
+      tags: [always]
+      
+    - name: Set global WSL fact
+      ansible.builtin.set_fact:
+        is_wsl_env: "{{ is_wsl_global.rc == 0 }}"
+      tags: [always]
+
     - name: Create all required directories
       ansible.builtin.file:
         path: "{{ item }}"
@@ -412,6 +426,75 @@
         state: directory
         mode: '0755'
       tags: [monitoring, setup]
+
+    - name: Create terminal launch script
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/scripts/open_terminal.sh"
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          
+          IS_WSL="${1:-False}"
+          
+          if [ "$IS_WSL" = "True" ]; then
+            # WSL-specific approaches
+            if command -v powershell.exe >/dev/null 2>&1; then
+              powershell.exe -Command "Start-Process wt.exe -ArgumentList 'wsl.exe', '-d', 'Ubuntu', 'bash', '-c', 'tmux attach -t podman-monitor || echo No tmux session found'" &
+            elif command -v cmd.exe >/dev/null 2>&1; then
+              cmd.exe /c "start wt.exe wsl.exe -d Ubuntu bash -c \"tmux attach -t podman-monitor\"" &
+            elif command -v wt.exe >/dev/null 2>&1; then
+              wt.exe wsl.exe tmux attach -t podman-monitor &
+            fi
+          else
+            # Standard Linux approaches
+            if command -v x-terminal-emulator >/dev/null 2>&1; then
+              x-terminal-emulator -e "tmux attach -t podman-monitor" &
+            elif command -v gnome-terminal >/dev/null 2>&1; then
+              gnome-terminal -- bash -c "tmux attach -t podman-monitor" &
+            elif command -v xterm >/dev/null 2>&1; then
+              xterm -e "tmux attach -t podman-monitor" &
+            elif command -v konsole >/dev/null 2>&1; then
+              konsole -e "tmux attach -t podman-monitor" &
+            fi
+          fi
+          
+          exit 0
+      tags: [monitoring]
+      
+    - name: Ensure terminal launch script is executable 
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/scripts/open_terminal.sh"
+        mode: '0755'
+      tags: [monitoring]
+
+    - name: Attempt to open terminal window (WSL-specific)
+      ansible.builtin.command:
+        cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env }}"
+      register: terminal_launch
+      changed_when: terminal_launch.rc == 0
+      failed_when: false
+      ignore_errors: true
+      tags: [monitoring]
+
+    - name: Debug WSL distributions (when in WSL)
+      ansible.builtin.shell: |
+        echo "WSL Distributions:"
+        wsl.exe -l -v || echo "Cannot list distributions"
+        echo "Current WSL version:"
+        wsl.exe --version || echo "Cannot get WSL version"
+        echo "Current distro: $(wsl.exe -l | grep -v "Windows Subsystem for Linux Distributions:" | head -1)"
+      register: wsl_debug
+      when: is_wsl_env | default(false)
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+      tags: [monitoring, debug]
+      
+    - name: Show WSL debug info
+      ansible.builtin.debug:
+        msg: "{{ wsl_debug.stdout_lines | default(['No WSL debug info available']) }}"
+      when: wsl_debug is defined
+      tags: [monitoring, debug]
 
     - name: Ensure monitoring script is executable
       ansible.builtin.file:
@@ -567,11 +650,22 @@
               {% endfor %}
           tags: [selection]
           
-        # Launch monitoring tmux session immediately after selection
+        - name: Determine if running in WSL
+          ansible.builtin.shell: |
+            grep -q Microsoft /proc/version 2>/dev/null || grep -q WSL /proc/version 2>/dev/null
+          register: is_wsl
+          changed_when: false
+          failed_when: false
+          
+        - name: Set WSL fact
+          ansible.builtin.set_fact:
+            is_wsl_env: "{{ is_wsl.rc == 0 }}"
+            
         - name: Launch monitoring session in background
           ansible.builtin.shell: |
             {{ playbook_dir }}/scripts/start_monitor.sh &
           changed_when: true
+          ignore_errors: true
           tags: [monitoring]
           
         - name: Pause to allow tmux session to initialize
@@ -579,31 +673,30 @@
             seconds: 2
           tags: [monitoring]
           
-        - name: Attach to monitoring session (detaches from Ansible - will continue in background)
-          ansible.builtin.shell: |
-            # Create a new terminal window and attach to tmux session
-            if command -v xdg-open >/dev/null 2>&1; then
-              xterm -e "tmux attach -t podman-monitor" &
-            elif command -v gnome-terminal >/dev/null 2>&1; then
-              gnome-terminal -- tmux attach -t podman-monitor &
-            elif command -v x-terminal-emulator >/dev/null 2>&1; then
-              x-terminal-emulator -e "tmux attach -t podman-monitor" &
-            elif command -v wt >/dev/null 2>&1; then
-              # Windows Terminal (WSL) approach
-              wt.exe wsl.exe tmux attach -t podman-monitor &
-            else
-              echo "No suitable terminal emulator found."
-              exit 0  # Don't fail the playbook if we can't open a terminal
-            fi
-            sleep 1  # Give time for terminal to launch
-            exit 0   # Exit successfully so Ansible continues
-          args:
-            executable: /bin/bash
-          register: terminal_launch
-          changed_when: terminal_launch.rc == 0
-          failed_when: false  # Don't fail the playbook if this doesn't work
+        - name: Show manual connection instructions
+          ansible.builtin.debug:
+            msg: |
+              ┌────────────────────────────────────────────────────────────┐
+              │      MONITORING SESSION READY                              │
+              ├────────────────────────────────────────────────────────────┤
+              │ To view the monitoring dashboard:                          │
+              │                                                            │
+              │ 1. Open a new terminal                                     │
+              │ 2. Run: tmux attach -t podman-monitor                      │
+              │                                                            │
+              │ The builds will continue in this terminal.                 │
+              └────────────────────────────────────────────────────────────┘
+          tags: [monitoring]
+          
+        - name: Attempt to open terminal window after environment selection
+          ansible.builtin.command:
+            cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}"
+          register: terminal_launch_internal
+          changed_when: terminal_launch_internal.rc == 0
+          failed_when: false
           ignore_errors: true
           tags: [monitoring]
+          
       when: available_environments is defined and available_environments | length > 0 and env_selection.user_input is defined
       tags: [selection]
 
@@ -834,22 +927,6 @@
   connection: local
   gather_facts: false
   tasks:
-    - name: Consolidated cleanup
-      block:
-        - name: Prune dangling images
-          ansible.builtin.shell: |
-            podman image prune -f
-          register: prune_output
-          changed_when: prune_output.stdout is search("deleted")
-          
-        - name: Remove images with <none> tag
-          ansible.builtin.shell: |
-            podman images | awk '$1=="<none>" {print $3}' | xargs -r podman rmi --force
-          register: none_tags_output
-          changed_when: none_tags_output.stdout != ""
-          ignore_errors: true
-      tags: [cleanup, pre_build, post_build]
-
     - name: Kill existing monitoring tmux session (if any)
       ansible.builtin.command: tmux has-session -t podman-monitor
       register: tmux_monitor_check
@@ -858,14 +935,16 @@
       tags: [cleanup, post_build]
 
     - name: Close existing monitoring tmux session
+      ansible.builtin.shell: tmux kill-session -t podman-monitor
+      when: tmux_monitor_check.rc == 0
       changed_when: true
       tags: [cleanup, post_build]
-    
+      
     - name: Show cleanup results
       ansible.builtin.debug:
         msg: "Cleanup completed: {{ 'No dangling images found' if prune_output.stdout == '' else prune_output.stdout }}"
       tags: [cleanup, post_build]
-
+      
     - name: Final image pruning
       ansible.builtin.shell: podman image prune -f
       register: final_prune
