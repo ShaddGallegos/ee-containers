@@ -1,141 +1,110 @@
-# Ansible Execution Environment Builder
+# README.md - Ansible Execution Environment Builder
 
-A streamlined approach to building Ansible Execution Environments using Red Hat base images.
-
-![AAP Execution Environment Builder](https://example.com/ee-containers-logo.png)
+This README provides an overview of the Ansible Execution Environment Builder toolset contained in this repository. This automation enables the creation and management of custom execution environments for use with Ansible Automation Platform.
 
 ## Overview
 
-This project automates the creation of custom Ansible Execution Environments based on Red Hat Ansible Automation Platform base images. It provides a guided, interactive process for selecting and building execution environments with detailed progress monitoring and validation.
+The site.yml playbook provides an interactive framework for building, managing, and monitoring custom Ansible execution environments based on Red Hat AAP base images. It simplifies the process of creating and managing execution environments for various use cases.
 
 ## Features
 
-- **Interactive Environment Selection**: Choose RHEL 8, RHEL 9, or both distributions
-- **Live Build Monitoring**: Real-time progress through tmux display with status indicators
-- **Registry Authentication**: Automated login to Red Hat registries  
-- **Credential Management**: Securely store and reuse Red Hat credentials
-- **Build Validation**: Pre-validates YAML syntax to avoid build failures
-- **Detailed Summary**: Comprehensive build results with success/failure reporting
+- **Interactive Selection**: Choose RHEL 8, RHEL 9, or both distributions for your execution environments
+- **Multi-Environment Building**: Select and build multiple environments in a single run
+- **Real-time Monitoring**: Visualize build progress through an interactive tmux-based dashboard
+- **Custom Environments**: Support for specialized environments including:
+  - Terraform integration
+  - ServiceNow integration
+  - Cloud platform integrations
+- **Credential Management**: Secure handling of registry credentials for Red Hat repositories
+- **Error Recovery**: Automatic fixes for common build issues
+- **Dynamic Display**: Responsive monitoring interface that scales to terminal dimensions
 
-## Prerequisites
+## Requirements
 
-- Red Hat subscription with access to Ansible Automation Platform
-- Podman installed and configured
-- Python 3.6+
-- Ansible Core 2.15+
+- Red Hat Enterprise Linux 8 or 9
+- Podman container runtime
+- Ansible 2.15+
 - ansible-builder 3.0+
-- tmux
+- tmux (for monitoring interface)
+- Red Hat subscription for accessing base images
 
-## Required Packages
+## Usage
 
-```
-
-## Getting Started
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/yourusername/ee-containers.git
-cd ee-containers
-```
-
-### 2. Run the playbook
+### Basic Build Process
 
 ```bash
 ansible-playbook site.yml
 ```
 
-### 3. View build progress
+This will:
+1. Prompt for Red Hat credentials if needed
+2. Ask you to select RHEL 8, RHEL 9, or both distributions
+3. Display available environments you can build
+4. Launch a monitoring dashboard
+5. Build selected environments
+6. Display build results
 
-Once the playbook starts, it will create a tmux monitoring session. it should pop up "auto-magicly" or You can view it by:
+### Monitoring Dashboard
+
+The monitoring dashboard has three sections:
+- **Top Pane**: ASCII art header with logo and title
+- **Middle Pane**: Single-line status indicator showing current build progress
+- **Bottom Pane**: Live updating container image list
+
+### Command-line Options
 
 ```bash
-tmux attach -t podman-monitor
+# Build specific environments
+ansible-playbook site.yml -e "selected_environments=['rhel8-ee-minimal-terraform']"
+
+# Force rebuild of environments that already exist
+ansible-playbook site.yml -e "force_rebuild=true"
+
+# Run specific playbook sections using tags
+ansible-playbook site.yml --tags init       # Initial setup
+ansible-playbook site.yml --tags creds      # Update credentials
+ansible-playbook site.yml --tags monitoring # Launch monitoring only
+ansible-playbook site.yml --tags cleanup    # Clean up containers and images
 ```
 
-## How It Works
+## Environment Types
 
-1. **Credential Setup**: First run will prompt for Red Hat CDN username/password
-2. **Environment Selection**: Choose which execution environments to build
-3. **Build Process**: The playbook:
-   - Pulls required base images
-   - Validates environment configurations
-   - Builds custom execution environments
-   - Tracks build status in real-time
-4. **Results Summary**: Displays successful and failed builds
+### Standard Environments
+- `rhel8-ee-minimal`: Basic EE with minimal packages
+- `rhel8-ee-supported`: Full-featured EE with additional dependencies
+- `rhel9-ee-minimal`: RHEL 9 version of the minimal EE
+- `rhel9-ee-supported`: RHEL 9 version of the supported EE
 
-## Environment Structure
-
-Each execution environment is defined in its own directory under environments, containing:
-
-- `execution-environment.yml`: Main configuration file
-- Additional requirements files (optional):
-  - `requirements.txt`: Python package requirements
-  - `requirements.yml`: Collection requirements
-  - `bindep.txt`: System dependencies
-
-## Available Environments
-
-The playbook includes configurations for:
-
-- RHEL 8 minimal execution environments
-- RHEL 8 supported execution environments
-- RHEL 9 minimal execution environments
-- RHEL 9 supported execution environments
-- Various specialized environments (Cloud, Windows, VMware, etc.)
-
-## Monitoring Display
-
-The build monitoring display shows:
-
-- ASCII art header
-- Current build status with progress spinner
-- List of available container images
+### Specialized Environments
+- **Terraform**: `rhel8-ee-minimal-terraform` - Includes Terraform binary, terraform-inventory, and Python terraform libraries
+- **ServiceNow**: `rhel8-ee-supported-servicenow` - Includes ServiceNow API client libraries
+- **Cloud Platforms**: Specialized environments for AWS, Azure, and GCP integrations
 
 ## Troubleshooting
 
-### Key tags to add strategically throughout the playbook
-
-#### Core functionality tags
-
-- setup       # Initial setup tasks
-- creds       # Credential management
-- images      # Image building tasks
-- monitoring  # Terminal monitoring tasks
-- cleanup     # Cleanup tasks
-- report      # Summary reporting
-
-#### Process stage tags
-
-- init        # Initialization tasks
-- selection   # Environment selection tasks
-- build       # Build processing
-- post_build  # Post-build actions
-
-#### Specialized operation tags
-
-- always      # Tasks that should always run
-- validation  # Validation checks
-- pull        # Registry authentication and image pulling
-- security    # Security-related tasks
-
 ### Common Issues
 
-- **Registry Authentication Failures**: Verify your Red Hat credentials
-- **Missing Base Images**: Ensure internet connectivity to Red Hat registries
-- **YAML Validation Errors**: Check syntax in your execution-environment.yml files
-- **DNF/Package Manager Errors**: Some base images use microdnf instead of dnf
+1. **Build failures related to package managers**:
+   - The tool automatically detects and adapts to available package managers (dnf, microdnf, yum)
+   - Custom assemble scripts handle package installation issues
+
+2. **Container storage issues**:
+   - Run `podman system reset` to clear storage problems
+   - Check available disk space with `df -h /var`
+
+3. **Python dependency conflicts**:
+   - The tool removes problematic dependencies like `--exclude systemd-python`
+   - Installs critical packages directly in assemble scripts
 
 ### Logs
 
-- Build logs are displayed in the console output
-- Monitoring logs: `/tmp/monitor.log`
+- Build logs are displayed in the monitoring interface
+- Full logs are stored in current_env during the build process
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Red Hat Ansible Automation Platform team
-- Ansible Builder project

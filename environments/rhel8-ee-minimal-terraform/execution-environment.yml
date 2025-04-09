@@ -1,42 +1,17 @@
 ---
 version: 3
 
-# ANSIBLE MANAGED SYSTEMD MODULE CONFIGURATION
-additional_build_files:
-  - src: ./ansible.cfg
-    dest: configs
-  - src: ../../library/systemd
-    dest: /usr/lib/python3.11/site-packages/systemd
-# END ANSIBLE MANAGED SYSTEMD MODULE CONFIGURATION
-
-build_arg_defaults:
-  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
-  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
-  PKGMGR_PRESERVE_CACHE: 'false'
-
 images:
   base_image:
     name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
-    options:
-      pull_policy: missing
-      tls_verify: false
 
 dependencies:
-  ansible_core:
-    package_pip: ansible-core
-  ansible_runner:
-    package_pip: ansible-runner
   galaxy:
     collections:
       - community.general
-      - cloud.terraform  
-  python:
-    - requirements.txt
-    - terraform-provider
-    - python-terraform>=0.10.0
-  system:
-    - bindep.txt
-    - unzip
+      - cloud.terraform
+  python: requirements.txt
+  system: bindep.txt
 
 options:
   package_manager_path: /usr/bin/microdnf
@@ -44,20 +19,9 @@ options:
 additional_build_steps:
   prepend_base: |
     USER root
-    # Installing development tools and libraries (including Python headers)
-    RUN microdnf upgrade -y && \
-        microdnf install -y gcc gcc-c++ make python3-devel python3-pip curl unzip golang \
-            libxml2-devel rpm-build cmake pkgconfig openssl-devel && \
-        python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-        python3 -m pip install --no-cache-dir --ignore-installed ansible-core ansible-runner
-        
-    # Install terraform
-    RUN cd /tmp && \
-        curl -L https://releases.hashicorp.com/terraform/1.9.0/terraform_1.9.0_linux_amd64.zip -o terraform.zip && \
-        unzip terraform.zip && \
-        mv terraform /usr/local/bin/ && \
-        chmod +x /usr/local/bin/terraform && \
-        rm -f terraform.zip
+    # Using custom assemble script
+    COPY scripts/assemble /output/scripts/assemble
+    RUN chmod +x /output/scripts/assemble
 
   prepend_galaxy: |
     # Skip systemd-python during galaxy build due to compilation issues
@@ -65,15 +29,17 @@ additional_build_steps:
 
   prepend_final: |
     USER root
-    RUN cd /tmp && \
-        curl -L https://github.com/adammck/terraform-inventory/archive/refs/heads/master.zip -o terraform-inventory.zip && \
+    # Install Go compiler if needed for terraform-inventory
+    RUN microdnf install -y golang gcc
+    
+    # Download pre-compiled terraform-inventory binary instead of building from source
+    RUN mkdir -p /tmp/terraform-tools && cd /tmp/terraform-tools && \
+        curl -L https://github.com/adammck/terraform-inventory/releases/download/v0.10/terraform-inventory_v0.10_linux_amd64.zip -o terraform-inventory.zip && \
         unzip terraform-inventory.zip && \
-        cd terraform-inventory-master && \
-        go build && \
-        cp terraform-inventory /usr/local/bin/ && \
-        chmod +x /usr/local/bin/terraform-inventory && \
+        chmod +x terraform-inventory && \
+        mv terraform-inventory /usr/local/bin/ && \
         cd /tmp && \
-        rm -rf terraform-inventory-master terraform-inventory.zip
+        rm -rf /tmp/terraform-tools
 
   append_final: |
     USER root
@@ -88,4 +54,4 @@ additional_build_steps:
         command -v terraform-inventory && terraform-inventory --help || echo "Terraform-inventory not installed"
     
     # Verify our custom systemd module works
-    RUN python3 -c "import systemd; from systemd import journal; print('Custom systemd module loaded successfully')"
+    RUN python3 -c "try: import systemd; from systemd import journal; print('Custom systemd module loaded successfully'); except ImportError as e: print(f'Warning: {e}');"

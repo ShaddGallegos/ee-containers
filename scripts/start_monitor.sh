@@ -9,10 +9,10 @@ echo "NOTHING BUILDING YET" > /tmp/current_env
 # Create new session with proper dimensions
 tmux new-session -d -s podman-monitor -x 100 -y 40
 
-# Split window into three panes
-# Main layout: top (ASCII art), middle (status), bottom (images)
-tmux split-window -v -t podman-monitor:0.0 -p 70
-tmux split-window -v -t podman-monitor:0.1 -p 30
+# Split window into three panes with adjusted sizes
+# Main layout: top (ASCII art), middle (small status), bottom (large images)
+tmux split-window -v -t podman-monitor:0.0 -p 80  # First split: top 20%, bottom 80%
+tmux split-window -v -t podman-monitor:0.1 -p 10  # Second split: middle 8%, bottom 72%
 
 # Top pane: Keep the existing ASCII art header
 tmux select-pane -t podman-monitor:0.0
@@ -20,22 +20,22 @@ tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
                 ●●●●●●●
                ●●●●●●●●●
               ●●●●●●●●●●●
-    ╔════════●●●●●●═●●●●●●══════════════════════════════════════════════╗
-    ║       ●●●●●●    ●●●●●●                                            ║
-    ║      ●●●●●●      ●●●●●●                                           ║
-    ║     ●●●●●●        ●●●●●●                                          ║
-    ║    ●●●●●●           ●●●●●●                                        ║
-    ║   ●●●●●●●●●          ●●●●●●                                       ║
-    ║  ●●●●●● ●●●●●●●       ●●●●●●                                      ║
-    ║ ●●●●●●      ●●●●●●●    ●●●●●● ANSIBLE & PODMAN                    ║
-    ╠●●●●●●══════════●●●●●●══●●●●●●●════════════════════════════════════╣
-   ●●●●●●              ●●●●●●●●●●●● EXECUTION BUILD MONITOR             ║
-  ●●●●●●══════════════════●●●●●●●●●═════════════════════════════════════╝
-  ●●●●●
+      ╔════════●●●●●●═●●●●●●══════════════════════════════════════════════╗
+      ║       ●●●●●●    ●●●●●●                                            ║
+      ║      ●●●●●●      ●●●●●●                                           ║
+      ║     ●●●●●●        ●●●●●●                                          ║
+      ║    ●●●●●●           ●●●●●●                                        ║
+      ║   ●●●●●●●●●          ●●●●●●                                       ║
+      ║  ●●●●●● ●●●●●●●       ●●●●●●                                      ║
+      ║ ●●●●●●      ●●●●●●●    ●●●●●● ANSIBLE & PODMAN                    ║
+      ╠●●●●●●══════════●●●●●●══●●●●●●●════════════════════════════════════╣
+     ●●●●●●              ●●●●●●●●●●●● EXECUTION BUILD MONITOR             ║
+    ●●●●●●══════════════════●●●●●●●●●═════════════════════════════════════╝
+    ●●●●●
 EOF
 " C-m
 
-# Middle pane: Current build status
+# Middle pane: Current build status (with more compact output)
 tmux select-pane -t podman-monitor:0.1
 tmux send-keys -t podman-monitor:0.1 '
 while true; do
@@ -62,10 +62,10 @@ while true; do
       OUTPUT="\033[1;32m$BUILDING_ENV\033[0m"
     fi
     
-    # Print centered output
-    printf "\n %b\n" "$OUTPUT"
+    # Print compact output without extra newlines
+    printf "%b\n" "$OUTPUT"
   else
-    printf "\n NOTHING BUILDING YET\n"
+    printf "NOTHING BUILDING YET\n"
   fi
   sleep 0.5
 done
