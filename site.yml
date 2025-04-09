@@ -858,8 +858,6 @@
       tags: [cleanup, post_build]
 
     - name: Close existing monitoring tmux session
-      ansible.builtin.shell: tmux kill-session -t podman-monitor
-      when: tmux_monitor_check.rc == 0
       changed_when: true
       tags: [cleanup, post_build]
     
@@ -872,6 +870,4 @@
       ansible.builtin.shell: podman image prune -f
       register: final_prune
       changed_when: final_prune.stdout is search("deleted")
-      ignore_errors: true
       tags: [cleanup, post_build]
-
