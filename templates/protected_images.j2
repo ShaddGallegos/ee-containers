@@ -1,9 +1,0 @@
----
-# BEGIN ANSIBLE MANAGED PROTECTED IMAGES
-# This list is automatically generated from existing images
-# Images will NOT be deleted unless specifically selected from menu
-protected_images:
-{% for image in protected_images | sort %}
-  - "{{ image }}"
-{% endfor %}
-# END ANSIBLE MANAGED PROTECTED IMAGES
