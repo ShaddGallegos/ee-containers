@@ -406,6 +406,26 @@
         - "~/.ansible/tmp"
       tags: [setup, init, pre_reqs]
 
+    - name: Create script directories
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/scripts"
+        state: directory
+        mode: '0755'
+      tags: [monitoring, setup]
+
+    - name: Ensure monitoring script is executable
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/scripts/start_monitor.sh"
+        mode: '0755'
+      tags: [monitoring]
+      
+    - name: Make monitoring script executable (WSL compatibility)
+      ansible.builtin.shell: chmod +x {{ playbook_dir }}/scripts/start_monitor.sh
+      args:
+        executable: /bin/bash
+      changed_when: true
+      tags: [monitoring]
+      
     - name: Manage monitoring session
       block:
         - name: Kill existing monitoring tmux session if exists
@@ -546,6 +566,44 @@
               - {{ env | basename }}
               {% endfor %}
           tags: [selection]
+          
+        # Launch monitoring tmux session immediately after selection
+        - name: Launch monitoring session in background
+          ansible.builtin.shell: |
+            {{ playbook_dir }}/scripts/start_monitor.sh &
+          changed_when: true
+          tags: [monitoring]
+          
+        - name: Pause to allow tmux session to initialize
+          ansible.builtin.pause:
+            seconds: 2
+          tags: [monitoring]
+          
+        - name: Attach to monitoring session (detaches from Ansible - will continue in background)
+          ansible.builtin.shell: |
+            # Create a new terminal window and attach to tmux session
+            if command -v xdg-open >/dev/null 2>&1; then
+              xterm -e "tmux attach -t podman-monitor" &
+            elif command -v gnome-terminal >/dev/null 2>&1; then
+              gnome-terminal -- tmux attach -t podman-monitor &
+            elif command -v x-terminal-emulator >/dev/null 2>&1; then
+              x-terminal-emulator -e "tmux attach -t podman-monitor" &
+            elif command -v wt >/dev/null 2>&1; then
+              # Windows Terminal (WSL) approach
+              wt.exe wsl.exe tmux attach -t podman-monitor &
+            else
+              echo "No suitable terminal emulator found."
+              exit 0  # Don't fail the playbook if we can't open a terminal
+            fi
+            sleep 1  # Give time for terminal to launch
+            exit 0   # Exit successfully so Ansible continues
+          args:
+            executable: /bin/bash
+          register: terminal_launch
+          changed_when: terminal_launch.rc == 0
+          failed_when: false  # Don't fail the playbook if this doesn't work
+          ignore_errors: true
+          tags: [monitoring]
       when: available_environments is defined and available_environments | length > 0 and env_selection.user_input is defined
       tags: [selection]
 
@@ -565,7 +623,164 @@
             mode: '0755'
           loop: "{{ selected_environments }}"
           
-        # Additional tasks for the block...
+        - name: Create common assemble script for all environments
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/templates/assemble.sh.j2"
+            dest: "/tmp/ee-containers/context/environments/{{ item | basename }}/scripts/assemble"
+            mode: '0755'
+          loop: "{{ selected_environments }}"
+          
+        - name: Create execution environment directories if they don't exist
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/environments/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          loop: "{{ selected_environments }}"
+          
+        - name: Create basic execution-environment.yml if missing
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/{{ item | basename }}/execution-environment.yml"
+            content: |
+              ---
+              version: 3
+              
+              images:
+                base_image:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel{{ '9' if item | basename is search('rhel9') else '8' }}:latest
+              
+              dependencies:
+                python:
+                  - "kubernetes>=12.0.0"
+                system:
+                  - which
+                galaxy:
+                  collections: []
+                
+              additional_build_steps:
+                prepend_base:
+                  - USER root
+                  - COPY scripts/assemble /output/scripts/assemble
+                  - RUN chmod +x /output/scripts/assemble
+            force: false  # Don't overwrite if exists
+          loop: "{{ selected_environments }}"
+          
+        # Create required dependency files
+        - name: Create requirements.yml for each environment
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/{{ item | basename }}/requirements.yml"
+            content: |
+              ---
+              collections:
+                - ansible.builtin
+                - community.general
+            force: false  # Don't overwrite if exists
+          loop: "{{ selected_environments }}"
+          
+        - name: Create requirements.txt for each environment
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/{{ item | basename }}/requirements.txt"
+            content: |
+              kubernetes>=12.0.0
+              PyYAML>=5.1
+              jmespath>=1.0.0
+              {% if 'terraform' in item | basename %}
+              python-terraform>=0.10.1
+              {% endif %}
+              {% if 'servicenow' in item | basename %}
+              pysnow>=0.8.0
+              {% endif %}
+            force: false  # Don't overwrite if exists
+          loop: "{{ selected_environments }}"
+          
+        - name: Create bindep.txt for each environment
+          ansible.builtin.copy:
+            dest: "{{ playbook_dir }}/environments/{{ item | basename }}/bindep.txt"
+            content: |
+              which [platform:rpm]
+              curl [platform:rpm]
+              {% if 'terraform' in item | basename %}
+              unzip [platform:rpm]
+              wget [platform:rpm]
+              {% endif %}
+            force: false  # Don't overwrite if exists
+          loop: "{{ selected_environments }}"
+          
+        # Copy all files to build context
+        - name: Copy all environment files to build context
+          ansible.builtin.shell: |
+            cp -r {{ playbook_dir }}/environments/{{ item | basename }}/* /tmp/ee-containers/context/environments/{{ item | basename }}/
+          loop: "{{ selected_environments }}"
+          changed_when: true
+          
+        - name: Create directories in /tmp/ee-containers/context
+          ansible.builtin.file:
+            path: "/tmp/ee-containers/context/environments/{{ item | basename }}"
+            state: directory
+            mode: '0755'
+          loop: "{{ selected_environments }}"
+          
+        - name: Copy execution-environment.yml to build context
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/environments/{{ item | basename }}/execution-environment.yml"
+            dest: "/tmp/ee-containers/context/environments/{{ item | basename }}/execution-environment.yml"
+            mode: '0644'
+            remote_src: true
+          loop: "{{ selected_environments }}"
+          
+        - name: Process and build each selected environment
+          block:
+            - name: Update current_env file for monitoring
+              ansible.builtin.copy:
+                dest: /tmp/current_env
+                content: "STARTING: {{ item | basename }}"
+                mode: '0644'
+              loop: "{{ selected_environments }}"
+              loop_control:
+                loop_var: item
+
+            - name: Run ansible-builder for each environment
+              ansible.builtin.shell: |
+                cd /tmp/ee-containers/context/environments/{{ item | basename }} && \
+                ansible-builder build \
+                  --tag {{ item | basename }} \
+                  --container-runtime podman \
+                  --verbosity 2 \
+                  --prune-images \
+                  --context . \
+                  -f execution-environment.yml
+              register: build_output
+              failed_when: build_output.rc != 0
+              loop: "{{ selected_environments }}"
+              loop_control:
+                loop_var: item
+                
+            - name: Record build results
+              ansible.builtin.set_fact:
+                build_results: "{{ build_results | default([]) + [{'image': item.item | basename, 'success': item.rc == 0, 'output': item}] }}"
+              loop: "{{ build_output.results }}"
+                
+            - name: Update current_env file with completed status
+              ansible.builtin.copy:
+                dest: /tmp/current_env
+                content: "COMPLETED: All builds finished"
+                mode: '0644'
+                
+          rescue:
+            - name: Record build failure
+              ansible.builtin.set_fact:
+                build_results: "{{ build_results | default([]) + [{'image': item | basename, 'success': false, 'output': {'rc': 1, 'msg': 'Build failed'}}] }}"
+              loop: "{{ selected_environments }}"
+              
+            - name: Update current_env file with failure status
+              ansible.builtin.copy:
+                dest: /tmp/current_env
+                content: "FAILED: Build process encountered errors"
+                mode: '0644'
+                
+          always:
+            - name: Show build progress
+              ansible.builtin.debug:
+                msg: "Completed building {{ selected_environments | length }} environments"
       when: "selected_environments is defined and selected_environments | length > 0"
       tags: [build, assemble_scripts]
 
