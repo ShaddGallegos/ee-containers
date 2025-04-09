@@ -412,8 +412,8 @@
               
               # Split window into three panes
               # Main layout: top (ASCII art), middle (status), bottom (images)
-              tmux split-window -v -t podman-monitor:0.0 -p 80
-              tmux split-window -v -t podman-monitor:0.1 -p 10
+              tmux split-window -v -t podman-monitor:0.0 -p 70
+              tmux split-window -v -t podman-monitor:0.1 -p 30
               
               # Top pane: Keep the existing ASCII art header
               tmux select-pane -t podman-monitor:0.0
@@ -436,47 +436,47 @@
               EOF
               " C-m
               
-              # Middle pane: Current build status (simpler implementation)
+              # Middle pane: Current build status
               tmux select-pane -t podman-monitor:0.1
-              tmux send-keys -t podman-monitor:0.1 "
+              tmux send-keys -t podman-monitor:0.1 '
               while true; do
                 clear
                 BUILDING_FILE=/tmp/current_env
-                if [ -f \"\$BUILDING_FILE\" ]; then
-                  BUILDING_ENV=\$(cat \"\$BUILDING_FILE\")
+                if [ -f "$BUILDING_FILE" ]; then
+                  BUILDING_ENV=$(cat "$BUILDING_FILE")
                   
                   # Default output with no spinner
-                  OUTPUT=\"\$BUILDING_ENV\"
+                  OUTPUT="$BUILDING_ENV"
                   
                   # Check for active build and add spinner
-                  if [[ \"\$BUILDING_ENV\" != \"SKIPPED\"* && 
-                        \"\$BUILDING_ENV\" != \"COMPLETED\"* && 
-                        \"\$BUILDING_ENV\" != \"NOTHING BUILDING YET\" && 
-                        \"\$BUILDING_ENV\" != \"FAILED\"* ]]; then
-                    SPINNER_CHARS=(\"|\" \"/\" \"-\" \"\\\\\")
-                    SPINNER_INDEX=\$(( (SECONDS / 1) % 4 ))
-                    SPINNER=\${SPINNER_CHARS[\$SPINNER_INDEX]}
-                    OUTPUT=\"Building: \$BUILDING_ENV \${SPINNER}\"
-                  elif [[ \"\$BUILDING_ENV\" == \"FAILED\"* ]]; then
-                    OUTPUT=\"\033[1;31m\$BUILDING_ENV\033[0m\"
-                  elif [[ \"\$BUILDING_ENV\" == \"COMPLETED\"* ]]; then
-                    OUTPUT=\"\033[1;32m\$BUILDING_ENV\033[0m\"
+                  if [[ "$BUILDING_ENV" != "SKIPPED"* && 
+                        "$BUILDING_ENV" != "COMPLETED"* && 
+                        "$BUILDING_ENV" != "NOTHING BUILDING YET" && 
+                        "$BUILDING_ENV" != "FAILED"* ]]; then
+                    SPINNER_CHARS=("|" "/" "-" "\\")
+                    SPINNER_INDEX=$(( (SECONDS / 1) % 4 ))
+                    SPINNER=${SPINNER_CHARS[$SPINNER_INDEX]}
+                    OUTPUT="Building: $BUILDING_ENV ${SPINNER}"
+                  elif [[ "$BUILDING_ENV" == "FAILED"* ]]; then
+                    OUTPUT="\033[1;31m$BUILDING_ENV\033[0m"
+                  elif [[ "$BUILDING_ENV" == "COMPLETED"* ]]; then
+                    OUTPUT="\033[1;32m$BUILDING_ENV\033[0m"
                   fi
                   
                   # Print centered output
-                  printf \"\n %b\n\" \"\$OUTPUT\"
+                  printf "\n %b\n" "$OUTPUT"
                 else
-                  printf \"\n NOTHING BUILDING YET\n\"
+                  printf "\n NOTHING BUILDING YET\n"
                 fi
                 sleep 0.5
               done
-              " C-m
+              ' C-m
               
               # Bottom pane: Podman images list (full screen width)
               tmux select-pane -t podman-monitor:0.2
-              tmux send-keys -t podman-monitor:0.2 "
-              watch -n 1 'echo \"=== CONTAINER IMAGES ===\" && podman images --format \"table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}\"'
-              " C-m
+              tmux send-keys -t podman-monitor:0.2 '
+              watch -n 1 "podman images | (echo \"REPOSITORY                  TAG           IMAGE ID       CREATED       SIZE\" && echo \"------------------------------------------------------------------------------\" && grep -v \"REPOSITORY\")"
+              ' C-m
               
               echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
             mode: '0755'
@@ -843,16 +843,49 @@
         mode: '0644'
       tags: [setup, build]
 
-    - name: Show "NOTHING BUILDING YET"
-      ansible.builtin.debug:
-        msg: "NOTHING BUILDING YET"
-      tags: [build]
-
     - name: Process each selected environment
-      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/process_environment.yml"
-      loop: "{{ missing_environment_images }}"
+      ansible.builtin.include_tasks: tasks/process_environment.yml
+      loop: "{{ selected_environments | default([]) }}"
       loop_control:
-        label: "{{ item | basename }}"
+        loop_var: current_env
+        label: "{{ current_env | basename }}"
+      tags: [build, process]
+
+    # Add terraform script creation task
+    - name: Add terraform installation script for rhel8-ee-minimal-terraform
+      ansible.builtin.file:
+        path: "/tmp/ee-builder/context/environments/rhel8-ee-minimal-terraform/scripts"
+        state: directory
+        mode: '0755'
+      when: "'rhel8-ee-minimal-terraform' in selected_environments | map('basename') | list"
+      tags: [build, terraform_fix]
+
+    - name: Create assemble script for terraform environment
+      ansible.builtin.copy:
+        dest: "/tmp/ee-builder/context/environments/rhel8-ee-minimal-terraform/scripts/assemble"
+        content: |
+          #!/bin/bash
+
+          # Install system dependencies
+          dnf install -y unzip curl wget
+
+          # Install Terraform
+          TERRAFORM_VERSION="1.5.7"
+          curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          unzip "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          mv terraform /usr/bin/
+          terraform --version
+
+          # Continue with python requirements
+          pip3 install -r requirements.txt
+        mode: '0755'
+      when: "'rhel8-ee-minimal-terraform' in selected_environments | map('basename') | list"
+      tags: [build, terraform_fix]
+
+    - name: Show "BUILD COMPLETE"
+      ansible.builtin.debug:
+        msg: "Build process completed for all environments: {{ build_results | map(attribute='env') | map('basename') | list  | join(', ') }}"
+      when: build_results is defined and build_results | length > 0
       tags: [build]
 
     - name: Show "BUILD COMPLETE"

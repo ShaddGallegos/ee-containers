@@ -30,8 +30,13 @@ dependencies:
     collections:
       - community.general
       - cloud.terraform  
-  python: requirements.txt
-  system: bindep.txt
+  python:
+    - requirements.txt
+    - terraform-provider
+    - python-terraform>=0.10.0
+  system:
+    - bindep.txt
+    - unzip
 
 options:
   package_manager_path: /usr/bin/microdnf
