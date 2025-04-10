@@ -1085,14 +1085,15 @@
       changed_when: true
       tags: [monitoring]
 
-    - name: Attempt to open terminal window (WSL-specific)
-      ansible.builtin.command:
-        cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env }}"
-      register: terminal_launch
-      changed_when: terminal_launch.rc == 0
-      failed_when: false
-      ignore_errors: true
-      tags: [monitoring]
+    # A. Around line 1121 - comment out or remove this task:
+    # - name: Attempt to open terminal window (WSL-specific)
+    #   ansible.builtin.command:
+    #     cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env }}"
+    #   register: terminal_launch
+    #   changed_when: terminal_launch.rc == 0
+    #   failed_when: false
+    #   ignore_errors: true
+    #   tags: [monitoring]
 
     - name: Debug WSL distributions (when in WSL)
       ansible.builtin.shell: |
@@ -1294,14 +1295,15 @@
               └────────────────────────────────────────────────────────────┘
           tags: [monitoring]
           
-        - name: Attempt to open terminal window after environment selection
-          ansible.builtin.command:
-            cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}"
-          register: terminal_launch_internal
-          changed_when: terminal_launch_internal.rc == 0
-          failed_when: false
-          ignore_errors: true
-          tags: [monitoring]
+        # B. Around line 1306 - comment out or remove this task:
+        # - name: Attempt to open terminal window after environment selection
+        #   ansible.builtin.command:
+        #     cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}"
+        #   register: terminal_launch_internal
+        #   changed_when: terminal_launch_internal.rc == 0
+        #   failed_when: false
+        #   ignore_errors: true
+        #   tags: [monitoring]
           
         - name: Show manual monitoring connection instructions
           ansible.builtin.debug:
@@ -1581,14 +1583,15 @@
       failed_when: tmux_session_check.rc != 0
       tags: [monitoring]
       
-    - name: Now launch terminal to connect to verified session
-      ansible.builtin.shell: |
-        {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
-      register: terminal_launch
-      changed_when: terminal_launch.rc == 0
-      failed_when: false
-      ignore_errors: true
-      tags: [monitoring]
+    # C. Around line 1580 - comment out or remove this task:
+    # - name: Now launch terminal to connect to verified session
+    #   ansible.builtin.shell: |
+    #     {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
+    #   register: terminal_launch
+    #   changed_when: terminal_launch.rc == 0
+    #   failed_when: false
+    #   ignore_errors: true
+    #   tags: [monitoring]
 
     - name: Check tmux session status
       ansible.builtin.shell: |
