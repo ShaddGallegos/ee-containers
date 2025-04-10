@@ -1,0 +1,74 @@
+
+---
+# This file is generated dynamically by site.yml
+# Tasks for processing individual execution environments
+
+- name: Get environment name
+  ansible.builtin.set_fact:
+    env_name: "{{ environment | basename }}"
+    
+- name: Update current build status for monitoring
+  ansible.builtin.copy:
+    dest: /tmp/current_env
+    content: "{{ env_name }}"
+    mode: '0644'
+  changed_when: true
+    
+- name: Create execution environment directory
+  ansible.builtin.file:
+    path: "/tmp/ee-containers/context/environments/{{ env_name }}"
+    state: directory
+    mode: '0755'
+
+- name: Create scripts directory for execution environment
+  ansible.builtin.file:
+    path: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts"
+    state: directory
+    mode: '0755'
+
+- name: Ensure assemble script content
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/templates/assemble.sh.j2"
+    dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
+    mode: '0755'
+
+- name: Copy environment files to build context
+  ansible.builtin.shell: |
+    cp -r {{ environment }}/* /tmp/ee-containers/context/environments/{{ env_name }}/
+  changed_when: true
+
+- name: Build execution environment image
+  ansible.builtin.shell: |
+    cd /tmp/ee-containers/context/environments/{{ env_name }} && \
+    ansible-builder build \
+      --tag {{ env_name }} \
+      --container-runtime podman \
+      --verbosity 2 \
+      --prune-images \
+      --context . \
+      -f execution-environment.yml
+  register: build_result
+  failed_when: build_result.rc != 0
+  changed_when: build_result.rc == 0
+
+- name: Record build result
+  ansible.builtin.set_fact:
+    build_status: "{{ build_result.rc == 0 }}"
+    build_output: "{{ build_result }}"
+  changed_when: false
+
+- name: Update status file with completion
+  ansible.builtin.copy:
+    dest: /tmp/current_env
+    content: "COMPLETED: {{ env_name }}"
+    mode: '0644'
+  changed_when: true
+  when: build_status
+  
+- name: Update status file with failure
+  ansible.builtin.copy:
+    dest: /tmp/current_env
+    content: "FAILED: {{ env_name }}"
+    mode: '0644'
+  changed_when: true
+  when: not build_status

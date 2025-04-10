@@ -214,6 +214,11 @@
         skip_credential_setup: "{{ ansible_user_id == 'root' and lookup('env', 'SUDO_USER') == '' }}"
       tags: [always, creds]
 
+    - name: Skip credential setup for testing
+      ansible.builtin.set_fact:
+        skip_credential_setup: true
+      tags: [always, creds]
+
     - name: Show credential setup status
       ansible.builtin.debug:
         msg: "{{ skip_credential_setup | ternary('Running as direct root user - skipping credential setup', 'Setting up credentials for user ' + actual_user) }}"
@@ -233,6 +238,17 @@
           ansible.builtin.stat:
             path: "{{ user_home }}/.ansible/vars/config"
           register: config_file
+          tags: [always, creds]
+
+        - name: Fix permissions on credential directory if needed
+          ansible.builtin.shell: |
+            mkdir -p "{{ user_home }}/.ansible/vars"
+            chmod 0700 "{{ user_home }}/.ansible"
+            chmod 0700 "{{ user_home }}/.ansible/vars"
+            touch "{{ user_home }}/.ansible/vars/config"
+            chmod 0600 "{{ user_home }}/.ansible/vars/config"
+          when: config_file is failed or not config_file.stat.exists
+          changed_when: true
           tags: [always, creds]
 
         - name: Create empty config file if it doesn't exist
@@ -318,29 +334,7 @@
               become: "{{ is_root }}"
               
             - name: Create credentials file with proper permissions
-              ansible.builtin.template:
-                src: "{{ playbook_dir }}/templates/config.j2"
-                dest: "{{ user_home }}/.ansible/vars/config"
-                mode: '0600'
-                owner: "{{ actual_user }}"
-              become: "{{ is_root }}"
-              vars:
-                config_content: |
-                  ---
-                  # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
-                  rh_username: '{{ rh_username }}'
-                  rh_password: '{{ rh_password }}'
-                  automation_hub_token: '{{ automation_hub_token }}'
-                  galaxy_token: '{{ galaxy_token }}'
-          rescue:
-            - name: Handle credentials file creation failure
-              ansible.builtin.debug:
-                msg: "Failed to save credentials file. Using fallback method."
-                
-            - name: Attempt direct file creation with shell (fallback)
               ansible.builtin.shell: |
-                mkdir -p "{{ user_home }}/.ansible/vars"
-                chmod 0700 "{{ user_home }}/.ansible/vars"
                 cat > "{{ user_home }}/.ansible/vars/config" << 'EOL'
                 ---
                 # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
@@ -350,24 +344,13 @@
                 galaxy_token: '{{ galaxy_token }}'
                 EOL
                 chmod 0600 "{{ user_home }}/.ansible/vars/config"
-                {% if is_root %}chown {{ actual_user }}:{{ actual_user }} "{{ user_home }}/.ansible/vars/config"{% endif %}
-                
-                # Verify file exists and has content
-                if [ ! -s "{{ user_home }}/.ansible/vars/config" ]; then
-                  exit 1
-                fi
-                
-                exit 0
               args:
                 executable: /bin/bash
-              register: fallback_save
-              changed_when: fallback_save.rc == 0
-              failed_when: false
-          always:
-            - name: Set credential save status
-              ansible.builtin.set_fact:
-                credentials_saved: "{{ fallback_save is not defined or fallback_save.rc == 0 }}"
-          no_log: true
+              changed_when: true
+          rescue:
+            - name: Handle credentials file creation failure
+              ansible.builtin.debug:
+                msg: "Failed to save credentials file. Using fallback method."
           tags: [creds]
 
         - name: Show run mode
@@ -389,10 +372,17 @@
             config_path: "{{ user_home }}/.ansible/vars/config"
           tags: [always, creds]
 
+    - name: Check if credentials template file exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/templates/config.j2"
+      register: template_file
+      tags: [setup, creds, init]
+
     - name: Create credentials template file
       ansible.builtin.copy:
         dest: "{{ playbook_dir }}/templates/config.j2"
         mode: '0600'
+        force: false  # Don't overwrite if exists
         content: |
           ---
           # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
@@ -400,6 +390,7 @@
           rh_password: '{{ rh_password }}'
           automation_hub_token: '{{ automation_hub_token }}'
           galaxy_token: '{{ galaxy_token }}'
+      when: not template_file.stat.exists
       tags: [setup, creds, init]
 
 # Play 2: Display title and introduction
@@ -494,20 +485,20 @@
             mode: '0755'
             content: |
               #!/bin/bash
-              
+              {% raw %}
               # Kill any existing session to ensure clean slate
               tmux kill-session -t podman-monitor 2>/dev/null || true
-              
+
               # Create initial status file with default message
               echo "NOTHING BUILDING YET" > /tmp/current_env
-              
+
               # Create new session with dynamic dimensions
               tmux new-session -d -s podman-monitor
-              
+
               # Split window into three panes with optimized sizes:
               tmux split-window -v -t podman-monitor:0.0 -p 85
               tmux split-window -v -t podman-monitor:0.1 -p 5
-              
+
               # Top pane: ASCII art header
               tmux select-pane -t podman-monitor:0.0
               tmux send-keys -t podman-monitor:0.0 "clear; cat << 'EOF'
@@ -522,7 +513,7 @@
               └──────────────────────────────────────────────────────────────────────────┘
               EOF
               " C-m
-              
+
               # Middle pane: Single-line status display
               tmux select-pane -t podman-monitor:0.1
               tmux send-keys -t podman-monitor:0.1 'while true; do
@@ -550,20 +541,21 @@
                   fi
                   
                   COLS=$(tput cols)
-                  printf "%*s\\n" $(( (${#OUTPUT} + COLS) / 2 )) "$OUTPUT"
+                  printf "%*s\n" $(( (${#OUTPUT} + COLS) / 2 )) "$OUTPUT"
                 else
                   COLS=$(tput cols)
                   MSG="NOTHING BUILDING YET"
-                  printf "%*s\\n" $(( (${#MSG} + COLS) / 2 )) "💤 $MSG"
+                  printf "%*s\n" $(( (${#MSG} + COLS) / 2 )) "💤 $MSG"
                 fi
                 sleep 0.5
               done' C-m
-              
+
               # Bottom pane: Maximize image list space with custom formatting
               tmux select-pane -t podman-monitor:0.2
               tmux send-keys -t podman-monitor:0.2 'watch -n 1 "podman images | sort"' C-m
-              
+
               echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
+              {% endraw %}
           tags: [setup, files, monitoring]
 
         - name: Create templates directory and files
@@ -638,10 +630,11 @@
             dest: "{{ playbook_dir }}/tasks/process_environment.yml"
             mode: '0644'
             content: |
+              {% raw %}
               ---
               # This file is generated dynamically by site.yml
               # Tasks for processing individual execution environments
-              
+
               - name: Get environment name
                 ansible.builtin.set_fact:
                   env_name: "{{ environment | basename }}"
@@ -711,8 +704,9 @@
                   mode: '0644'
                 changed_when: true
                 when: not build_status
+              {% endraw %}
           tags: [setup, files]
-          
+
         - name: Create library directory and custom module
           ansible.builtin.copy:
             dest: "{{ playbook_dir }}/library/podman_image_info.py"
@@ -946,7 +940,7 @@
           
         - name: Create terraform sample environment
           ansible.builtin.copy:
-            dest: "{{ playbook_dir }}/environments/rhel8-terraform/execution-environment.yml"
+            dest: "{{ playbook_dir }}/environments/rhel8-ee-minimal-terraform/execution-environment.yml"
             force: false # Don't overwrite if exists
             mode: '0644'
             content: |
@@ -992,9 +986,19 @@
           loop:
             - "{{ playbook_dir }}/environments/rhel8-ee-minimal"
             - "{{ playbook_dir }}/environments/rhel9-ee-minimal"
-            - "{{ playbook_dir }}/environments/rhel8-terraform"
+            - "{{ playbook_dir }}/environments/rhel8-ee-minimal-terraform"
           tags: [setup, files]
-      tags: [setup, files]
+
+        - name: Ensure environment directories exist
+          ansible.builtin.file:
+            path: "{{ playbook_dir }}/environments/{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "rhel8-ee-minimal"
+            - "rhel9-ee-minimal"
+            - "rhel8-ee-minimal-terraform"
+          tags: [setup, files]
 
     - name: Create script directories
       ansible.builtin.file:
@@ -1043,7 +1047,7 @@
               echo "Trying CMD approach..."
               cmd.exe /c "start wt.exe bash -c \"tmux attach -t podman-monitor\"" &
               exit_code=$?
-              if [ $exit_code -eq 0 ]; then
+              if [ $exit_code -eq 0; then
                 echo "Launched with CMD method"
                 exit 0
               fi
@@ -1275,18 +1279,6 @@
           ansible.builtin.set_fact:
             is_wsl_env: "{{ is_wsl.rc == 0 }}"
             
-        - name: Launch monitoring session in background
-          ansible.builtin.shell: |
-            {{ playbook_dir }}/scripts/start_monitor.sh &
-          changed_when: true
-          ignore_errors: true
-          tags: [monitoring]
-          
-        - name: Pause to allow tmux session to initialize
-          ansible.builtin.pause:
-            seconds: 2
-          tags: [monitoring]
-          
         - name: Show manual connection instructions
           ansible.builtin.debug:
             msg: |
@@ -1309,6 +1301,51 @@
           changed_when: terminal_launch_internal.rc == 0
           failed_when: false
           ignore_errors: true
+          tags: [monitoring]
+          
+        - name: Show manual monitoring connection instructions
+          ansible.builtin.debug:
+            msg: |
+              ┌─────────────────────────────────────────────────────────────┐
+              │  MONITORING SESSION READY                                   │
+              ├─────────────────────────────────────────────────────────────┤
+              │  If no terminal window appeared automatically,              │
+              │  manually connect using these steps:                        │
+              │                                                             │
+              │  1. Open a new terminal window                              │
+              │  2. Run: tmux attach -t podman-monitor                      │
+              │                                                             │
+              │  To verify the session exists first:                        │
+              │  - Run: tmux has-session -t podman-monitor                  │
+              │                                                             │
+              │  If it doesn't exist, start it with:                        │
+              │  - Run: {{ playbook_dir }}/scripts/start_monitor.sh         │
+              └─────────────────────────────────────────────────────────────┘
+          changed_when: false
+          tags: [monitoring]
+          
+        - name: Display detailed monitoring connection instructions
+          ansible.builtin.debug:
+            msg: |
+              ┌────────────────────────────────────────────────────────────┐
+              │         MONITORING SESSION READY                           │
+              ├────────────────────────────────────────────────────────────┤
+              │                                                            │
+              │  HOW TO VIEW THE BUILD MONITOR:                            │
+              │                                                            │
+              │  Option 1: Use tmux directly                               │
+              │    1. Open a new terminal tab or window                    │
+              │    2. Run this command:                                    │
+              │       tmux attach -t podman-monitor                        │
+              │                                                            │
+              │  Option 2: Use helper script                               │
+              │    1. Open a new terminal tab or window                    │
+              │    2. Run: ~/tmux-connect.sh                               │
+              │                                                            │
+              │  Monitor Status: Active                                    │
+              │                                                            │
+              └────────────────────────────────────────────────────────────┘
+          changed_when: false
           tags: [monitoring]
           
       when: available_environments is defined and available_environments | length > 0 and env_selection.user_input is defined
@@ -1445,6 +1482,38 @@
               loop_control:
                 loop_var: item
 
+            - name: Prepare monitoring session before building
+              block:
+                # Kill any existing sessions first
+                - name: Kill any existing monitoring sessions
+                  ansible.builtin.shell: |
+                    tmux kill-session -t podman-monitor 2>/dev/null || true
+                  changed_when: true
+                  ignore_errors: true
+                
+                # Initialize the monitor
+                - name: Start fresh monitoring session
+                  ansible.builtin.shell: |
+                    {{ playbook_dir }}/scripts/start_monitor.sh
+                  register: monitor_start
+                  changed_when: monitor_start.rc == 0
+                  failed_when: false
+                
+                # Wait for session to initialize
+                - name: Pause briefly to allow tmux session to initialize
+                  ansible.builtin.pause:
+                    seconds: 2
+                
+                # Launch exactly one terminal window for monitoring
+                - name: Launch single terminal window for monitoring
+                  ansible.builtin.shell: |
+                    {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
+                  register: terminal_launch
+                  changed_when: terminal_launch.rc == 0
+                  failed_when: false
+              # Place this right before the "Run ansible-builder for each environment" task
+              tags: [monitoring, build]
+
             - name: Run ansible-builder for each environment
               ansible.builtin.shell: |
                 cd /tmp/ee-containers/context/environments/{{ item | basename }} && \
@@ -1490,6 +1559,89 @@
                 msg: "Completed building {{ selected_environments | length }} environments"
       when: "selected_environments is defined and selected_environments | length > 0"
       tags: [build, assemble_scripts]
+
+    - name: Ensure tmux session exists before attempting to launch terminal
+      ansible.builtin.shell: |
+        if ! tmux has-session -t podman-monitor 2>/dev/null; then
+          echo "Creating monitoring session..."
+          {{ playbook_dir }}/scripts/start_monitor.sh
+          sleep 2
+        fi
+        
+        # Verify session exists
+        if tmux has-session -t podman-monitor 2>/dev/null; then
+          echo "Monitoring session is ready"
+          exit 0
+        else
+          echo "Failed to create monitoring session"
+          exit 1
+        fi
+      register: tmux_session_check
+      changed_when: tmux_session_check.stdout.find("Creating monitoring session") != -1
+      failed_when: tmux_session_check.rc != 0
+      tags: [monitoring]
+      
+    - name: Now launch terminal to connect to verified session
+      ansible.builtin.shell: |
+        {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
+      register: terminal_launch
+      changed_when: terminal_launch.rc == 0
+      failed_when: false
+      ignore_errors: true
+      tags: [monitoring]
+
+    - name: Check tmux session status
+      ansible.builtin.shell: |
+        tmux has-session -t podman-monitor 2>/dev/null
+      register: tmux_session_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+      tags: [monitoring]
+
+    - name: Login to all required container registries
+      block:
+        - name: Load credentials from config
+          ansible.builtin.include_vars:
+            file: "{{ user_home }}/.ansible/vars/config"
+          tags: [always, build, registry]
+          
+        - name: Ensure Red Hat credentials are available
+          ansible.builtin.fail:
+            msg: "Red Hat registry credentials are required but not found in {{ user_home }}/.ansible/vars/config"
+          when: 
+            - not skip_credential_setup
+            - (rh_username is not defined or rh_username|default('') == '') or
+              (rh_password is not defined or rh_password|default('') == '')
+          tags: [build, registry]
+          
+        - name: Login to each defined container registry
+          ansible.builtin.shell: |
+            podman login {{ item }} -u '{{ rh_username }}' -p '{{ rh_password }}' --tls-verify=false
+          register: registry_login
+          with_items: "{{ container_registries }}"
+          changed_when: "'Login Succeeded' in registry_login.stdout"
+          failed_when: "'Login Succeeded' not in registry_login.stdout"
+          no_log: true
+          tags: [build, registry]
+          
+        - name: Verify all registry logins were successful
+          ansible.builtin.debug:
+            msg: "Successfully logged in to all container registries"
+          when: registry_login is success
+          tags: [build, registry]
+          
+    - name: Warning about skipped registry login
+      ansible.builtin.debug:
+        msg: |
+          WARNING: Credential setup was skipped (skip_credential_setup=true)
+          This means podman won't be able to pull from Red Hat registries unless you've
+          already logged in manually with 'podman login registry.redhat.io'.
+          
+          If builds fail with authentication errors, please run:
+          podman login registry.redhat.io
+      when: skip_credential_setup
+      tags: [build, registry]
 
 # Play 4: Summary and Status Report
 - name: Summary and Status Report

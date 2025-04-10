@@ -1,0 +1,52 @@
+#!/bin/bash
+set -ex
+
+
+echo "Running custom assemble script for {{ item | basename }}"
+
+# Use proper package manager based on availability
+if command -v microdnf &> /dev/null; then
+    PKG_MGR="microdnf"
+elif command -v dnf &> /dev/null; then
+    PKG_MGR="dnf"
+else
+    PKG_MGR="yum"
+fi
+
+echo "Using package manager: $PKG_MGR"
+
+# Install any required system packages
+if [ -f /tmp/src/bindep.txt ]; then
+    echo "Installing packages from bindep.txt"
+    $PKG_MGR install -y $(cat /tmp/src/bindep.txt | grep -v "^#" | xargs)
+fi
+
+# Install Python requirements
+if [ -f /tmp/src/requirements.txt ]; then
+    echo "Installing Python requirements"
+        {% if "terraform" in (item | basename) %}    # Fix terraform requirements
+    echo "Original requirements.txt:"
+    cat /tmp/src/requirements.txt
+    grep -v -- "--exclude" /tmp/src/requirements.txt > /tmp/requirements.clean.txt
+    echo "Cleaned requirements.txt:"
+    cat /tmp/requirements.clean.txt
+    pip3 install --no-cache-dir -r /tmp/requirements.clean.txt
+    {% else %}    pip3 install --no-cache-dir -r /tmp/src/requirements.txt
+    {% endif %}fi
+
+# Add environment-specific customizations
+{% if "terraform" in (item | basename) %}echo "Adding Terraform-specific configuration"
+$PKG_MGR install -y unzip curl wget which
+TERRAFORM_VERSION="1.5.7"
+cd /tmp
+curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+mv terraform /usr/local/bin/
+chmod +x /usr/local/bin/terraform
+pip3 install --no-cache-dir terraform-provider python-terraform
+{% endif %}
+{% if "servicenow" in (item | basename) %}echo "Adding ServiceNow-specific configuration"
+pip3 install --no-cache-dir pysnow servicenow_client
+{% endif %}
+echo "Custom assemble script completed successfully"
+exit 0
