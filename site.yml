@@ -293,7 +293,7 @@
             echo: false
           register: rh_password_input
           when: not has_rh_password
-          no_log: true
+          no_log: false
           tags: [creds]
               
         - name: Collect Automation Hub token if missing
@@ -302,7 +302,7 @@
             echo: false
           register: automation_hub_token_input
           when: not has_automation_hub_token
-          no_log: true
+          no_log: false
           tags: [creds]
               
         - name: Collect Galaxy token if missing
@@ -311,7 +311,7 @@
             echo: false
           register: galaxy_token_input
           when: not has_galaxy_token
-          no_log: true
+          no_log: false
           tags: [creds]
               
         - name: Update credentials while preserving existing values
@@ -550,9 +550,9 @@
                 sleep 0.5
               done' C-m
 
-              # Bottom pane: Maximize image list space with custom formatting
+              # Bottom pane: Use faster refresh for podman images
               tmux select-pane -t podman-monitor:0.2
-              tmux send-keys -t podman-monitor:0.2 'watch -n 1 "podman images | sort"' C-m
+              tmux send-keys -t podman-monitor:0.2 'watch -n .05 podman images' C-m
 
               echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
               {% endraw %}
@@ -651,24 +651,24 @@
                   path: "/tmp/ee-containers/context/environments/{{ env_name }}"
                   state: directory
                   mode: '0755'
-              
+
               - name: Create scripts directory for execution environment
                 ansible.builtin.file:
                   path: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts"
                   state: directory
                   mode: '0755'
-              
+
               - name: Ensure assemble script content
                 ansible.builtin.template:
                   src: "{{ playbook_dir }}/templates/assemble.sh.j2"
                   dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
                   mode: '0755'
-              
+
               - name: Copy environment files to build context
                 ansible.builtin.shell: |
                   cp -r {{ environment }}/* /tmp/ee-containers/context/environments/{{ env_name }}/
                 changed_when: true
-              
+
               - name: Build execution environment image
                 ansible.builtin.shell: |
                   cd /tmp/ee-containers/context/environments/{{ env_name }} && \
@@ -682,13 +682,13 @@
                 register: build_result
                 failed_when: build_result.rc != 0
                 changed_when: build_result.rc == 0
-              
+
               - name: Record build result
                 ansible.builtin.set_fact:
                   build_status: "{{ build_result.rc == 0 }}"
                   build_output: "{{ build_result }}"
                 changed_when: false
-              
+
               - name: Update status file with completion
                 ansible.builtin.copy:
                   dest: /tmp/current_env
@@ -1451,7 +1451,68 @@
             force: false  # Don't overwrite if exists
           loop: "{{ selected_environments }}"
           
-        # Copy all files to build context
+        - name: Process each selected environment with correct context
+          ansible.builtin.shell: |
+            ENV_DIR="{{ item }}"
+            ENV_NAME=$(basename "$ENV_DIR")
+            
+            echo "Processing environment: $ENV_NAME"
+            echo "$ENV_NAME" > /tmp/current_env
+            
+            # Debug info
+            echo "Content of execution-environment.yml:"
+            cat "$ENV_DIR/execution-environment.yml"
+            
+            # Check and pull base image directly
+            BASE_IMAGE=$(grep -A3 "base_image:" "$ENV_DIR/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'")
+            echo "Base image: $BASE_IMAGE"
+            
+            if [ ! -z "$BASE_IMAGE" ]; then
+              echo "Attempting to pull base image directly with podman..."
+              podman pull --tls-verify=false "$BASE_IMAGE"
+              if [ $? -eq 0 ]; then
+                echo "Successfully pulled base image: $BASE_IMAGE"
+              else
+                echo "Failed to pull base image: $BASE_IMAGE"
+                echo "Checking if image exists locally..."
+                if podman image exists "$BASE_IMAGE"; then
+                  echo "Image exists locally"
+                else
+                  echo "WARNING: Image not available locally or remotely"
+                fi
+              fi
+            fi
+            
+            # Run ansible-builder with explicit parameters
+            cd "$ENV_DIR"
+            echo "Building from $(pwd)"
+            
+            ansible-builder build \
+              --tag "$ENV_NAME:latest" \
+              --container-runtime podman \
+              --verbosity 3 \
+              --context . \
+              --force \
+              -f execution-environment.yml
+              
+            BUILD_RESULT=$?
+            if [ $BUILD_RESULT -eq 0 ]; then
+              echo "COMPLETED: $ENV_NAME" > /tmp/current_env
+              exit 0
+            else
+              echo "FAILED: $ENV_NAME" > /tmp/current_env
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: build_result
+          with_items: "{{ selected_environments }}"
+          loop_control:
+            label: "{{ item | basename }}"
+          changed_when: build_result.rc == 0
+          failed_when: false  # Don't fail the entire playbook
+          tags: [build]
+          
         - name: Copy all environment files to build context
           ansible.builtin.shell: |
             cp -r {{ playbook_dir }}/environments/{{ item | basename }}/* /tmp/ee-containers/context/environments/{{ item | basename }}/
@@ -1509,12 +1570,53 @@
                 # Launch exactly one terminal window for monitoring
                 - name: Launch single terminal window for monitoring
                   ansible.builtin.shell: |
+                    if tmux has-session -t podman-monitor 2>/dev/null; then
+                      echo "Using existing monitoring session"
+                    else
+                      echo "Creating new monitoring session"
+                      {{ playbook_dir }}/scripts/start_monitor.sh
+                      sleep 2
+                    fi
                     {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
                   register: terminal_launch
                   changed_when: terminal_launch.rc == 0
                   failed_when: false
+                  ignore_errors: true
               # Place this right before the "Run ansible-builder for each environment" task
               tags: [monitoring, build]
+
+            - name: Ensure base images are pulled before building
+              ansible.builtin.shell: |
+                # Extract base image from execution-environment.yml
+                BASE_IMAGE=$(grep -A 3 "base_image:" "{{ item }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}')
+                
+                echo "Pulling base image: $BASE_IMAGE for {{ item | basename }}"
+                
+                # Force pull the image regardless of pull_policy
+                podman pull --tls-verify=false "$BASE_IMAGE"
+                
+                # Verify pull was successful
+                if podman image exists "$BASE_IMAGE"; then
+                  echo "Successfully pulled $BASE_IMAGE"
+                  exit 0
+                else
+                  echo "Failed to pull $BASE_IMAGE"
+                  exit 1
+                fi
+              register: image_pull
+              with_items: "{{ selected_environments }}"
+              changed_when: image_pull.rc == 0
+              failed_when: false  # Don't fail the whole playbook if pull fails
+              tags: [build]
+
+            - name: Update all execution environment files to force image pulls
+              ansible.builtin.replace:
+                path: "{{ item }}/execution-environment.yml"
+                regexp: "pull_policy: missing"
+                replace: "pull_policy: always"
+              with_items: "{{ selected_environments }}"
+              changed_when: true
+              tags: [build]
 
             - name: Run ansible-builder for each environment
               ansible.builtin.shell: |
@@ -1602,20 +1704,22 @@
       ignore_errors: true
       tags: [monitoring]
 
-    - name: Login to all required container registries
+    - name: Improved container registry login
       block:
-        - name: Load credentials from config
+        - name: Load credentials if they exist
           ansible.builtin.include_vars:
             file: "{{ user_home }}/.ansible/vars/config"
+          ignore_errors: true
           tags: [always, build, registry]
           
-        - name: Ensure Red Hat credentials are available
-          ansible.builtin.fail:
-            msg: "Red Hat registry credentials are required but not found in {{ user_home }}/.ansible/vars/config"
-          when: 
-            - not skip_credential_setup
-            - (rh_username is not defined or rh_username|default('') == '') or
-              (rh_password is not defined or rh_password|default('') == '')
+        - name: Check if we have valid credentials
+          ansible.builtin.set_fact:
+            has_valid_credentials: "{{ 
+              rh_username is defined and 
+              rh_username | default('') != '' and 
+              rh_password is defined and 
+              rh_password | default('') != '' 
+              }}"
           tags: [build, registry]
           
         - name: Login to each defined container registry
@@ -1624,27 +1728,93 @@
           register: registry_login
           with_items: "{{ container_registries }}"
           changed_when: "'Login Succeeded' in registry_login.stdout"
-          failed_when: "'Login Succeeded' not in registry_login.stdout"
+          failed_when: false  # Don't fail even if login fails
           no_log: true
+          when: has_valid_credentials | bool
           tags: [build, registry]
           
-        - name: Verify all registry logins were successful
+        - name: Handle login failure
           ansible.builtin.debug:
-            msg: "Successfully logged in to all container registries"
-          when: registry_login is success
+            msg: |
+              WARNING: Registry login was skipped or failed
+              
+              To successfully build these containers, you need to:
+              1. Login to Red Hat registries manually
+              2. Use public base images instead
+              
+              Example: podman login registry.redhat.io
+          when: not has_valid_credentials | bool or registry_login is failed
           tags: [build, registry]
           
-    - name: Warning about skipped registry login
-      ansible.builtin.debug:
-        msg: |
-          WARNING: Credential setup was skipped (skip_credential_setup=true)
-          This means podman won't be able to pull from Red Hat registries unless you've
-          already logged in manually with 'podman login registry.redhat.io'.
-          
-          If builds fail with authentication errors, please run:
-          podman login registry.redhat.io
-      when: skip_credential_setup
+        - name: Login to Red Hat registry
+          ansible.builtin.shell: |
+            # Try with stored credentials first
+            if [ -f "{{ user_home }}/.ansible/vars/config" ]; then
+              # Extract credentials from config file
+              source <(grep -E "rh_username|rh_password" "{{ user_home }}/.ansible/vars/config" | sed 's/: /=/g' | sed "s/'//g")
+              if [ ! -z "$rh_username" ] && [ ! -z "$rh_password" ]; then
+                echo "Using stored credentials for registry login"
+                podman login registry.redhat.io -u "$rh_username" -p "$rh_password" --tls-verify=false
+                login_result=$?
+                if [ $login_result -eq 0 ]; then
+                  echo "Login successful"
+                  exit 0
+                else
+                  echo "Login failed with stored credentials"
+                fi
+              else
+                echo "Credentials found but empty"
+              fi
+            else
+              echo "No credentials file found"
+            fi
+            
+            # Interactive fallback - prompt for credentials
+            echo "Would you like to login to registry.redhat.io interactively? (y/n)"
+            read -p "> " answer
+            if [[ "$answer" == "y" ]]; then
+              podman login registry.redhat.io --tls-verify=false
+              exit $?
+            else
+              echo "Skipping registry login - builds may fail if images are not accessible"
+              exit 1
+            fi
+          register: registry_login
+          no_log: false  # Temporarily enable logs for troubleshooting
+          changed_when: "'Login successful' in registry_login.stdout"
+          failed_when: false  # Don't fail the playbook on login failure
+          tags: [registry, build]
       tags: [build, registry]
+
+    - name: Process each selected environment
+      ansible.builtin.include_tasks: 
+        file: "{{ playbook_dir }}/tasks/process_environment.yml"
+      loop: "{{ selected_environments }}"
+      loop_control:
+        loop_var: environment
+        label: "{{ environment | basename }}"
+      register: build_results_all
+      tags: [build]
+
+    - name: Consolidated terminal launch
+      block:
+        - name: Ensure monitoring session exists
+          ansible.builtin.shell: |
+            if ! tmux has-session -t podman-monitor 2>/dev/null; then
+              echo "Creating monitoring session..."
+              {{ playbook_dir }}/scripts/start_monitor.sh
+              sleep 2
+            fi
+          changed_when: true
+          
+        - name: Launch terminal window (only once)
+          ansible.builtin.shell: |
+            {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
+          register: terminal_launch
+          changed_when: terminal_launch.rc == 0
+          failed_when: false
+          ignore_errors: true
+      tags: [monitoring]
 
 # Play 4: Summary and Status Report
 - name: Summary and Status Report

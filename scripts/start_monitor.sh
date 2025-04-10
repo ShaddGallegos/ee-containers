@@ -64,8 +64,8 @@ tmux send-keys -t podman-monitor:0.1 'while true; do
   sleep 0.5
 done' C-m
 
-# Bottom pane: Maximize image list space with custom formatting
+# Bottom pane: Use faster refresh for podman images
 tmux select-pane -t podman-monitor:0.2
-tmux send-keys -t podman-monitor:0.2 'watch -n 1 "podman images | sort"' C-m
+tmux send-keys -t podman-monitor:0.2 'watch -n .05 podman images' C-m
 
 echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
