@@ -300,24 +300,73 @@
               
         - name: Update credentials while preserving existing values
           ansible.builtin.set_fact:
-            rh_username: "{{ rh_username_input.user_input if rh_username_input is defined else stored_credentials.rh_username | default('') }}"
-            rh_password: "{{ rh_password_input.user_input if rh_password_input is defined else stored_credentials.rh_password | default('') }}"
-            automation_hub_token: "{{ automation_hub_token_input.user_input if automation_hub_token_input is defined else stored_credentials.automation_hub_token | default('') }}"
-            galaxy_token: "{{ galaxy_token_input.user_input if galaxy_token_input is defined else stored_credentials.galaxy_token | default('') }}"
-          no_log: true
+            rh_username: "{{ rh_username_input.user_input if (rh_username_input is defined and rh_username_input.user_input is defined) else stored_credentials.rh_username | default('') }}"
+            rh_password: "{{ rh_password_input.user_input if (rh_password_input is defined and rh_password_input.user_input is defined) else stored_credentials.rh_password | default('') }}"
+            automation_hub_token: "{{ automation_hub_token_input.user_input if (automation_hub_token_input is defined and automation_hub_token_input.user_input is defined) else stored_credentials.automation_hub_token | default('') }}"
+            galaxy_token: "{{ galaxy_token_input.user_input if (galaxy_token_input is defined and galaxy_token_input.user_input is defined) else stored_credentials.galaxy_token | default('') }}"
+          no_log: false
           tags: [creds]
 
         - name: Save updated credentials to file (preserving existing values)
-          ansible.builtin.copy:
-            dest: "{{ user_home }}/.ansible/vars/config"
-            content: |
-              ---
-              # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
-              rh_username: '{{ rh_username }}'
-              rh_password: '{{ rh_password }}'
-              automation_hub_token: '{{ automation_hub_token }}'
-              galaxy_token: '{{ galaxy_token }}'
-            mode: '0600'
+          block:
+            - name: Ensure ansible vars directory exists with correct permissions
+              ansible.builtin.file:
+                path: "{{ user_home }}/.ansible/vars"
+                state: directory
+                mode: '0700'
+                owner: "{{ actual_user }}"
+              become: "{{ is_root }}"
+              
+            - name: Create credentials file with proper permissions
+              ansible.builtin.template:
+                src: "{{ playbook_dir }}/templates/config.j2"
+                dest: "{{ user_home }}/.ansible/vars/config"
+                mode: '0600'
+                owner: "{{ actual_user }}"
+              become: "{{ is_root }}"
+              vars:
+                config_content: |
+                  ---
+                  # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+                  rh_username: '{{ rh_username }}'
+                  rh_password: '{{ rh_password }}'
+                  automation_hub_token: '{{ automation_hub_token }}'
+                  galaxy_token: '{{ galaxy_token }}'
+          rescue:
+            - name: Handle credentials file creation failure
+              ansible.builtin.debug:
+                msg: "Failed to save credentials file. Using fallback method."
+                
+            - name: Attempt direct file creation with shell (fallback)
+              ansible.builtin.shell: |
+                mkdir -p "{{ user_home }}/.ansible/vars"
+                chmod 0700 "{{ user_home }}/.ansible/vars"
+                cat > "{{ user_home }}/.ansible/vars/config" << 'EOL'
+                ---
+                # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+                rh_username: '{{ rh_username }}'
+                rh_password: '{{ rh_password }}'
+                automation_hub_token: '{{ automation_hub_token }}'
+                galaxy_token: '{{ galaxy_token }}'
+                EOL
+                chmod 0600 "{{ user_home }}/.ansible/vars/config"
+                {% if is_root %}chown {{ actual_user }}:{{ actual_user }} "{{ user_home }}/.ansible/vars/config"{% endif %}
+                
+                # Verify file exists and has content
+                if [ ! -s "{{ user_home }}/.ansible/vars/config" ]; then
+                  exit 1
+                fi
+                
+                exit 0
+              args:
+                executable: /bin/bash
+              register: fallback_save
+              changed_when: fallback_save.rc == 0
+              failed_when: false
+          always:
+            - name: Set credential save status
+              ansible.builtin.set_fact:
+                credentials_saved: "{{ fallback_save is not defined or fallback_save.rc == 0 }}"
           no_log: true
           tags: [creds]
 
@@ -339,6 +388,19 @@
           ansible.builtin.set_fact:
             config_path: "{{ user_home }}/.ansible/vars/config"
           tags: [always, creds]
+
+    - name: Create credentials template file
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/templates/config.j2"
+        mode: '0600'
+        content: |
+          ---
+          # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
+          rh_username: '{{ rh_username }}'
+          rh_password: '{{ rh_password }}'
+          automation_hub_token: '{{ automation_hub_token }}'
+          galaxy_token: '{{ galaxy_token }}'
+      tags: [setup, creds, init]
 
 # Play 2: Display title and introduction
 - name: Display title screen
