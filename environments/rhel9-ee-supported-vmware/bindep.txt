@@ -1,8 +1,0 @@
-unzip
-dnf
-gcc
-g++
-python3.11-devel
-oniguruma-devel
-libonig-dev
-libpq-devel.x86_64
