@@ -1,0 +1,13 @@
+# Use pre-compiled wheels when possible
+--prefer-binary
+
+# Explicitly exclude systemd-python to prevent build issues
+--exclude systemd-python
+
+# Other dependencies required for terraform
+ansible>=8.0.0
+
+# Skip problematic packages
+# systemd-python>=234.0.0
+
+# Your other requirements

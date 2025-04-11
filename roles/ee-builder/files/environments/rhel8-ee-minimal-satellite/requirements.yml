@@ -1,0 +1,11 @@
+---
+collections:
+  - name: ansible.utils
+  - name: ansible.posix
+  - name: community.general
+
+# Red Hat collections require authentication and will be installed at runtime:
+# - name: redhat.satellite
+# - name: redhat.satellite_operations
+# - name: infra.aap_configuration
+# - name: infra.aap_utilities

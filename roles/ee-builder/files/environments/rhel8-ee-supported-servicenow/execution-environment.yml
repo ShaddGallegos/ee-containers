@@ -1,0 +1,87 @@
+---
+version: 3
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors --force'
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest
+    options:
+      pull_policy: always
+      tls_verify: false
+
+additional_build_files:
+  - src: ./ansible.cfg
+    dest: configs
+  - src: ./library/systemd
+    dest: python/systemd
+
+dependencies:
+  ansible_core:
+    package_pip: ansible-core
+  ansible_runner:
+    package_pip: ansible-runner
+  galaxy: requirements.yml  # This will handle both roles and collections
+  python: requirements.txt
+  system: bindep.txt
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  prepend_builder: |
+    # Modify assemble script to bypass systemd-python
+    RUN if [ -f /output/scripts/assemble ]; then \
+        sed -i 's/pip install/pip install --no-deps/g' /output/scripts/assemble; \
+        # Remove any --exclude flags that might cause issues
+        sed -i 's/--exclude systemd-python//g' /output/scripts/assemble; \
+    fi
+
+  prepend_base: |
+    USER root
+    # Fix DNF missing
+    RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
+        microdnf install -y dnf; \
+    fi
+    
+    # Copy systemd module to correct location
+    RUN mkdir -p /usr/lib/python3.11/site-packages/ && \
+        if [ -d /output/python/systemd ]; then \
+            cp -r /output/python/systemd /usr/lib/python3.11/site-packages/; \
+        fi
+
+  prepend_final: |
+    USER root
+    # Install additional dependencies but avoid systemd-python
+    RUN /usr/bin/microdnf install -y yum-utils && \
+        microdnf upgrade -y && \
+        microdnf install -y python39-pip python39-devel gcc && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade pip setuptools wheel && \
+        python3 -m pip install --user --ignore-installed --no-cache-dir --upgrade ansible-core ansible-runner
+    
+    # Create empty files to prevent import errors
+    RUN if [ ! -f /usr/lib/python3.11/site-packages/systemd/journal.py ]; then \
+        echo 'class journal:\n    @staticmethod\n    def send(*args, **kwargs):\n        pass' > /usr/lib/python3.11/site-packages/systemd/journal.py; \
+    fi && \
+    if [ ! -f /usr/lib/python3.11/site-packages/systemd/daemon.py ]; then \
+        echo 'class daemon:\n    @staticmethod\n    def notify(*args, **kwargs):\n        pass' > /usr/lib/python3.11/site-packages/systemd/daemon.py; \
+    fi && \
+    if [ ! -f /usr/lib/python3.11/site-packages/systemd/id128.py ]; then \
+        echo 'class id128:\n    @staticmethod\n    def get_machine():\n        return "00000000000000000000000000000000"' > /usr/lib/python3.11/site-packages/systemd/id128.py; \
+    fi
+
+  append_final: |
+    ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS=" --ignore-errors"
+    # Clean up
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        rm -rf /var/lib/dnf/history.* && \
+        rm -rf /var/log/dnf.* /var/log/hawkey.log && \
+        rm -rf /var/cache/dnf && \
+        rm -rf /root/.cache && \
+        rm -rf /etc/ansible/ansible.cfg
+    
+    # Verify our dummy systemd module works
+    RUN python3 -c "import systemd; from systemd import journal; print('Dummy systemd module loaded successfully')"

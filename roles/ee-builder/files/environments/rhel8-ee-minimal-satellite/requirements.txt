@@ -1,0 +1,29 @@
+cryptography
+ansible
+# Removed deprecated 'azure' meta-package
+boto3
+botocore
+ipaddr
+jmespath
+netaddr>=0.10.1
+paramiko
+passlib
+petname
+pywinrm
+requests
+requests-credssp
+jsonschema
+textfsm
+ttp
+xmltodict
+
+# Azure SDK packages (replacing the deprecated azure meta-package)
+azure-mgmt-compute
+azure-mgmt-storage
+azure-mgmt-resource
+azure-keyvault-secrets
+azure-storage-blob
+azure-identity
+azure-mgmt-network
+azure-common
+
