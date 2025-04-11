@@ -1,13 +1,9 @@
 #!/bin/bash
-# filepath: c:\Users\sgallego\Downloads\GIT\ee-containers\scripts\open_terminal.sh
-#!/bin/bash
 
 IS_WSL="${1:-False}"
 
 if [ "$IS_WSL" = "True" ]; then
   echo "Trying to open Windows Terminal with tmux monitor session..."
-  
-  # Try multiple methods to launch Windows Terminal (simplest to most complex)
   
   # Method 1: Direct wt.exe approach
   if command -v wt.exe >/dev/null 2>&1; then
