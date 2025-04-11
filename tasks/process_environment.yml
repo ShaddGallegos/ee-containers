@@ -55,6 +55,8 @@
     src: "{{ playbook_dir }}/templates/assemble.sh.j2"
     dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
     mode: '0755'
+    vars:
+      item: "{{ ee_environment }}"  # ADD THIS LINE to pass ee_environment as item to the template
 
 - name: Copy environment files to build context
   ansible.builtin.shell: |

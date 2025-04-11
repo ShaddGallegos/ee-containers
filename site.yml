@@ -658,7 +658,7 @@
 
               - name: Get environment name
                 ansible.builtin.set_fact:
-                  env_name: "{{ ee_environment | basename }}"
+                  env_name: "{{ ee_environment | basename }}"  # Use ee_environment, not environment
                   
               - name: Update current build status for monitoring
                 ansible.builtin.copy:
@@ -669,7 +669,7 @@
 
               - name: Extract base image information
                 ansible.builtin.shell: |
-                  grep -A 3 "base_image:" "{{ environment }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'"
+                  grep -A 3 "base_image:" "{{ ee_environment }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'"  # Changed from environment to ee_environment
                 register: base_image_info
                 changed_when: false
 
@@ -710,11 +710,11 @@
                   dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
                   mode: '0755'
                   vars:
-                    item: "{{ ee_environment }}"  # Pass ee_environment as item for the template
+                    item: "{{ ee_environment }}"  # ADD THIS LINE to pass ee_environment as item to the template
 
               - name: Copy environment files to build context
                 ansible.builtin.shell: |
-                  cp -r {{ environment }}/* /tmp/ee-containers/context/environments/{{ env_name }}/
+                  cp -r {{ ee_environment }}/* /tmp/ee-containers/context/environments/{{ env_name }}/  # Changed from environment to ee_environment
                 changed_when: true
 
               - name: Build execution environment image
@@ -752,6 +752,7 @@
                   mode: '0644'
                 changed_when: true
                 when: not build_status
+
               {% endraw %}
           tags: [setup, files]
 
@@ -1514,7 +1515,7 @@
         file: "{{ playbook_dir }}/tasks/process_environment.yml"
       loop: "{{ selected_environments }}"
       loop_control:
-        loop_var: ee_environment
+        loop_var: ee_environment  # VERIFY this is ee_environment
         label: "{{ ee_environment | basename }}"
       register: build_results_all
       tags: [build]
