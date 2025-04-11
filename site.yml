@@ -447,6 +447,14 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    scripts_dir: "{{ playbook_dir }}/scripts"
+    tasks_dir: "{{ playbook_dir }}/tasks"
+    template_dir: "{{ playbook_dir }}/templates"
+    environment_dir: "{{ playbook_dir }}/environments"
+    terminal_script: "{{ scripts_dir }}/open_terminal.sh"
+    monitor_script: "{{ scripts_dir }}/start_monitor.sh"
+    process_env_task: "{{ tasks_dir }}/process_environment.yml"
   tasks:
     # Add WSL detection at the beginning
     - name: Determine if running in WSL (global)
@@ -650,7 +658,7 @@
 
               - name: Get environment name
                 ansible.builtin.set_fact:
-                  env_name: "{{ environment | basename }}"
+                  env_name: "{{ ee_environment | basename }}"
                   
               - name: Update current build status for monitoring
                 ansible.builtin.copy:
@@ -701,6 +709,8 @@
                   src: "{{ playbook_dir }}/templates/assemble.sh.j2"
                   dest: "/tmp/ee-containers/context/environments/{{ env_name }}/scripts/assemble"
                   mode: '0755'
+                  vars:
+                    item: "{{ ee_environment }}"  # Pass ee_environment as item for the template
 
               - name: Copy environment files to build context
                 ansible.builtin.shell: |
@@ -1098,11 +1108,11 @@
 
               echo "Monitor session started. Use 'tmux attach -t podman-monitor' to view."
               {% endraw %}
-          tags: [setup, files]
+            tags: [setup, files]
 
     - name: Create terminal launch script
       ansible.builtin.copy:
-        dest: "{{ playbook_dir }}/scripts/open_terminal.sh"
+        dest: "{{ scripts_dir }}/open_terminal.sh"  # Use the variable
         force: false
         mode: '0755'
         content: |
@@ -1142,7 +1152,7 @@
                 echo "Trying CMD approach..."
                 cmd.exe /c "start wt.exe bash -c \"tmux attach -t podman-monitor\"" &
                 exit_code=$?
-                if [ $exit_code -eq 0; then
+                if [ $exit_code -eq 0 ]; then  # FIXED: Added closing bracket
                   echo "Launched with CMD method"
                   exit 0
                 fi
@@ -1504,8 +1514,8 @@
         file: "{{ playbook_dir }}/tasks/process_environment.yml"
       loop: "{{ selected_environments }}"
       loop_control:
-        loop_var: environment
-        label: "{{ environment | basename }}"
+        loop_var: ee_environment
+        label: "{{ ee_environment | basename }}"
       register: build_results_all
       tags: [build]
 

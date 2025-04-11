@@ -4,7 +4,7 @@
 
 - name: Get environment name
   ansible.builtin.set_fact:
-    env_name: "{{ environment | basename }}"
+    env_name: "{{ ee_environment | basename }}"  # Use ee_environment, not environment
     
 - name: Update current build status for monitoring
   ansible.builtin.copy:
@@ -15,7 +15,7 @@
 
 - name: Extract base image information
   ansible.builtin.shell: |
-    grep -A 3 "base_image:" "{{ environment }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'"
+    grep -A 3 "base_image:" "{{ ee_environment }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'"  # Changed from environment to ee_environment
   register: base_image_info
   changed_when: false
 
