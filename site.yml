@@ -393,7 +393,6 @@
         dest: "{{ playbook_dir }}/templates/config.j2"
         force: false
         mode: '0600'
-        force: false  # Don't overwrite if exists
         content: |
           ---
           # Ansible EE Builder Configuration - Last updated {{ ansible_date_time.iso8601 }}
@@ -1214,29 +1213,6 @@
         executable: /bin/bash
       changed_when: true
       tags: [monitoring]
-      
-    - name: Manage monitoring session
-      block:
-        - name: Kill existing monitoring tmux session if exists
-          ansible.builtin.command: tmux has-session -t podman-monitor
-          register: tmux_monitor_check
-          changed_when: false
-          failed_when: false
-          
-        - name: Close existing monitoring tmux session
-          ansible.builtin.shell: tmux kill-session -t podman-monitor
-          when: tmux_monitor_check.rc == 0
-          changed_when: true
-          ignore_errors: true
-          
-        - name: Launch new monitoring session
-          ansible.builtin.shell: >
-            {{ playbook_dir }}/scripts/start_monitor.sh
-          register: term_launch
-          changed_when: true
-          ignore_errors: true
-          when: start_monitoring | default(true)
-      tags: [monitoring]
 
     - name: Consolidated cleanup
       block:
@@ -1366,53 +1342,8 @@
         - name: Set WSL fact
           ansible.builtin.set_fact:
             is_wsl_env: "{{ is_wsl.rc == 0 }}"
-            
-        - name: Show manual connection instructions
-          ansible.builtin.debug:
-            msg: |
-              ┌────────────────────────────────────────────────────────────┐
-              │      MONITORING SESSION READY                              │
-              ├────────────────────────────────────────────────────────────┤
-              │ To view the monitoring dashboard:                          │
-              │                                                            │
-              │ 1. Open a new terminal                                     │
-              │ 2. Run: tmux attach -t podman-monitor                      │
-              │                                                            │
-              │ The builds will continue in this terminal.                 │
-              └────────────────────────────────────────────────────────────┘
-          tags: [monitoring]
-          
-        # B. Around line 1306 - comment out or remove this task:
-        # - name: Attempt to open terminal window after environment selection
-        #   ansible.builtin.command:
-        #     cmd: "{{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}"
-        #   register: terminal_launch_internal
-        #   changed_when: terminal_launch_internal.rc == 0
-        #   failed_when: false
-        #   ignore_errors: true
-        #   tags: [monitoring]
-          
-        - name: Show manual monitoring connection instructions
-          ansible.builtin.debug:
-            msg: |
-              ┌─────────────────────────────────────────────────────────────┐
-              │  MONITORING SESSION READY                                   │
-              ├─────────────────────────────────────────────────────────────┤
-              │  If no terminal window appeared automatically,              │
-              │  manually connect using these steps:                        │
-              │                                                             │
-              │  1. Open a new terminal window                              │
-              │  2. Run: tmux attach -t podman-monitor                      │
-              │                                                             │
-              │  To verify the session exists first:                        │
-              │  - Run: tmux has-session -t podman-monitor                  │
-              │                                                             │
-              │  If it doesn't exist, start it with:                        │
-              │  - Run: {{ playbook_dir }}/scripts/start_monitor.sh         │
-              └─────────────────────────────────────────────────────────────┘
-          changed_when: false
-          tags: [monitoring]
-          
+            is_wsl_version: "{{ is_wsl.stdout }}"
+                    
         - name: Show detailed monitoring connection instructions
           ansible.builtin.debug:
             msg: |
@@ -1547,67 +1478,6 @@
             force: false  # Don't overwrite if exists
           loop: "{{ selected_environments }}"
           
-        - name: Process each selected environment with correct context
-          ansible.builtin.shell: |
-            ENV_DIR="{{ item }}"
-            ENV_NAME=$(basename "$ENV_DIR")
-            
-            echo "Processing environment: $ENV_NAME"
-            echo "$ENV_NAME" > /tmp/current_env
-            
-            # Debug info
-            echo "Content of execution-environment.yml:"
-            cat "$ENV_DIR/execution-environment.yml"
-            
-            # Check and pull base image directly
-            BASE_IMAGE=$(grep -A3 "base_image:" "$ENV_DIR/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'")
-            echo "Base image: $BASE_IMAGE"
-            
-            if [ ! -z "$BASE_IMAGE" ]; then
-              echo "Attempting to pull base image directly with podman..."
-              podman pull --tls-verify=false "$BASE_IMAGE"
-              if [ $? -eq 0 ]; then
-                echo "Successfully pulled base image: $BASE_IMAGE"
-              else
-                echo "Failed to pull base image: $BASE_IMAGE"
-                echo "Checking if image exists locally..."
-                if podman image exists "$BASE_IMAGE"; then
-                  echo "Image exists locally"
-                else
-                  echo "WARNING: Image not available locally or remotely"
-                fi
-              fi
-            fi
-            
-            # Run ansible-builder with explicit parameters
-            cd "$ENV_DIR"
-            echo "Building from $(pwd)"
-            
-            ansible-builder build \
-              --tag "$ENV_NAME:latest" \
-              --container-runtime podman \
-              --verbosity 3 \
-              --context . \
-              --force \
-              -f execution-environment.yml
-              
-            BUILD_RESULT=$?
-            if [ $BUILD_RESULT -eq 0 ]; then
-              echo "COMPLETED: $ENV_NAME" > /tmp/current_env
-              exit 0
-            else
-              echo "FAILED: $ENV_NAME" > /tmp/current_env
-              exit 1
-          args:
-            executable: /bin/bash
-          register: build_result
-          with_items: "{{ selected_environments }}"
-          loop_control:
-            label: "{{ item | basename }}"
-          changed_when: build_result.rc == 0
-          failed_when: false  # Don't fail the entire playbook
-          tags: [build]
-          
         - name: Copy all environment files to build context
           ansible.builtin.shell: |
             cp -r {{ playbook_dir }}/environments/{{ item | basename }}/* /tmp/ee-containers/context/environments/{{ item | basename }}/
@@ -1629,75 +1499,6 @@
             remote_src: true
           loop: "{{ selected_environments }}"
 
-    - name: Ensure tmux session exists before attempting to launch terminal
-      ansible.builtin.shell: |
-        if ! tmux has-session -t podman-monitor 2>/dev/null; then
-          echo "Creating monitoring session..."
-          {{ playbook_dir }}/scripts/start_monitor.sh
-          sleep 2
-        fi
-        
-        # Verify session exists
-        if tmux has-session -t podman-monitor 2>/dev/null; then
-          echo "Monitoring session is ready"
-          exit 0
-        else
-          echo "Failed to create monitoring session"
-          exit 1
-      register: tmux_session_check
-      changed_when: tmux_session_check.stdout.find("Creating monitoring session") != -1
-      failed_when: tmux_session_check.rc != 0
-      tags: [monitoring]
-      
-    - name: Check tmux session status
-      ansible.builtin.shell: |
-        tmux has-session -t podman-monitor 2>/dev/null
-      register: tmux_session_check
-      changed_when: false
-      failed_when: false
-      ignore_errors: true
-      tags: [monitoring]
-
-    - name: Prepare monitoring session before building
-      block:
-        # Kill any existing sessions first
-        - name: Kill any existing monitoring sessions
-          ansible.builtin.shell: |
-            tmux kill-session -t podman-monitor 2>/dev/null || true
-          changed_when: true
-          ignore_errors: true
-        
-        # Initialize the monitor
-        - name: Start fresh monitoring session
-          ansible.builtin.shell: |
-            {{ playbook_dir }}/scripts/start_monitor.sh
-          register: monitor_start
-          changed_when: monitor_start.rc == 0
-          failed_when: false
-        
-        # Wait for session to initialize
-        - name: Pause briefly to allow tmux session to initialize
-          ansible.builtin.pause:
-            seconds: 2
-        
-        # Launch exactly one terminal window for monitoring
-        - name: Launch single terminal window for monitoring
-          ansible.builtin.shell: |
-            if tmux has-session -t podman-monitor 2>/dev/null; then
-              echo "Using existing monitoring session"
-            else
-              echo "Creating new monitoring session"
-              {{ playbook_dir }}/scripts/start_monitor.sh
-              sleep 2
-            fi
-            {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
-          register: terminal_launch
-          changed_when: terminal_launch.rc == 0
-          failed_when: false
-          ignore_errors: true
-      # Place this right before the "Run ansible-builder for each environment" task
-      tags: [monitoring]
-          
     - name: Process each selected environment
       ansible.builtin.include_tasks: 
         file: "{{ playbook_dir }}/tasks/process_environment.yml"
@@ -1749,68 +1550,6 @@
           changed_when: true
           
         - name: Launch terminal window (only once)
-          ansible.builtin.shell: |
-            {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
-          register: terminal_launch
-          changed_when: terminal_launch.rc == 0
-          failed_when: false
-          ignore_errors: true
-      tags: [monitoring]
-
-    - name: Consolidated environment building
-      block:
-        # Prepare environment context
-        - name: Create execution environment context
-          ansible.builtin.file:
-            path: "/tmp/ee-containers/context/environments/{{ item | basename }}/scripts"
-            state: directory
-            mode: '0755'
-          loop: "{{ selected_environments }}"
-          
-        # Copy files in one task
-        - name: Copy environment files to build context
-          ansible.builtin.shell: |
-            mkdir -p "/tmp/ee-containers/context/environments/{{ item | basename }}"
-            cp -r {{ item }}/* "/tmp/ee-containers/context/environments/{{ item | basename }}/"
-            chmod +x "/tmp/ee-containers/context/environments/{{ item | basename }}/scripts/assemble" 2>/dev/null || true
-          loop: "{{ selected_environments }}"
-          changed_when: true
-          
-        # Use include_tasks to run the actual build
-        - name: Process each environment with include_tasks
-          ansible.builtin.include_tasks: 
-            file: "{{ playbook_dir }}/tasks/process_environment.yml"
-          loop: "{{ selected_environments }}"
-          loop_control:
-            loop_var: environment
-            label: "{{ environment | basename }}"
-      tags: [build]
-
-    - name: Ensure monitoring session exists
-      block:
-        - name: Kill any existing monitoring sessions
-          ansible.builtin.shell: |
-            tmux kill-session -t podman-monitor 2>/dev/null || true
-          changed_when: true
-          ignore_errors: true
-          
-        - name: Create fresh monitoring session
-          ansible.builtin.shell: |
-            {{ playbook_dir }}/scripts/start_monitor.sh
-          register: session_start
-          changed_when: true
-          
-        - name: Verify session was created successfully
-          ansible.builtin.command: tmux has-session -t podman-monitor
-          register: tmux_verify
-          changed_when: false
-          failed_when: tmux_verify.rc != 0
-          
-        - name: Pause briefly for initialization
-          ansible.builtin.pause:
-            seconds: 1
-          
-        - name: Open terminal window
           ansible.builtin.shell: |
             {{ playbook_dir }}/scripts/open_terminal.sh {{ is_wsl_env | default(false) }}
           register: terminal_launch
@@ -1924,22 +1663,3 @@
           ansible.builtin.debug:
             msg: "{{ 'Files cleaned up successfully.' if cleanup_confirmation.user_input == 'yes' else 'Files were kept.' }}"
       tags: [cleanup, post_build]
-
-    - name: Consolidated monitoring session management
-      block:
-        - name: Check for existing monitoring session
-          ansible.builtin.command: tmux has-session -t podman-monitor
-          register: tmux_session_check
-          changed_when: false
-          failed_when: false
-          
-        - name: Kill existing monitoring session if found
-          ansible.builtin.shell: tmux kill-session -t podman-monitor
-          when: tmux_session_check.rc == 0
-          changed_when: true
-          
-        - name: Start fresh monitoring session
-          ansible.builtin.shell: |
-            {{ playbook_dir }}/scripts/start_monitor.sh
-          changed_when: true
-      tags: [monitoring]
