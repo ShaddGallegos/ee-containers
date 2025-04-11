@@ -26,7 +26,7 @@ if [ "$IS_WSL" = "True" ]; then
     fi
   fi
   
-  # Method 3: CMD approach 
+  # Method 3: CMD approach
   if command -v cmd.exe >/dev/null 2>&1; then
     echo "Trying CMD approach..."
     cmd.exe /c "start wt.exe bash -c \"tmux attach -t podman-monitor\"" &

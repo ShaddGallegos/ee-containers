@@ -16,13 +16,13 @@ fi
 echo "Using package manager: $PKG_MGR"
 
 # Install any required system packages
-if [ -f /tmp/src/bindep.txt ]; then
+if [ -f /tmp/src/bindep.txt]; then
     echo "Installing packages from bindep.txt"
     $PKG_MGR install -y $(cat /tmp/src/bindep.txt | grep -v "^#" | xargs)
 fi
 
 # Install Python requirements
-if [ -f /tmp/src/requirements.txt ]; then
+if [ -f /tmp/src/requirements.txt]; then
     echo "Installing Python requirements"
         {% if "terraform" in (item | basename) %}    # Fix terraform requirements
     echo "Original requirements.txt:"

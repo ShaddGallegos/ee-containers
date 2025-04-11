@@ -1,3 +1,4 @@
+
 ---
 # This file is generated dynamically by site.yml
 # Tasks for processing individual execution environments
@@ -9,10 +10,35 @@
 - name: Update current build status for monitoring
   ansible.builtin.copy:
     dest: /tmp/current_env
-    content: "{{ env_name }}"
+    content: "Building: {{ env_name }}"
     mode: '0644'
   changed_when: true
-    
+
+- name: Extract base image information
+  ansible.builtin.shell: |
+    grep -A 3 "base_image:" "{{ environment }}/execution-environment.yml" | grep "name:" | awk -F"'" '{print $2}' | tr -d "'"
+  register: base_image_info
+  changed_when: false
+
+- name: Login to registry for this image
+  ansible.builtin.shell: |
+    REGISTRY=$(echo "{{ base_image_info.stdout }}" | cut -d'/' -f1)
+    if [ ! -z "$REGISTRY" ]; then
+      echo "Logging into registry: $REGISTRY"
+      podman login $REGISTRY -u '{{ rh_username | default("") }}' -p '{{ rh_password | default("") }}' --tls-verify=false
+    fi
+  register: registry_login
+  no_log: true
+  failed_when: false
+  when: base_image_info.stdout | length > 0
+
+- name: Pull the base image directly
+  ansible.builtin.shell: |
+    podman pull --tls-verify=false "{{ base_image_info.stdout }}"
+  register: image_pull
+  changed_when: image_pull.rc == 0
+  failed_when: false
+
 - name: Create execution environment directory
   ansible.builtin.file:
     path: "/tmp/ee-containers/context/environments/{{ env_name }}"
