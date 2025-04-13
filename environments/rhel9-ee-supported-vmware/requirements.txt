@@ -6,7 +6,7 @@ ansible-lint
 ansible-modules-hashivault==4.6.3
 ansible-navigator
 ansible-sign
-cryptography==36.0.2
+cryptography==44.0.1
 deepdiff==5.7.0
 git+https://github.com/vmware/vsphere-automation-sdk-python.git
 httpx
