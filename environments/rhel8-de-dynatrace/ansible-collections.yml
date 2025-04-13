@@ -1,0 +1,9 @@
+---
+collections:
+  - name: ansible.eda
+    version: 1.4.3
+  - name: ansible.utils
+    version: 3.0.0
+  - name: dynatrace.event_driven_ansible
+    type: git
+    source: https://github.com/Dynatrace/Dynatrace-EventDrivenAnsible

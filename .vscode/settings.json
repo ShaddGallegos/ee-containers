@@ -1,6 +1,0 @@
-{
-    "ansible.python.interpreterPath": "/usr/bin/python3.12",
-    "editor.defaultFormatter": "redhat.ansible",
-    "notebook.defaultFormatter": "redhat.ansible",
-    "remote.WSL.fileWatcher.polling": true
-}

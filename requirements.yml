@@ -16,3 +16,4 @@ collections:
   - name: infra.ee_rekey_variables
   - name: infra.ee_utilities
   - name: infra.osbuild
+  - name: infra.aap_configuration

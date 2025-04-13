@@ -1,2 +1,7 @@
----
-# handlers file for ee-builder
+- name: Build container image
+  ansible.builtin.debug:
+    msg: "Container image {{ current_env }} has been built successfully"
+
+- name: Handle infra ansible fix
+  ansible.builtin.debug:
+    msg: "Fixed infra.ansible reference in requirements.yml for {{ current_env }}"

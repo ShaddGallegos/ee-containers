@@ -1,0 +1,29 @@
+---
+version: 3
+images:
+  base_image:
+    name: 'registry.redhat.io/ansible-automation-platform-24/ee-minimal-rhel8:latest'
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+
+additional_build_files:
+   - src: openshift-clients-4.15.0-202403061609.p0.gd6175eb.assembly.stream.el8.x86_64.rpm
+     dest: rpms
+   - src: ../ansible.cfg
+     dest: configs
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  prepend_base:
+    - RUN $PYCMD -m pip install --upgrade pip setuptools
+    - COPY _build/rpms/*.rpm /tmp/openshift-clients.rpm
+    - RUN $PKGMGR install bash-completion
+    - RUN rpm -ivh /tmp/openshift-clients.rpm
+  prepend_galaxy:
+    - ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+  # append_final:
+  #   - LABEL quay.expires-after="45d"

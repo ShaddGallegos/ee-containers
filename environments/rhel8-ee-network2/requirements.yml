@@ -1,0 +1,31 @@
+---
+collections:
+  - name: amazon.aws
+  - name: ansible.netcommon
+  - name: ansible.network
+  - name: ansible.posix
+  - name: ansible.security
+  - name: ansible.utils
+  - name: arista.eos
+  - name: cisco.asa
+  - name: cisco.ios
+  - name: cisco.iosxr
+  - name: cisco.nxos
+  - name: cloud.common
+  - name: containers.podman
+  - name: fedora.linux_system_roles
+  - name: frr.frr
+  - name: ibm.qradar
+  - name: infra.controller_configuration
+  - name: junipernetworks.junos
+  - name: kubernetes.core
+  - name: openvswitch.openvswitch
+  - name: servicenow.itsm
+  - name: splunk.es
+  - name: trendmicro.deepsec
+  - name: vmware.vmware_rest
+  - name: vyos.vyos
+  - name: ansible.controller
+    version: ">=4.6.2"
+  - name: ansible.platform
+    version: ">=2.5.3"

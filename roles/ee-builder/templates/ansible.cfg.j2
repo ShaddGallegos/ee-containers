@@ -1,0 +1,47 @@
+# Ansible configuration file
+
+[defaults]
+inventory = {{ inventory_file | default('inventory') }}
+remote_user = {{ ansible_user | default('root') }}
+host_key_checking = False
+retry_files_enabled = False
+log_path = {{ log_file | default('/var/log/ansible.log') }}
+deprecation_warnings = False
+debug = False
+verbosity = 0
+display_skipped_hosts = False
+error_on_undefined_vars = False
+system_warnings = False
+deprecation_warnings = False
+
+[galaxy]
+ignore_certs = True
+
+[galaxy_options]
+ignore_collection_compatibility = True
+
+[privilege_escalation]
+become = True
+become_method = sudo
+become_user = root
+
+[ssh_connection]
+ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
+pipelining = True
+
+[galaxy]
+server_list = published_hub, validated_hub, release_galaxy
+
+[galaxy_server.published_hub]
+url = https://console.redhat.com/api/automation-hub/content/published/
+auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+token = {{ automation_hub_token | default('') }}
+
+[galaxy_server.validated_hub]
+url = https://console.redhat.com/api/automation-hub/content/validated/
+auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+token = {{ automation_hub_token | default('') }}
+
+[galaxy_server.release_galaxy]
+url = https://galaxy.ansible.com/
+token = {{ galaxy_token | default('') }}

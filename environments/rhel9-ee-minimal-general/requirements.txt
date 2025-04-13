@@ -1,0 +1,15 @@
+dataclasses ; python_version == '3.6'
+datadog-api-client >= 1.0.0b3 ; python_version >= '3.6'
+dnsimple >= 2 ; python_version >= '3.6'
+elastic-apm ; python_version >= '3.6'
+httmock
+linode_api4 ; python_version > '2.6'  # APIv4
+linode-python  # APIv3
+passlib[argon2]
+proxmoxer ; python_version > '3.6'
+proxmoxer < 2.0.0 ; python_version >= '2.7' and python_version <= '3.6'
+PyGithub
+python-gitlab
+python-memcached
+redis
+websocket-client >= 1.0.0

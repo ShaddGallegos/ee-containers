@@ -1,2 +1,60 @@
----
-# defaults file for ee-builder
+# Default variables for the ee-builder role
+
+# System packages to install via package manager
+required_system_packages:
+  - python3-pip
+  - ansible-builder
+  - ansible-core
+  - git
+  - podman
+  - podman-docker
+  - tmux
+  - xdg-utils
+  - yum-utils
+
+# Python packages to install via pip
+required_pip_packages:
+  - ansible-builder>=3.0.0
+
+# Container registries
+container_registries:
+  - registry.redhat.io
+  - console.redhat.com
+  - registry.access.redhat.com
+  - quay.io
+  - registry.connect.redhat.com
+
+# DNS servers
+dns_servers:
+  - '8.8.8.8'
+  - '8.8.4.4'
+
+# Git repositories
+git_repos:
+  - url: 'https://github.com/cloin/ee-builds.git'
+    dest: 'examples/ee-builds'
+
+# Work directory
+work_dir: '/tmp/ee-containers'
+
+# Required container images
+required_images:
+  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
+
+# Add these variables at the end of your defaults file
+
+# Red Hat registry credentials (empty defaults, will be prompted)
+rh_username: ""
+rh_password: ""
+rh_email: ""
+
+# Automation Hub and Galaxy tokens
+automation_hub_token: ""
+galaxy_token: ""

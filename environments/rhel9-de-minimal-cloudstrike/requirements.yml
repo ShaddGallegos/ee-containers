@@ -1,0 +1,10 @@
+---
+collections:
+  - name: ansible.utils
+    version: '>=2.0.0'
+  - name: ansible.posix
+    version: '>=1.5.0'
+  - name: community.general
+    version: '>=7.0.0'
+  - name: crowdstrike.falcon
+    version: '>=4.7.2'

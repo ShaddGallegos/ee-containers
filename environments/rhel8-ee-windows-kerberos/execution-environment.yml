@@ -1,0 +1,31 @@
+---
+version: 3
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: ""
+
+images:
+  base_image:
+    name: 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest'
+    options:
+      pull_policy: missing
+      tls_verify: false
+
+additional_build_files:
+  - src: ./ansible.cfg
+    dest: configs/ansible.cfg
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  prepend_final: |
+    RUN microdnf upgrade -y \
+        && microdnf install -y python39-pip python39-devel gcc krb5-workstation krb5-libs \
+        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+        && python3 -m pip install --no-cache-dir pywinrm[kerberos] requests-kerberos

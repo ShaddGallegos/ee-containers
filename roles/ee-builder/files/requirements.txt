@@ -1,0 +1,9 @@
+# requirements.txt
+ansible-builder
+ansible-core
+git
+podman
+podman-docker
+tmux
+xdg-utils
+yum-utils

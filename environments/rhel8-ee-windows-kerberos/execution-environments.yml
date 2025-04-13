@@ -1,0 +1,32 @@
+---
+version: 3
+
+images:
+  base_image:
+    #name: registry.redhat.io/ansible-automation-platform-24/ee-supported-rhel8:latest
+    name: quay.io/acme_corp/windows-ee:latest
+
+dependencies:
+  galaxy:
+    collections:
+      - ansible.windows
+      - community.windows
+      - chocolatey.chocolatey
+      - microsoft.sql
+  system:
+    - pkgconf-pkg-config [platform:rpm]
+    - systemd-devel [platform:rpm]
+    - gcc [platform:rpm]
+    - python39-devel [platform:rpm]
+  python:
+    - pywinrm[kerberos]
+    - krb5-libs
+    - krb5-workstation
+    - packaging
+    - requests[security]
+    - xmltodict
+    - msgraph-sdk==1.0.0
+    - psycopg2-binary
+    - urllib3==1.26.15
+options:
+  package_manager_path: /usr/bin/microdnf

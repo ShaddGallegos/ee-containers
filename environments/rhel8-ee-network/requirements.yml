@@ -1,0 +1,28 @@
+---
+collections:
+  - name: ansible.netcommon
+    version: 6.1.2
+  - name: ansible.posix
+    version: 1.5.4
+  - name: ansible.utils
+    version: 5.1.2
+  - name: arista.eos
+    version: 10.1.1
+  - name: cisco.aci
+    version: 2.10.1
+  - name: cisco.asa
+    version: 5.0.1
+  - name: cisco.ios
+    version: 9.1.1
+  - name: cisco.iosxr
+    version: 10.3.0
+  - name: cisco.nxos
+    version: 9.3.0
+  - name: community.network
+    version: 5.1.0
+  - name: community.routeros
+    version: 2.15.0
+  - name: junipernetworks.junos
+    version: 9.1.0
+  - name: pfsensible.core
+    version: 0.6.1

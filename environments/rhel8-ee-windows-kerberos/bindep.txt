@@ -1,0 +1,2 @@
+krb5-workstation [platform:rpm]
+krb5-libs [platform:rpm]

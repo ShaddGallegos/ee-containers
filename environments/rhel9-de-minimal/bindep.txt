@@ -1,0 +1,7 @@
+python3.11-devel
+microdnf
+pkgconf-pkg-config
+python3-devel
+python3.11
+python3.11-devel
+python3.11-pip

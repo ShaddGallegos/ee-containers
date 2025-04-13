@@ -1,2 +1,23 @@
----
-# vars file for ee-builder
+# ee-containers/roles/ee-builder/vars/main.yml
+container_registries:
+  - registry.redhat.io
+  - console.redhat.com
+  - registry.access.redhat.com
+  - quay.io
+  - registry.connect.redhat.com
+
+dns_servers:
+  - '8.8.8.8'
+  - '8.8.4.4'
+
+required_images:
+  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
+  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
+  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
+
+work_dir: '/tmp/ee-containers'

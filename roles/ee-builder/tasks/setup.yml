@@ -1,0 +1,170 @@
+---
+# Setup tasks for the ee-builder role
+
+- name: Ensure required directories exist
+  ansible.builtin.file:
+    path: "{{ work_dir }}/_build/configs"
+    state: directory
+    mode: '0755'
+  become: true
+
+# First gather package facts
+- name: Gather package facts 
+  ansible.builtin.package_facts:
+    manager: auto
+  throttle: 1
+
+# Then install only missing system packages
+- name: Install required system packages
+  ansible.builtin.package:
+    name: "{{ required_system_packages | difference(ansible_facts.packages.keys() | list) }}"
+    state: present
+  when: (required_system_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
+  become: true
+
+# Ensure pip is updated
+- name: Ensure pip is up to date
+  ansible.builtin.pip:
+    name: pip
+    state: latest
+  become: true
+
+# Install Python pip packages
+- name: Install required Python packages
+  ansible.builtin.pip:
+    name: "{{ required_pip_packages }}"
+    state: present
+    extra_args: "--upgrade"
+  become: true
+  register: pip_install_result
+  retries: 3
+  delay: 5
+  until: pip_install_result is succeeded
+
+# Install Ansible Galaxy collections
+- name: Install Ansible Galaxy collections
+  ansible.builtin.command:
+    cmd: ansible-galaxy collection install -r {{ playbook_dir }}/roles/ee-builder/files/requirements.yml
+  register: galaxy_install_result
+  changed_when: galaxy_install_result.rc == 0
+  failed_when: galaxy_install_result.rc != 0
+  ignore_errors: true
+
+- name: Install Ansible Galaxy collections
+  ansible.builtin.command:
+    cmd: "ansible-galaxy collection install -r {{ playbook_dir }}/requirements.yml --force"
+  ignore_errors: true
+
+- name: Install Ansible Galaxy collections
+  ansible.builtin.command:
+    cmd: "ansible-galaxy collection install -r {{ playbook_dir }}/requirements.yml"
+  environment:
+    ANSIBLE_COLLECTIONS_PATHS: "/tmp/ee-containers/ansible_collections"
+    ANSIBLE_GALAXY_DISABLE_GPG_VERIFY: "true"
+    ANSIBLE_COLLECTIONS_SCANS: "False"
+  ignore_errors: true
+
+# First load variables from config file
+- name: Load variables from config file
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  ignore_errors: true
+
+# Then create registries.conf from template using those credentials
+- name: Create registries.conf using template and credentials
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/registries.conf.j2"
+    dest: "/etc/containers/registries.conf"
+    mode: '0644'
+    backup: true
+  vars:
+    rh_username: "{{ config_vars.rh_username | default('') }}"
+    rh_password: "{{ config_vars.rh_password | default('') }}"
+    rh_token: "{{ config_vars.rh_token | default('') }}"
+  become: true
+
+- name: Copy environments to temporary location
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/environments/"
+    dest: "/tmp/ee-containers/environments/"
+    directory_mode: true
+    remote_src: true
+  ignore_errors: true  # Added to skip errors
+
+- name: Load variables from config file
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  ignore_errors: true 
+
+- name: Create ansible.cfg file from template
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/ansible.cfg.j2"
+    dest: "/tmp/ee-containers/ansible.cfg"
+    mode: '0644'
+  vars:
+    ansible_vars: "{{ config_vars | default({}) }}"
+  ignore_errors: true
+
+# Create ansible.cfg file from template in playbook directory
+- name: Create ansible.cfg file in playbook directory
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/ansible.cfg.j2"
+    dest: "{{ playbook_dir }}/ansible.cfg"
+    mode: '0644'
+  vars:
+    ansible_vars: "{{ config_vars | default({}) }}"
+  ignore_errors: true
+
+- name: Ensure podman directories exist
+  ansible.builtin.file:
+    path: "{{ user_home }}/{{ item }}"
+    state: directory
+    mode: '0700'
+  loop:
+    - .docker
+    - .config/containers
+
+- name: Ensure podman can run without root
+  ansible.builtin.shell: |
+    echo "y" | podman system reset
+  register: podman_reset
+  changed_when: podman_reset.rc == 0
+  failed_when: false
+  become: true
+
+# Verification
+- name: Verify DNS resolution
+  ansible.builtin.command:
+    cmd: "nslookup {{ item }}"
+  loop:
+    - github.com
+    - cdn-ubi.redhat.com
+    - galaxy.ansible.com
+  register: dns_checks
+  changed_when: false
+  failed_when: false
+  loop_control:
+    label: "{{ item }}"
+
+# Create directory structure for temporary files
+- name: Create temporary build directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "/tmp/ee-containers"
+    - "/tmp/ee-containers/_build"
+    - "/tmp/ee-containers/context"
+    - "/tmp/ee-containers/environments"
+  ignore_errors: true  # Added to skip errors
+
+- name: Ensure proper permissions on build directories
+  ansible.builtin.file:
+    path: "/tmp/ee-containers"
+    state: directory
+    mode: '0755'
+    recurse: yes
+  become: true

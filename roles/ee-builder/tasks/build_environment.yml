@@ -1,0 +1,312 @@
+---
+# Tasks for building execution environments
+
+# Debug to show working directory and verify paths
+- name: Debug playbook directory
+  ansible.builtin.debug:
+    msg: "Playbook directory: {{ playbook_dir }}"
+
+# First, verify the environments directory exists
+- name: Check if environments directory exists
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments"
+  register: env_dir_exists
+
+- name: Fail if environments directory doesn't exist
+  ansible.builtin.fail:
+    msg: "Environments directory not found at {{ playbook_dir }}/environments"
+  when: not env_dir_exists.stat.exists
+
+# We now use the environments_to_build from environment_menu.yml
+# Login to container registries with credentials
+- name: Login to container registry
+  ansible.builtin.command:
+    cmd: >
+      podman login {{ item }} 
+      -u {{ rh_username }}
+      -p {{ rh_password }}
+      --authfile {{ user_home }}/.docker/config.json
+  loop: "{{ container_registries }}"
+  register: registry_login
+  when: 
+    - rh_username is defined and rh_username != ""
+    - rh_password is defined and rh_password != ""
+  no_log: true
+  failed_when: false
+
+# Fix the Podman registry configuration
+- name: Fix the Podman registry configuration correctly
+  ansible.builtin.copy:
+    dest: "/etc/containers/registries.conf"
+    content: |
+      # This is a system-wide configuration file used to
+      # keep track of registries for various container backends.
+      # It adheres to TOML format and does not support recursive
+      # lists of registries.
+
+      # The default location for this configuration file is /etc/containers/registries.conf.
+
+      # The only valid categories are: 'registries.search', 'registries.insecure',
+      # and 'registries.block'.
+
+      [registries.search]
+      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
+
+      # If you need to access insecure registries, add the registry's fully-qualified name.
+      # An insecure registry is one that does not have a valid SSL certificate or only does HTTP.
+      [registries.insecure]
+      registries = []
+
+      # If you need to block pull access from a registry, uncomment the section below
+      # and add the registries fully-qualified name.
+      #
+      # Docker only
+      [registries.block]
+      registries = []
+
+      # Container Registry is a way to store container images.
+      # In Red Hat terms this means registry.redhat.io and registry.access.redhat.com.
+      [registry.redhat.io]
+      url = "registry.redhat.io"
+    mode: '0644'
+  become: true
+
+# Create ansible.cfg file from template with variables from config file
+- name: Load variables from config file
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  ignore_errors: true  # Continue if file doesn't exist
+
+# Create ansible.cfg from template with loaded variables
+- name: Create ansible.cfg file from template
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/ansible.cfg.j2"
+    dest: "/tmp/ee-containers/ansible.cfg"
+    mode: '0644'
+  vars:
+    ansible_vars: "{{ config_vars | default({}) }}"
+
+# Copy the ansible.cfg to each environment directory
+- name: Copy ansible.cfg to each environment
+  ansible.builtin.copy:
+    src: "/tmp/ee-containers/ansible.cfg"
+    dest: "/tmp/ee-containers/environments/{{ item }}/ansible.cfg"
+    mode: '0644'
+  loop: "{{ environments_to_build }}"
+
+# Create empty requirements.yaml for environments that need it
+- name: Create requirements.yaml for environments that expect it
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/environments/{{ item }}/requirements.yaml"
+    content: |
+      ---
+      collections: []
+    mode: '0644'
+  loop: "{{ environments_to_build }}"
+  failed_when: false
+
+# Build the selected environments
+- name: Check if environments exist before building
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item }}"
+  loop: "{{ environments_to_build }}"
+  register: env_exists
+
+# Check for required files before building
+- name: Check if execution-environment.yml exists for each environment
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  register: ee_file_exists
+
+# Show warning for missing files
+- name: Warn about missing execution-environment.yml files
+  ansible.builtin.debug:
+    msg: "WARNING: No execution-environment.yml found for {{ item.item.item }}. This environment will be skipped."
+  loop: "{{ ee_file_exists.results }}"
+  when: item is defined and not item.stat.exists
+  loop_control:
+    label: "{{ item.item.item }}"
+
+# Initialize base_images as an empty list before we try to append to it
+- name: Initialize base_images variable
+  ansible.builtin.set_fact:
+    base_images: []
+
+# Extract base images from execution-environment.yml files
+- name: Read base images from execution-environment.yml
+  ansible.builtin.slurp:
+    src: "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml"
+  loop: "{{ ee_file_exists.results }}"
+  when: item.stat.exists
+  register: ee_file_contents
+  ignore_errors: true
+
+- name: Initialize base_images variable
+  ansible.builtin.set_fact:
+    base_images: []
+
+- name: Read base images from execution-environment.yml
+  ansible.builtin.command:
+    cmd: "grep -A 3 'base_image:' /tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml | grep 'name:' | awk '{print $2}'"
+  register: base_image_grep
+  loop: "{{ ee_file_exists.results }}"
+  when: item.stat.exists
+  ignore_errors: true
+  changed_when: false
+
+- name: Collect base images
+  ansible.builtin.set_fact:
+    base_images: "{{ base_images + [item.stdout] }}"
+  loop: "{{ base_image_grep.results | default([]) }}"
+  when: item.stdout is defined and item.stdout != ''
+  ignore_errors: true
+
+# Parse base images from YAML contents
+- name: Parse execution environment files
+  ansible.builtin.set_fact:
+    base_images: "{{ base_images + [(item.content | b64decode | from_yaml).images.base_image.name] }}"
+  loop: "{{ ee_file_contents.results }}"
+  when: item is defined and item.content is defined
+  ignore_errors: true
+
+# Debug found base images
+- name: Display found base images
+  ansible.builtin.debug:
+    msg: "Found base images: {{ base_images | unique }}"
+
+# Pull base images
+- name: Pull required base images
+  ansible.builtin.command:
+    cmd: "podman pull {{ item }}"
+  loop: "{{ base_images | unique }}"
+  register: image_pull_results
+  ignore_errors: true
+
+# Verify images exist in podman
+- name: Check if images exist in podman
+  ansible.builtin.command:
+    cmd: "podman images --format '{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}'"
+  register: available_images
+  changed_when: false
+
+# Debug available images
+- name: Show available images
+  ansible.builtin.debug:
+    msg: "Available images: {{ available_images.stdout_lines }}"
+
+# Generate a timestamp for the image tag (format: YYYYMMDDHHmmss)
+- name: Generate timestamp for image tag
+  ansible.builtin.set_fact:
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+# Build only environments with proper execution-environment.yml file
+- name: Debug environment state before building
+  ansible.builtin.shell: |
+    echo "Environment: {{ item.item }}"
+    echo "Directory exists: {{ item.stat.exists }}"
+    echo "Is directory: {{ item.stat.isdir }}"
+    echo "Contents:"
+    ls -la /tmp/ee-containers/environments/{{ item.item }}
+  loop: "{{ env_exists.results }}"
+  register: env_debug
+  ignore_errors: true
+  changed_when: false
+
+- name: Build selected environments
+  ansible.builtin.command:
+    cmd: "ansible-builder build --tag {{ item.item }}:{{ timestamp }} --container-runtime podman --prune"
+    chdir: "/tmp/ee-containers/environments/{{ item.item }}"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  register: build_results
+  ignore_errors: true
+
+# Display build results
+- name: Show build results
+  ansible.builtin.debug:
+    msg: |
+      Build Results:
+      {% for result in build_results.results %}
+      {% if result.skipped is not defined %}
+      - {{ result.item.item }}: {{ 'SUCCESS' if result.rc == 0 else 'FAILED (see error above)' }}
+      {% endif %}
+      {% endfor %}
+    verbosity: 0
+
+# After the build task, add these tasks for a more comprehensive report
+
+# Count successes and failures
+- name: Count build successes and failures
+  ansible.builtin.set_fact:
+    successful_builds: "{{ build_results.results | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length }}"
+    failed_builds: "{{ build_results.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length }}"
+    skipped_builds: "{{ build_results.results | selectattr('skipped', 'defined') | list | length }}"
+    total_environments: "{{ environments_to_build | length }}"
+
+# Display a simplified build summary report that avoids type comparison issues
+- name: Show prominent build summary report
+  ansible.builtin.debug:
+    msg: |
+      
+      ********************************************************************
+      *                                                                  *
+      *                     BUILD SUMMARY REPORT                         *
+      *                                                                  *
+      ********************************************************************
+      
+      Total environments selected: {{ total_environments }}
+      Successfully built: {{ successful_builds }}
+      Failed builds: {{ failed_builds }}
+      Skipped builds: {{ skipped_builds }}
+      
+      DETAILED RESULTS:
+      {% for result in build_results.results %}
+      {% if result.skipped is defined %}
+      - SKIPPED: {{ result.item.item }} - Missing execution-environment.yml
+      {% elif result.rc is defined and result.rc == 0 %}
+      - SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}
+      {% elif result.rc is defined %}
+      - FAILED: {{ result.item.item }} - Error code: {{ result.rc }}
+      {% endif %}
+      {% endfor %}
+      
+      {% if successful_builds != 0 %}
+      Successfully built containers are available with 'podman images'
+      {% endif %}
+      
+      ********************************************************************
+
+
+- name: Print build summary to terminal
+  ansible.builtin.shell: |
+    echo ""
+    echo "********************************************************************"
+    echo "*                     BUILD SUMMARY REPORT                         *"
+    echo "********************************************************************"
+    echo ""
+    echo "Total environments selected: {{ total_environments }}"
+    echo "Successfully built: {{ successful_builds }}"
+    echo "Failed builds: {{ failed_builds }}"
+    echo "Skipped builds: {{ skipped_builds }}"
+    echo ""
+    {% for result in build_results.results %}
+    {% if result.skipped is not defined %}
+    {% if result.rc == 0 %}
+    echo "✅ SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}"
+    {% else %}
+    echo "❌ FAILED: {{ result.item.item }} - Error code: {{ result.rc }}"
+    {% endif %}
+    {% else %}
+    echo "⚠️ SKIPPED: {{ result.item.item }} - Missing execution-environment.yml"
+    {% endif %}
+    {% endfor %}
+    echo ""
+    {% if successful_builds|int > 0 %}
+    echo "Successfully built containers are available with 'podman images'"
+    {% endif %}
+    echo ""
+    echo "********************************************************************"
+  changed_when: false

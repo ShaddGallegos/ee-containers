@@ -1,0 +1,12 @@
+---
+# Galaxy Collection Requirements
+collections:
+  # Remove ansible.builtin - it's a built-in collection that can't be installed
+  - name: ansible.posix
+    version: ">=1.4.0"
+  - name: community.general
+    version: ">=6.0.0"
+  - name: community.docker
+    version: ">=3.0.0"
+  # Add other collections as needed
+  - name: ansible.utils

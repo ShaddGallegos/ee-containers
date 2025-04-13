@@ -1,2 +1,27 @@
 ---
-# tasks file for ee-builder
+# Tasks for ee-builder role
+
+# Handle credentials
+- name: Handle credentials
+  ansible.builtin.import_tasks: credentials.yml
+  tags: ['init', 'creds']
+
+# Set up the build environment
+- name: Set up build environment
+  ansible.builtin.import_tasks: setup.yml
+  tags: ['init', 'setup']
+
+# Display environment menu and get selection
+- name: Get environment selection from user
+  ansible.builtin.include_tasks: environment_menu.yml
+  tags: ['menu', 'build']
+
+# Include tasks for building the specified environments
+- name: Build selected environments
+  ansible.builtin.include_tasks: build_environment.yml
+  tags: ['menu', 'build']
+
+# Include tasks for cleaning up old resources and images
+- name: Cleanup after build
+  ansible.builtin.include_tasks: cleanup.yml
+  tags: ['cleanup']

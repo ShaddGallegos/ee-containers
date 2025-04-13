@@ -1,0 +1,8 @@
+---
+- name: Build Execution Environments for Ansible Automation Platform
+  hosts: localhost
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: ee-builder

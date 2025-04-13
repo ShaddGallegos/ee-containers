@@ -1,0 +1,34 @@
+---
+collections:
+  - name: ansible.hub
+  - name: ansible.posix
+    version: ">=1.5.4"
+  - name: ansible.utils
+    version: ">=2.10.0"
+  - name: cloud.common
+    version: ">=2.0.0,<3.0.0"
+  - name: community.general
+    version: ">=7.0.0"
+  - name: community.postgresql
+  - name: community.vmware
+    version: ">=3.6.0"
+  - name: containers.podman
+  - name: oneidentity.safeguardcollection
+  - name: vmware.vmware
+    version: ">=1.0.0"
+  - name: vmware.vmware_content
+    version: ">=1.0.0"
+  - name: vmware.vmware_rest
+    version: ">=2.2.0"
+  - name: vmware.vmware_vcenter
+    version: ">=1.0.0"
+  - name: vmware.vmware_vmc
+    version: ">=1.0.0"
+  - name: vmware.vmware_vra
+    version: ">=1.0.0"
+  - name: vmware.vmware_vro
+    version: ">=1.0.0"
+  - name: vmware.vmware_vsphere
+    version: ">=1.0.0"
+#  - name: cloud.vmware_ops
+#    version: ">=0.7.0,<0.9.0" 
