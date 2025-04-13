@@ -4,6 +4,22 @@
   ansible.builtin.set_fact:
     menu_already_displayed: "{{ menu_already_displayed | default(false) }}"
 
+# Scan environments directory BEFORE showing menu
+- name: Scan environments directory
+  ansible.builtin.find:
+    paths: "/tmp/ee-containers/environments"
+    file_type: directory
+    excludes: "general"
+  register: environment_dirs
+  when: not menu_already_displayed
+
+# Group environments by OS type BEFORE menu
+- name: Group environments by OS type
+  ansible.builtin.set_fact:
+    rhel8_environments: "{{ environment_dirs.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | map('basename') | list }}"
+    rhel9_environments: "{{ environment_dirs.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | map('basename') | list }}"
+  when: not menu_already_displayed
+
 # Only show the menu if it hasn't been displayed yet
 - name: Show menu block
   block:
@@ -55,20 +71,6 @@
     - name: Pause for 3 seconds to let users view the banner
       ansible.builtin.pause:
         seconds: 3
-
-    # Scan environments directory to discover available options
-    - name: Scan environments directory 
-      ansible.builtin.find:
-        paths: "/tmp/ee-containers/environments"
-        file_type: directory
-        excludes: "general"
-      register: environment_dirs
-
-    # Group environments by OS type
-    - name: Group environments by OS type
-      ansible.builtin.set_fact:
-        rhel8_environments: "{{ environment_dirs.files | selectattr('path', 'search', 'rhel8') | map(attribute='path') | map('basename') | list }}"
-        rhel9_environments: "{{ environment_dirs.files | selectattr('path', 'search', 'rhel9') | map(attribute='path') | map('basename') | list }}"
 
     # First menu - OS selection
     - name: Prompt for OS selection

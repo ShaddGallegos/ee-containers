@@ -6,14 +6,21 @@
 # Registry configuration for containers
 unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
 
+[registries.search]
+registries = ["registry.access.redhat.com", "registry.redhat.io", "docker.io", "quay.io"]
+
+[registries.insecure]
+registries = []
+
+[registries.block]
+registries = []
+
 {% if rh_username is defined and rh_username | length > 0 %}
+# Red Hat registry credentials
 [[registry]]
 prefix = "registry.redhat.io"
 location = "registry.redhat.io"
 insecure = false
-
-[[registry.mirror]]
-location = "quay.io"
 
 [registry.auth]
 username = "{{ rh_username }}"
@@ -21,26 +28,3 @@ password = "{{ rh_password | default('') }}"
 {% else %}
 # Red Hat registry credentials not configured
 {% endif %}
-
-[registries.search]
-  registries = [
-    {% for registry in container_registries %}
-    "{{ registry }}",
-    {% endfor %}
-  ]
-
-[registries]
-{% for registry in container_registries %}
-  {{ registry }} = {
-    url = "{{ registry }}",
-    username = "{{ rh_username }}",
-    password = "{{ rh_password }}"
-  }
-{% endfor %}
-
-# DNS settings
-[network]
-network_backend = "cni"
-{% for server in dns_servers | default(['8.8.8.8', '8.8.4.4']) %}
-nameservers = ["{{ server }}"]
-{% endfor %}

@@ -84,6 +84,25 @@
     rh_token: "{{ config_vars.rh_token | default('') }}"
   become: true
 
+# Fix registries.conf with proper TOML syntax
+- name: Create proper registries.conf file
+  ansible.builtin.copy:
+    dest: "/etc/containers/registries.conf"
+    content: |
+      # This is a system-wide configuration file used to
+      # keep track of registries for various container backends.
+
+      [registries.search]
+      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
+
+      [registries.insecure]
+      registries = []
+
+      [registries.block]
+      registries = []
+    mode: '0644'
+  become: true
+
 - name: Copy environments to temporary location
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/environments/"
