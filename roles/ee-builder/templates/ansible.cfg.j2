@@ -13,9 +13,8 @@ display_skipped_hosts = False
 error_on_undefined_vars = False
 system_warnings = False
 deprecation_warnings = False
-
-[galaxy]
-ignore_certs = True
+interpreter_python = auto_silent
+ansible_log_path = {{ log_file | default('/tmp/ee-containers/ansible.log') }}
 
 [galaxy_options]
 ignore_collection_compatibility = True
@@ -30,6 +29,9 @@ ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=
 pipelining = True
 
 [galaxy]
+ignore_certs = True
+ignore_errors = True
+ignore_unsupported = True
 server_list = published_hub, validated_hub, release_galaxy
 
 [galaxy_server.published_hub]

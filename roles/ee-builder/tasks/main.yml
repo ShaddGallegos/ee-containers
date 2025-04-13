@@ -16,6 +16,11 @@
   ansible.builtin.include_tasks: environment_menu.yml
   tags: ['menu', 'build']
 
+# Launch tmux monitoring session in new terminal
+- name: Launch tmux monitoring session
+  ansible.builtin.include_tasks: tmux_session.yml
+  tags: ['menu', 'build']
+
 # Include tasks for building the specified environments
 - name: Build selected environments
   ansible.builtin.include_tasks: build_environment.yml

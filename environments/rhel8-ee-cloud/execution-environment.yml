@@ -14,10 +14,10 @@ dependencies:
       - { name: amazon.aws, version: 9.2.0 }
       - { name: azure.azcollection, version: 3.2.0 }
       - { name: community.aws, version: 6.3.0 }
-      - { name: community.digitalocean, version: 1.27.0 }
-      - { name: google.cloud, version: 1.5.1 }
+      - { name: community.digitalocean, version: 3.27.0 }
+      - { name: google.cloud, version: 3.5.1 }
       - { name: hetzner.hcloud, version: 4.0.1 }
-      - { name: vultr.cloud, version: 1.10.0 }
+      - { name: vultr.cloud, version: 3.10.0 }
   python:
     - awscli>=1.16.312
     - botocore>=1.34.0

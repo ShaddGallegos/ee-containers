@@ -11,43 +11,28 @@
           
           # Setup tmux session for monitoring
           tmux new-session -d -s podman_monitor
-          
-          # Configure window
           tmux rename-window -t podman_monitor "Build Monitor"
           
-          # Add fancy header
-          tmux send-keys -t podman_monitor "clear && printf '\e[1;34m'" Enter
+          # Add header
           tmux send-keys -t podman_monitor "echo '╔════════════════════════════════════════════════════════════════╗'" Enter
           tmux send-keys -t podman_monitor "echo '║                ANSIBLE PODMAN BUILD MONITOR                     ║'" Enter
           tmux send-keys -t podman_monitor "echo '╚════════════════════════════════════════════════════════════════╝'" Enter
-          tmux send-keys -t podman_monitor "printf '\e[0m'" Enter
-          tmux send-keys -t podman_monitor "echo ''" Enter
           
-          # Split window and run image watch in bottom pane
+          # Split window and run image watch
           tmux split-window -v -t podman_monitor
           tmux send-keys -t podman_monitor:0.1 "watch -n 1 'podman images | sort'" Enter
           
-          # Set up the build status monitor in top pane
+          # Monitor build status
           tmux select-pane -t podman_monitor:0.0
-          tmux send-keys -t podman_monitor:0.0 "while true; do clear; cat /tmp/ee-containers/build_status.txt; echo ''; echo ''; echo 'Build in progress...'; for i in {1..10}; do printf '.'; sleep 0.2; done; done" Enter
+          tmux send-keys -t podman_monitor:0.0 "while true; do clear; cat /tmp/ee-containers/build_status.txt 2>/dev/null || echo 'Waiting for build to start...'; echo ''; sleep 1; done" Enter
           
-          # Attach to the session
+          # Keep session running
           tmux -2 attach-session -t podman_monitor
 
     # Launch the monitoring script in a new terminal
-    - name: Launch tmux monitor in a new terminal
+    - name: Launch tmux monitor
       ansible.builtin.shell: |
-        if command -v gnome-terminal &>/dev/null; then
-          gnome-terminal -- bash /tmp/ee-containers/build_monitor.sh &
-        elif command -v xterm &>/dev/null; then
-          xterm -e "bash /tmp/ee-containers/build_monitor.sh" &
-        else
-          # Just start tmux in the background
-          tmux new-session -d -s podman_monitor
-          tmux split-window -v -t podman_monitor
-          tmux send-keys -t podman_monitor:0.1 "watch -n 1 'podman images | sort'" Enter
-          tmux -2 attach-session -t podman_monitor &
-        fi
+        xterm -e "bash /tmp/ee-containers/build_monitor.sh" &
       async: 0
       poll: 0
       ignore_errors: true

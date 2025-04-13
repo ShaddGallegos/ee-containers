@@ -1,38 +1,23 @@
 ---
-- name: Clean up unused container images
-  block:
-    - name: Remove unused images
-      ansible.builtin.command:
-        cmd: podman image prune -f
-      register: prune_result
-      changed_when: prune_result.rc == 0
-
-    - name: Debug prune results
-      ansible.builtin.debug:
-        msg: "Pruned unused images: {{ prune_result.stdout }}"
-
-- name: Clean up old build artifacts
-  block:
-    - name: Remove old build artifacts
-      ansible.builtin.file:
-        path: "{{ work_dir }}/_build"
-        state: absent
-      register: cleanup_result
-
-    - name: Debug cleanup results
-      ansible.builtin.debug:
-        msg: "Removed old build artifacts: {{ cleanup_result }}"
-
-- name: Clean up temporary files
-  block:
-    - name: Remove temporary files
-      ansible.builtin.file:
-        path: /tmp/ee-containers
-        state: absent
-      ignore_errors: true
-
-- name: Clean up temporary build directories
+- name: Remove temporary files and directories
   ansible.builtin.file:
-    path: "/tmp/ee-containers"
+    path: "{{ item }}"
     state: absent
+  loop:
+    - "/tmp/ee-banner.txt"
+    - "/tmp/ee-builder"
+    - "/tmp/ee-containers"
   ignore_errors: true
+  become: true
+
+- name: Prune all dangling container resources
+  ansible.builtin.command:
+    cmd: podman system prune -f
+  register: system_prune_result
+  changed_when: system_prune_result.rc == 0
+  ignore_errors: true
+
+- name: Display system prune results
+  ansible.builtin.debug:
+    msg: "{{ system_prune_result.stdout_lines }}"
+  when: system_prune_result.stdout_lines is defined

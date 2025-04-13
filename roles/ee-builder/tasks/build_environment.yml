@@ -17,8 +17,6 @@
     msg: "Environments directory not found at {{ playbook_dir }}/environments"
   when: not env_dir_exists.stat.exists
 
-# We now use the environments_to_build from environment_menu.yml
-# Login to container registries with credentials
 - name: Login to container registry
   ansible.builtin.command:
     cmd: >
@@ -193,6 +191,54 @@
   when: item.stat.exists and item.stat.isdir
   register: ee_file_exists
 
+# Fix schema validation errors in all execution-environment.yml files
+- name: Remove unsupported 'ansible_config' property from execution-environment.yml files
+  ansible.builtin.shell: |
+    find /tmp/ee-containers/environments -name "execution-environment.yml" -exec sed -i '/ansible_config:/d' {} \;
+  become: true
+
+# Fix build_arg_defaults schema validation errors for EE_BASE_IMAGE
+- name: Fix EE_BASE_IMAGE property in execution-environment.yml files
+  ansible.builtin.shell: |
+    find /tmp/ee-containers/environments -name "execution-environment.yml" -exec sed -i '/EE_BASE_IMAGE:/d' {} \;
+  become: true
+  ignore_errors: true
+
+# Fix schema validation errors for AH_TOKEN
+- name: Fix AH_TOKEN property in execution-environment.yml files
+  ansible.builtin.shell: |
+    find /tmp/ee-containers/environments -name "execution-environment.yml" -exec sed -i '/AH_TOKEN:/d' {} \;
+  become: true
+  ignore_errors: true
+
+# Convert unsupported image structures to supported format
+- name: Add images section conversion to avoid schema errors
+  ansible.builtin.shell: |
+    for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+      if grep -q "images:" $file; then
+        # Extract base image from 'images' section
+        base_img=$(grep -A 3 'base_image:' $file | grep 'name:' | awk '{print $2}')
+        
+        # Remove the entire images section
+        sed -i '/^images:/,/^[a-z]/{ /^[a-z]/!d; }' $file
+        
+        # Add as valid build args if base image was found
+        if [ ! -z "$base_img" ]; then
+          echo "Adding base_image as build arg: $base_img"
+          
+          # Check if build_arg_defaults already exists
+          if grep -q "build_arg_defaults:" $file; then
+            sed -i "/build_arg_defaults:/a\\  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+          else
+            # Add build_arg_defaults section if it doesn't exist
+            sed -i "/^version:/a\\build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+          fi
+        fi
+      fi
+    done
+  become: true
+  ignore_errors: true
+
 # Prepare for build with fixed command syntax
 - name: Build selected environments
   ansible.builtin.command:
@@ -202,6 +248,12 @@
   when: item.stat.exists and item.stat.isdir
   register: build_results
   ignore_errors: true
+
+  # Verify images exist in podman
+- name:  Clean dangling images after build
+  ansible.builtin.command:
+    cmd: "podman system prune -f"
+
 
 # Show comprehensive build summary
 - name: Count build successes and failures

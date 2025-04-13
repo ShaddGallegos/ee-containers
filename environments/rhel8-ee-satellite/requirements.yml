@@ -7,11 +7,11 @@ collections:
     version: 2.5.2
   # linux
   - name: ansible.posix
-    version: 1.5.4
+    version: 3.5.4
   - name: redhat.insights
-    version: 1.2.2
+    version: 3.2.2
   - name: redhat.rhel_system_roles
-    version: 1.23.0
+    version: 3.23.0
   - name: community.general
     version: 6.3.0
   - name: containers.podman
@@ -20,10 +20,10 @@ collections:
   - name: community.windows
     version: 2.0.0
   - name: ansible.windows
-    version: 1.13.0
+    version: 3.13.0
   # cloud
   - name: azure.azcollection
-    version: 1.14.0
+    version: 3.14.0
   - name: amazon.aws
     version: 5.2.0
   # satellite

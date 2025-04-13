@@ -7,11 +7,11 @@ collections:
     version: 2.9.0
   # linux
   - name: ansible.posix
-    version: 1.5.4
+    version: 3.5.4
   - name: redhat.insights
-    version: 1.3.0
+    version: 3.3.0
   - name: redhat.rhel_system_roles
-    version: 1.23.0
+    version: 3.23.0
   - name: community.general
     version: 6.3.0
   - name: containers.podman
@@ -33,7 +33,7 @@ collections:
     version: 3.0.0
   # idm
   - name: redhat.rhel_idm
-    version: 1.13.2
+    version: 3.13.2
   # network
   - name: ansible.netcommon
     version: 7.0.0
@@ -42,12 +42,12 @@ collections:
     version: 5.1.0
   # vmware
   - name: vmware.vmware
-    version: 1.4.0
+    version: 3.4.0
   # redhat_csp_download - deprecated
   - name: redhat.redhat_csp_download
-    version: 1.2.2
+    version: 3.2.2
   # middleware_automation
   # - name: middleware_automation.common
   - name: redhat.runtimes_common
-    version: 1.2.1
+    version: 3.2.1
 ...

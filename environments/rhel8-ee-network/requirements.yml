@@ -3,11 +3,11 @@ collections:
   - name: ansible.netcommon
     version: 6.1.2
   - name: ansible.posix
-    version: 1.5.4
+    version: 3.5.4
   - name: ansible.utils
     version: 5.1.2
   - name: arista.eos
-    version: 10.1.1
+    version: 30.1.1
   - name: cisco.aci
     version: 2.10.1
   - name: cisco.asa
@@ -15,7 +15,7 @@ collections:
   - name: cisco.ios
     version: 9.1.1
   - name: cisco.iosxr
-    version: 10.3.0
+    version: 30.3.0
   - name: cisco.nxos
     version: 9.3.0
   - name: community.network
