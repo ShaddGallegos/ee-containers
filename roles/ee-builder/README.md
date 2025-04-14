@@ -1,109 +1,151 @@
-# README.md - Ansible Execution Environment Builder
+# EE-Containers
 
-This README provides an overview of the Ansible Execution Environment Builder toolset contained in this repository. This automation enables the creation and management of custom execution environments for use with Ansible Automation Platform.
+## "A Streamlined Approach to Building Ansible Execution Environments"
 
-## Overview
+## Disclaimer
 
-The site.yml playbook provides an interactive framework for building, managing, and monitoring custom Ansible execution environments based on Red Hat AAP base images. It simplifies the process of creating and managing execution environments for various use cases.
+This Role was written and tested by me and is meant to show some of the cool things Ansible can do. It is not a product of Ansible, Red Hat, or IBM and is not supported and has no warranty implied or other. The software is opensource and you can download, review, test, and use at your own discretion. Treat this "AS IS" found on the internet. If you have questions please feel free to ping me at <shadd@redhat.com> and I will see if I can assist you.
 
-## Features
+## Synopsis
 
-- **Interactive Selection**: Choose RHEL 8, RHEL 9, or both distributions for your execution environments
-- **Multi-Environment Building**: Select and build multiple environments in a single run
-- **Real-time Monitoring**: Visualize build progress through an interactive tmux-based dashboard
-- **Custom Environments**: Support for specialized environments including:
-  - Terraform integration
-  - ServiceNow integration
-  - Cloud platform integrations
-- **Credential Management**: Secure handling of registry credentials for Red Hat repositories
-- **Error Recovery**: Automatic fixes for common build issues
-- **Dynamic Display**: Responsive monitoring interface that scales to terminal dimensions
+EE-Containers is an Ansible role designed to simplify and streamline the creation of Ansible Execution Environments. This script is a helper script for Ansible Builder that provides a robust framework for building, validating, and managing container images that can be used with Ansible Automation Platform. The role handles common pain points like registry authentication, schema validation, and dependency management, allowing users to focus on defining their automation requirements rather than container complexities.
 
 ## Requirements
 
-- Red Hat Enterprise Linux 8 or 9
-- Podman container runtime
-- Ansible 2.15+
-- ansible-builder 3.0+
-- tmux (for monitoring interface)
-- Red Hat subscription for accessing base images
+* Ansible 2.12 or higher
+* Podman 3.0 or higher
+* ansible-builder 3.0 or higher
+* Red Hat registry credentials (for accessing base images)
+* Internet connectivity for downloading dependencies
+* At least 2GB of free disk space
+* Sudo/root privileges for container operations
 
-## Usage
+## How to Run
 
-### Basic Build Process
+1. Clone the repository:
 
-```bash
-ansible-playbook site.yml
-```
+   ```
+   git clone https://github.com/your-org/ee-containers.git
+   cd ee-containers
+   ```
 
-This will:
+2. Configure your Red Hat registry credentials:
 
-1. Prompt for Red Hat credentials if needed
-2. Ask you to select RHEL 8, RHEL 9, or both distributions
-3. Display available environments you can build
-4. Launch a monitoring dashboard
-5. Build selected environments
-6. Display build results
+   ```
+   cp templates/config.j2 ~/.ansible/vars/config
+      ---
+      rh_username: "Red Hat CDN username"
+      rh_password: "Red Hat CDN password"
+      automation_hub_token: ""
+      galaxy_token: ""
 
-### Monitoring Dashboard
+   # Edit ~/.ansible/vars/config with your credentials
+   ```
 
-The monitoring dashboard has three sections:
+3. Run the playbook:
 
-- **Top Pane**: ASCII art header with logo and title
-- **Middle Pane**: Single-line status indicator showing current build progress
-- **Bottom Pane**: Live updating container image list
+   ```
+   sudo ansible-playbook ee_builder.yml -K
+   ```
 
-### Command-line Options
+4. Select environments to build from the interactive menu.
 
-```bash
-# Build specific environments
-ansible-playbook site.yml -e "selected_environments=['rhel8-ee-minimal-terraform']"
+5. Access the built containers:
 
-# Force rebuild of environments that already exist
-ansible-playbook site.yml -e "force_rebuild=true"
+   ```
+   podman images
+   ```
 
-# Run specific playbook sections using tags
-ansible-playbook site.yml --tags init       # Initial setup
-ansible-playbook site.yml --tags creds      # Update credentials
-ansible-playbook site.yml --tags monitoring # Launch monitoring only
-ansible-playbook site.yml --tags cleanup    # Clean up containers and images
-```
+## What It Does
 
-## Environment Types
+The EE-Containers role:
 
-### Standard Environments
+1. Sets up the necessary infrastructure for building Execution Environments
+2. Authenticates with container registries
+3. Validates and fixes execution-environment.yml schema issues
+4. Pulls required base images
+5. Builds customized Execution Environments
+6. Installs necessary dependencies
+7. Creates built container images ready for use with Ansible Automation Platform
+8. Provides a flexible, interactive menu for environment selection
+9. Cleans up dangling images after building
 
-- `rhel8-ee-minimal`: Basic EE with minimal packages
-- `rhel8-ee-supported`: Full-featured EE with additional dependencies
-- `rhel9-ee-minimal`: RHEL 9 version of the minimal EE
-- `rhel9-ee-supported`: RHEL 9 version of the supported EE
+## Features
 
-### Specialized Environments
+* Interactive menu system for environment selection
+* Automatic schema validation and fixing
+* Registry authentication handling
+* Custom assemble script for reliable dependency installation
+* Support for both RHEL8 and RHEL9 environments
+* Progress reporting and build status
+* Error handling and recovery
+* Cleanup of dangling images
+* Parallel build capabilities
 
-- **Terraform**: `rhel8-ee-minimal-terraform` - Includes Terraform binary, terraform-inventory, and Python terraform libraries
-- **ServiceNow**: `rhel8-ee-supported-servicenow` - Includes ServiceNow API client libraries
-- **Cloud Platforms**: Specialized environments for AWS, Azure, and GCP integrations
+## Creating Custom Definitions
+
+If you want to make your own definitions, create a project folder using this naming convention:
+`<OS major version>-<ee or de>-<base image type minimal or supported>-<Vendor or Product>`
+
+For example:
+
+* `rhel9-ee-minimal-aws` for an AWS-focused execution environment
+* `rhel8-de-supported-azure` for an Azure decision environment
+
+Definitions Consist oF:
+
+* Project folder structure:
+
+  ```
+  project folder
+  ├── bindep.txt
+  ├── execution-environment.yml
+  ├── requirements.txt
+  └── requirements.yml
+  ```
+
+## Working Environment Definitions
+
+As of April 14, 2025, the following environment definitions have been tested and confirmed working:
+
+### RHEL8 Environments
+
+* rhel8-de-minimal
+* rhel8-de-supported
+* rhel8-ee-controller_101
+* rhel8-ee-first_playbook
+* rhel8-ee-minimal
+* rhel8-ee-netbox
+* rhel8-ee-network
+* rhel8-ee-servicenow
+
+### RHEL9 Environments
+
+* rhel9-de-supported
+* rhel9-ee-minimal
+* rhel9-ee-minimal-general
+* rhel9-ee-minimal-vmware
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **Build failures related to package managers**:
-   - The tool automatically detects and adapts to available package managers (dnf, microdnf, yum)
-   - Custom assemble scripts handle package installation issues
+   * The tool automatically detects and adapts to available package managers (dnf, microdnf, yum)
+   * Custom assemble scripts handle package installation issues
 
 2. **Container storage issues**:
-   - Run `podman system reset` to clear storage problems
-   - Check available disk space with `df -h /var`
+   * Run `podman system reset` to clear storage problems
+   * Check available disk space with `df -h /var`
 
 3. **Python dependency conflicts**:
-   - The tool removes problematic dependencies like `--exclude systemd-python`
-   - Installs critical packages directly in assemble scripts
+   * The tool removes problematic dependencies like `--exclude systemd-python`
+   * Installs critical packages directly in assemble scripts
 
 ### Logs
 
-- Build logs are displayed in the monitoring interface
-- Full logs are stored in current_env during the build process
+* Build logs are displayed in the monitoring interface
+* Full logs are stored in current_env during the build process
 
 ## Contributing
 
