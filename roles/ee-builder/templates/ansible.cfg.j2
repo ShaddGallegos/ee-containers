@@ -6,7 +6,6 @@ remote_user = {{ ansible_user | default('root') }}
 host_key_checking = False
 retry_files_enabled = False
 log_path = {{ log_file | default('/var/log/ansible.log') }}
-deprecation_warnings = False
 debug = False
 verbosity = 0
 display_skipped_hosts = False
