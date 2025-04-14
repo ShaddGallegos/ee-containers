@@ -45,7 +45,7 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 3. Run the playbook:
 
    ```
-   ansible-playbook site.yml -K
+   sudo ansible-playbook ee_builder.yml -K
    ```
 
 4. Select environments to build from the interactive menu.
