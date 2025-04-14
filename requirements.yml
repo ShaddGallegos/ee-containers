@@ -17,3 +17,4 @@ collections:
   - name: infra.ee_utilities
   - name: infra.osbuild
   - name: infra.aap_configuration
+  - name: containers.podman

@@ -29,6 +29,23 @@
     state: latest
   become: true
 
+# Create a custom ansible.cfg with alternative Galaxy servers
+- name: Create custom ansible.cfg for collection installation
+  ansible.builtin.copy:
+    dest: "/tmp/ansible.cfg"
+    content: |
+      [galaxy]
+      server_list = automation_hub, release_galaxy
+
+      [galaxy_server.automation_hub]
+      url=https://console.redhat.com/api/automation-hub/
+      auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+      token={{ ah_token | default('') }}
+
+      [galaxy_server.release_galaxy]
+      url=https://galaxy.ansible.com/
+    mode: '0644'
+
 # Install Python pip packages
 - name: Install required Python packages
   ansible.builtin.pip:
@@ -62,6 +79,22 @@
     ANSIBLE_COLLECTIONS_PATHS: "/tmp/ee-containers/ansible_collections"
     ANSIBLE_GALAXY_DISABLE_GPG_VERIFY: "true"
     ANSIBLE_COLLECTIONS_SCANS: "False"
+  ignore_errors: true
+
+# Fix Galaxy installation failures
+- name: Install required Galaxy collections individually with fallbacks
+  ansible.builtin.shell: |
+    mkdir -p ~/.ansible/collections/ansible_collections
+    # Try directly from Ansible Galaxy first
+    ansible-galaxy collection install community.general -p ~/.ansible/collections --force || \
+    # Fallback to downloading tarball directly 
+    curl -L https://galaxy.ansible.com/download/community-general-7.5.0.tar.gz -o /tmp/community-general.tar.gz && \
+    mkdir -p ~/.ansible/collections/ansible_collections/community && \
+    tar -xzf /tmp/community-general.tar.gz -C ~/.ansible/collections/ansible_collections/community --strip-components=1
+    
+    # Set proper permissions
+    chmod -R 755 ~/.ansible/collections
+  register: collection_install
   ignore_errors: true
 
 # First load variables from config file
@@ -109,7 +142,17 @@
     dest: "/tmp/ee-containers/environments/"
     directory_mode: true
     remote_src: true
-  ignore_errors: true  # Added to skip errors
+  ignore_errors: true 
+
+# Clean up dangling (<none>:<none>) images after build
+- name: Remove dangling images after build
+  ansible.builtin.shell: |
+    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
+  register: dangling_removal
+  changed_when: dangling_removal.stdout != ""
+  failed_when: false
+  become: true
+  ignore_errors: true
 
 - name: Load variables from config file
   ansible.builtin.include_vars:
@@ -145,15 +188,6 @@
     - .docker
     - .config/containers
 
-- name: Ensure podman can run without root
-  ansible.builtin.shell: |
-    echo "y" | podman system reset
-  register: podman_reset
-  changed_when: podman_reset.rc == 0
-  failed_when: false
-  become: true
-
-# Verification
 - name: Verify DNS resolution
   ansible.builtin.command:
     cmd: "nslookup {{ item }}"
@@ -167,7 +201,6 @@
   loop_control:
     label: "{{ item }}"
 
-# Create directory structure for temporary files
 - name: Create temporary build directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -187,3 +220,12 @@
     mode: '0755'
     recurse: yes
   become: true
+
+# Fix permissions on working directory
+- name: Fix permissions on working directory
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}"
+    mode: '0755'
+  become: true
+  ignore_errors: true
+

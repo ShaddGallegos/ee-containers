@@ -10,14 +10,41 @@
   ignore_errors: true
   become: true
 
-- name: Prune all dangling container resources
+# Add before/after comparison to identify what's changing
+- name: List images before any operations
   ansible.builtin.command:
-    cmd: podman system prune -f
-  register: system_prune_result
-  changed_when: system_prune_result.rc == 0
+    cmd: "podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}'"
+  register: images_before
+  changed_when: false
+
+# Clean up dangling (<none>:<none>) images after build
+- name: Remove dangling images after build
+  ansible.builtin.shell: |
+    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
+  register: dangling_removal
+  changed_when: dangling_removal.stdout != ""
+  failed_when: false
+  become: true
   ignore_errors: true
 
-- name: Display system prune results
+# Log out of all registries for security
+- name: Log out of container registries
+  ansible.builtin.command:
+    cmd: "podman logout {{ item }}"
+  loop:
+    - "registry.redhat.io"
+    - "registry.access.redhat.com"
+    - "docker.io"
+    - "quay.io"
+  register: logout_results
+  changed_when: "'Removed login credentials' in logout_results.stdout"
+  failed_when: false
+  ignore_errors: true
+
+# Show logout results
+- name: Display registry logout results
   ansible.builtin.debug:
-    msg: "{{ system_prune_result.stdout_lines }}"
-  when: system_prune_result.stdout_lines is defined
+    msg: "{{ item.stdout | default(item.stderr) }}"
+  loop: "{{ logout_results.results }}"
+  when: item.stdout is defined or item.stderr is defined
+
