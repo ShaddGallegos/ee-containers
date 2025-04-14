@@ -88,13 +88,13 @@
           3. ALL ENVIRONMENTS ({{ rhel8_environments | length + rhel9_environments | length }} total)
           
           ***********************************************************
-          >>> SELECT AN OPTION (1, 2, or 3)
+          >>> SELECT AN OPTION (1, 2, 3, or "ALL")
       register: os_selection
 
-    # Set OS type variable
+    # Set OS type variable with support for "ALL"
     - name: Set selected OS type
       ansible.builtin.set_fact:
-        selected_os_type: "{{ os_selection.user_input | default('3') }}"
+        selected_os_type: "{{ '3' if os_selection.user_input | upper == 'ALL' else os_selection.user_input | default('3') }}"
 
     # RHEL 8 second menu
     - name: Prompt for RHEL 8 environment selection
@@ -106,7 +106,7 @@
           {{ loop.index }}. {{ env }}
           {% endfor %}
           
-          >>> Select RHEL 8 environments (comma-separated numbers, or {{ rhel8_environments | length + 1 }} for all)
+          >>> Select RHEL 8 environments (comma-separated numbers, "{{ rhel8_environments | length + 1 }}", or "ALL" for all)
       register: rhel8_selection
       when: selected_os_type == "1"
 
@@ -120,7 +120,7 @@
           {{ loop.index }}. {{ env }}
           {% endfor %}
           
-          >>> Select RHEL 9 environments (comma-separated numbers, or {{ rhel9_environments | length + 1 }} for all)
+          >>> Select RHEL 9 environments (comma-separated numbers, "{{ rhel9_environments | length + 1 }}", or "ALL" for all)
       register: rhel9_selection
       when: selected_os_type == "2"
 
@@ -135,7 +135,10 @@
         - name: Process all RHEL 8 environments
           ansible.builtin.set_fact:
             environments_to_build: "{{ rhel8_environments }}"
-          when: rhel8_selection.user_input == "" or rhel8_selection.user_input | string == (rhel8_environments | length + 1) | string
+          when: >
+            rhel8_selection.user_input == "" or 
+            rhel8_selection.user_input | string == (rhel8_environments | length + 1) | string or
+            rhel8_selection.user_input | upper == "ALL"
           
         - name: Process specific RHEL 8 environments
           block:
@@ -156,7 +159,10 @@
         - name: Process all RHEL 9 environments
           ansible.builtin.set_fact:
             environments_to_build: "{{ rhel9_environments }}"
-          when: rhel9_selection.user_input == "" or rhel9_selection.user_input | string == (rhel9_environments | length + 1) | string
+          when: >
+            rhel9_selection.user_input == "" or 
+            rhel9_selection.user_input | string == (rhel9_environments | length + 1) | string or
+            rhel9_selection.user_input | upper == "ALL"
           
         - name: Process specific RHEL 9 environments
           block:

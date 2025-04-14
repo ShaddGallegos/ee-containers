@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 
 # Copyright: (c) 2023, Ansible Project
 # Apache License, Version 2.0 (see LICENSE.md or https://www.apache.org/licenses/LICENSE-2.0)
