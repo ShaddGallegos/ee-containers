@@ -3,7 +3,8 @@
 ## "A Streamlined Approach to Building Ansible Execution Environments"
 
 ## Disclaimer
-This Role was written and tested by me and is meant to show some of the cool things Ansible can do. It is not a product of Ansible, Red Hat, or IBM and is not supported and has no warranty implied or other. The software is opensource and you can download, review, test, and use at your own discretion. Treat this "AS IS" found on the internet. If you have questions please feel free to ping me at shadd@redhat.com and I will see if I can assist you.
+
+This Role was written and tested by me and is meant to show some of the cool things Ansible can do. It is not a product of Ansible, Red Hat, or IBM and is not supported and has no warranty implied or other. The software is opensource and you can download, review, test, and use at your own discretion. Treat this "AS IS" found on the internet. If you have questions please feel free to ping me at <shadd@redhat.com> and I will see if I can assist you.
 
 ## Synopsis
 
@@ -22,18 +23,27 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 ## How to Run
 
 1. Clone the repository:
+
    ```
    git clone https://github.com/your-org/ee-containers.git
    cd ee-containers
    ```
 
 2. Configure your Red Hat registry credentials:
+
    ```
-   cp vars/config.yml.example ~/.ansible/vars/config
+   cp vars/config.yml.example ~/.ansible/vars/config.yml
+      ---
+      rh_username: "Red Hat CDN username"
+      rh_password: "Red Hat CDN password"
+      automation_hub_token: ""
+      galaxy_token: ""
+
    # Edit ~/.ansible/vars/config with your credentials
    ```
 
 3. Run the playbook:
+
    ```
    ansible-playbook site.yml -K
    ```
@@ -41,6 +51,7 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 4. Select environments to build from the interactive menu.
 
 5. Access the built containers:
+
    ```
    podman images
    ```
@@ -77,12 +88,14 @@ If you want to make your own definitions, create a project folder using this nam
 `<OS major version>-<ee or de>-<base image type minimal or supported>-<Vendor or Product>`
 
 For example:
+
 * `rhel9-ee-minimal-aws` for an AWS-focused execution environment
-* `rhel8-de-supported-azure` for an Azure developer environment
+* `rhel8-de-supported-azure` for an Azure decision environment
 
 Definitions Consist oF:
 
 * Project folder structure:
+
   ```
   project folder
   ├── bindep.txt
@@ -96,6 +109,7 @@ Definitions Consist oF:
 As of April 14, 2025, the following environment definitions have been tested and confirmed working:
 
 ### RHEL8 Environments
+
 * rhel8-de-minimal
 * rhel8-de-supported
 * rhel8-ee-controller_101
@@ -106,6 +120,7 @@ As of April 14, 2025, the following environment definitions have been tested and
 * rhel8-ee-servicenow
 
 ### RHEL9 Environments
+
 * rhel9-de-supported
 * rhel9-ee-minimal
 * rhel9-ee-minimal-general
