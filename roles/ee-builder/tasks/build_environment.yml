@@ -523,7 +523,7 @@
       
       # Fix quotes in image names
       sed -i 's|name: "\(.*\)"|name: \1|g' "$file"
-      sed -i "s|name: '\(.*\)'|name: \1|g" "$file"
+      sed -i "s|name: '\(.*\)'|name: \1|g' "$file"
       
       echo "Fixed image references in $file"
     done
@@ -785,4 +785,45 @@
   changed_when: dangling_removal.stdout != ""
   failed_when: false
   become: true
+  ignore_errors: true
+
+# Create build hook directory and scripts BEFORE build starts
+- name: Create build hook directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "/tmp/ee-containers/context"
+    - "/tmp/ee-containers/context/hooks"
+  ignore_errors: true
+
+# Create pre-build hook script to fix container environment
+- name: Create pre-build hook script
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/context/hooks/pre-build"
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      echo "Running pre-build hook"
+      cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
+      exit 0
+  ignore_errors: true
+
+# Modify the build command to use our custom context directory
+- name: Start image build process with custom hooks
+  ansible.builtin.shell: |
+    # Export auth file location for ansible-builder and all subprocesses
+    export REGISTRY_AUTH_FILE=/etc/containers/auth.json
+    
+    # Run the build with correct parameters for this version
+    ansible-builder build --no-cache -v3 \
+      -f /tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml \
+      --context /tmp/ee-containers/context \
+      --tag {{ item.item }}:{{ timestamp }}
+  environment:
+    REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  register: build_results
   ignore_errors: true
