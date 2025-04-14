@@ -27,19 +27,44 @@
   become: true
   ignore_errors: true
 
-# Log out of all registries for security
-- name: Log out of container registries
+# Check login status for each registry
+- name: Check registry login status
   ansible.builtin.command:
-    cmd: "podman logout {{ item }}"
+    cmd: "podman login --get-login {{ item }}"
   loop:
     - "registry.redhat.io"
     - "registry.access.redhat.com"
     - "docker.io"
     - "quay.io"
+  register: login_check
+  changed_when: false
+  failed_when: false
+  ignore_errors: true
+
+# Debug login status
+- name: Show login status
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ 'Logged in' if item.rc == 0 else 'Not logged in' }}"
+  loop: "{{ login_check.results }}"
+  when: item is defined
+
+# Log out only from registries that are logged in
+- name: Log out of container registries
+  ansible.builtin.command:
+    cmd: "podman logout {{ item.item }}"
+  loop: "{{ login_check.results }}"
   register: logout_results
+  when: item.rc == 0  # Only log out if we're logged in
   changed_when: "'Removed login credentials' in logout_results.stdout"
   failed_when: false
   ignore_errors: true
+
+# Show logout results
+- name: Display registry logout results
+  ansible.builtin.debug:
+    msg: "{{ item.stdout | default(item.stderr) }}"
+  loop: "{{ logout_results.results | default([]) }}"
+  when: item is defined and (item.stdout is defined or item.stderr is defined)
 
 # Show logout results
 - name: Display registry logout results
