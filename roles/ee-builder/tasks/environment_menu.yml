@@ -27,6 +27,7 @@
     - name: Clear screen
       ansible.builtin.shell: clear
       changed_when: false
+      ignore_errors: true
     
     # Initialize environments_to_build
     - name: Initialize environments_to_build variable
