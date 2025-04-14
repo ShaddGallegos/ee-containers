@@ -32,7 +32,7 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 2. Configure your Red Hat registry credentials:
 
    ```
-   cp vars/config.yml.example ~/.ansible/vars/config.yml
+   cp vars/config.example ~/.ansible/vars/config
       ---
       rh_username: "Red Hat CDN username"
       rh_password: "Red Hat CDN password"
