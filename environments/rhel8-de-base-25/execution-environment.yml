@@ -30,10 +30,10 @@ additional_build_steps:
         - ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
         # AH_TOKEN is passed into the build command using a --build-arg
         # accept this as an ARG during this stage to reference later
-        - ARG AH_TOKEN
+        #- ARG AH_TOKEN
         # Use the above ARG to define an environment variable holding
         # the token for resolving private collections
-        - ENV ANSIBLE_GALAXY_SERVER_AUTOMATION_HUB_TOKEN=$AH_TOKEN
+        #- ENV ANSIBLE_GALAXY_SERVER_AUTOMATION_HUB_TOKEN=$AH_TOKEN
     append_final:
         - RUN rm -f /etc/ansible/ansible.cfg
         - ENV PYTHONPATH=$PYTHONPATH:/usr/local/lib/python3.11/site-packages:/usr/local/lib64/python3.11/site-packages

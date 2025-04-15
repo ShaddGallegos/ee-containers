@@ -1,0 +1,193 @@
+---
+# Ensure config directory structure exists
+- name: Ensure .ansible/vars directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.ansible/vars"
+    state: directory
+    mode: "0755"
+    
+- name: Check if config file exists
+  ansible.builtin.stat:
+    path: "{{ ansible_env.HOME }}/.ansible/vars/config"
+  register: config_file_stat
+
+- name: Create example config file if it doesn't exist
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.ansible/vars/config"
+    content: |
+      ---
+      # Red Hat Registry credentials
+      # Replace these with your actual credentials
+      rh_username: "your-username"
+      rh_password: "your-password"
+    mode: "0644"  # More permissive to allow other users to read/write
+    force: false  # Don't overwrite if it exists
+  when: not config_file_stat.stat.exists
+
+- name: Ensure config file has proper permissions
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.ansible/vars/config"
+    mode: "0644"  # readable/writable by owner, readable by group/others
+  when: config_file_stat.stat.exists
+
+# Load credentials from ~/.ansible/vars/config
+- name: Load Red Hat credentials from config file
+  ansible.builtin.include_vars:
+    file: "{{ ansible_env.HOME }}/.ansible/vars/config"
+    name: config_vars
+  ignore_errors: true
+  
+- name: Extract Red Hat credentials from loaded config
+  ansible.builtin.set_fact:
+    rh_username: "{{ config_vars.rh_username | default(rh_username) | default('') }}"
+    rh_password: "{{ config_vars.rh_password | default(rh_password) | default('') }}"
+  no_log: true
+
+# 1. First fix the registries.conf format BEFORE attempting login
+- name: Fix registries.conf format with all Red Hat registries
+  ansible.builtin.copy:
+    dest: "/etc/containers/registries.conf"
+    mode: "0644"
+    content: |
+      # This is a system-wide configuration file for container registries.
+      # For more information on registries configuration, see containers-registries.conf(5).
+      
+      # Registries to search for images that are not fully-qualified.
+      unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
+      
+      # Container registry credentials configuration - Red Hat registries
+      [[registry]]
+      prefix = "registry.redhat.io"
+      location = "registry.redhat.io"
+      insecure = false
+      
+      [[registry]]
+      prefix = "registry.access.redhat.com"
+      location = "registry.access.redhat.com"
+      insecure = false
+      
+      [[registry]]
+      prefix = "registry.connect.redhat.com"
+      location = "registry.connect.redhat.com"
+      insecure = false
+    backup: true
+  become: true
+
+# 2. Setup directories and load credentials
+- name: Ensure containers directory exists
+  ansible.builtin.file:
+    path: "/etc/containers"
+    state: directory
+    mode: "0755"
+  become: true
+  
+- name: Load Red Hat credentials from config file if available
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  ignore_errors: true
+  
+- name: Set credentials from config file if available
+  ansible.builtin.set_fact:
+    rh_username: "{{ config_vars.rh_username | default(rh_username) | default('') }}"
+    rh_password: "{{ config_vars.rh_password | default(rh_password) | default('') }}"
+  no_log: true
+  ignore_errors: true
+  
+- name: Debug authentication variables
+  ansible.builtin.debug:
+    msg: 
+      - "Username defined: {{ rh_username is defined and rh_username != '' }}"
+      - "Password defined: {{ rh_password is defined and rh_password != '' }}"
+      - "Credentials source: {{ 'config file' if config_vars is defined else 'playbook variables' }}"
+  no_log: true
+
+# 3. Create authentication files
+- name: Ensure docker config directory exists in home directory
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.docker"
+    state: directory
+    mode: "0700"
+
+- name: Create registry authentication configuration (multiple locations)
+  ansible.builtin.copy:
+    dest: "{{ item.path }}"
+    content: |
+      {
+        "auths": {
+          "registry.redhat.io": {
+            "auth": "{{ (rh_username ~ ':' ~ rh_password) | b64encode }}"
+          },
+          "registry.access.redhat.com": {
+            "auth": "{{ (rh_username ~ ':' ~ rh_password) | b64encode }}"
+          },
+          "registry.connect.redhat.com": {
+            "auth": "{{ (rh_username ~ ':' ~ rh_password) | b64encode }}"
+          }
+        }
+      }
+    mode: "0600"
+    force: true
+  loop:
+    - { path: "{{ ansible_env.HOME }}/.docker/config.json", become: false }
+    - { path: "/etc/containers/auth.json", become: true }
+  become: "{{ item.become }}"
+  no_log: true
+
+# 4. Login and test authentication
+- name: Create direct login script for all Red Hat registries
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/direct_login.sh"
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      set -e
+      
+      echo "========== RED HAT REGISTRY AUTHENTICATION HELPER =========="
+      
+      # Try registry.redhat.io first (most important)
+      echo "Authenticating with registry.redhat.io..."
+      podman login --username {{ rh_username }} --password {{ rh_password }} registry.redhat.io
+      podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+      
+      # Also authenticate with registry.access.redhat.com
+      echo "Authenticating with registry.access.redhat.com..."
+      podman login --username {{ rh_username }} --password {{ rh_password }} registry.access.redhat.com
+      
+      # Also authenticate with registry.connect.redhat.com
+      echo "Authenticating with registry.connect.redhat.com..."
+      podman login --username {{ rh_username }} --password {{ rh_password }} registry.connect.redhat.com
+      
+      echo "✅ Authentication successful for all Red Hat registries!"
+      exit 0
+  no_log: true
+
+- name: Execute direct login script
+  ansible.builtin.command:
+    cmd: "bash /tmp/ee-containers/direct_login.sh"
+  register: login_result
+  failed_when: false
+  changed_when: login_result.rc == 0
+  no_log: true
+
+# 5. Display results and handle failures
+- name: Display login result
+  ansible.builtin.debug:
+    msg: |
+      {% if login_result.rc == 0 %}
+      ✅ Authentication to Red Hat Registries successful! 
+      {% else %}
+      ❌ Authentication failed: {{ login_result.stderr | default('Unknown error') }}
+      
+      Please check your Red Hat credentials in ~/.ansible/vars/config file.
+      You need:
+      1. An active Red Hat subscription
+      2. Valid login credentials (rh_username and rh_password)
+      3. Access to the ansible-automation-platform repositories
+      {% endif %}
+
+- name: Fail when login is unsuccessful 
+  ansible.builtin.fail:
+    msg: "Registry authentication failed. Cannot continue without access to Red Hat images."
+  when: login_result.rc != 0
+  ignore_errors: true

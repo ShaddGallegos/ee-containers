@@ -1,48 +1,345 @@
-# Create a build monitor in a tmux session
-- name: Setup Podman build monitor in tmux
-  block:
-    # Create script to setup the tmux monitoring session
-    - name: Create tmux monitor script
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/build_monitor.sh"
-        mode: "0755"
-        content: |
-          #!/bin/bash
-          
-          # Setup tmux session for monitoring
-          tmux new-session -d -s podman_monitor
-          tmux rename-window -t podman_monitor "Build Monitor"
-          
-          # Add header
-          tmux send-keys -t podman_monitor "echo '╔════════════════════════════════════════════════════════════════╗'" Enter
-          tmux send-keys -t podman_monitor "echo '║                ANSIBLE PODMAN BUILD MONITOR                     ║'" Enter
-          tmux send-keys -t podman_monitor "echo '╚════════════════════════════════════════════════════════════════╝'" Enter
-          
-          # Split window and run image watch
-          tmux split-window -v -t podman_monitor
-          tmux send-keys -t podman_monitor:0.1 "watch -n 1 'podman images | sort'" Enter
-          
-          # Monitor build status
-          tmux select-pane -t podman_monitor:0.0
-          tmux send-keys -t podman_monitor:0.0 "while true; do clear; cat /tmp/ee-containers/build_status.txt 2>/dev/null || echo 'Waiting for build to start...'; echo ''; sleep 1; done" Enter
-          
-          # Keep session running
-          tmux -2 attach-session -t podman_monitor
-
-    # Launch the monitoring script in a new terminal
-    - name: Launch tmux monitor
-      ansible.builtin.shell: |
-        xterm -e "bash /tmp/ee-containers/build_monitor.sh" &
-      async: 0
-      poll: 0
-      ignore_errors: true
-      changed_when: false
-
-    # Create initial status file
-    - name: Create build status file for monitor
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/build_status.txt"
-        content: "Ready to build: {{ environments_to_build | join(', ') }}"
-        mode: "0644"
-      changed_when: false
+---
+# Validate required variables before proceeding
+- name: Ensure required variables are defined
+  ansible.builtin.assert:
+    that:
+      - environments_to_build is defined
+      - environments_to_build is not none
+    quiet: true
   ignore_errors: true
+  register: var_check
+
+- name: Ensure monitoring directory exists
+  ansible.builtin.file:
+    path: "/tmp/ee-containers"
+    state: directory
+    mode: 0755
+  when: var_check is succeeded
+
+# Detect platform for appropriate terminal handling - FIXED COMMA ERROR
+- name: Detect operating system
+  ansible.builtin.set_fact:
+    os_type: "{{ ansible_facts['os_family'] | lower }}"
+    is_wsl: false
+  when: var_check is succeeded
+
+# More reliable WSL detection
+- name: Detect if running in WSL
+  ansible.builtin.shell: grep -q microsoft /proc/version || grep -q WSL /proc/version || grep -q Microsoft /proc/sys/kernel/osrelease
+  register: wsl_check
+  failed_when: false
+  changed_when: false
+  ignore_errors: true
+  when: var_check is succeeded
+
+# Fixed conditional for setting WSL flag
+- name: Set WSL flag if detected
+  ansible.builtin.set_fact:
+    is_wsl: true
+  when: 
+    - var_check is succeeded
+    - wsl_check is defined 
+    - wsl_check.rc is defined
+    - wsl_check.rc == 0
+
+# Create tmux monitoring script with fixed syntax
+- name: Create tmux monitor script
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/build_monitor.sh"
+    mode: 0755
+    content: |
+      #!/bin/bash
+      
+      # Function to log messages with timestamps
+      log_msg() {
+        echo "[$(date '+%H:%M:%S')] $1"
+      }
+      
+      # Check prerequisites
+      for cmd in tmux podman top free; do
+        if ! command -v $cmd &> /dev/null; then
+          log_msg "⚠️ Required command '$cmd' not found. Some features may not work."
+        fi
+      done
+      
+      # Safely kill existing session if it exists
+      if tmux has-session -t podman_monitor 2>/dev/null; then
+        log_msg "Cleaning up existing monitor session"
+        tmux kill-session -t podman_monitor
+      fi
+      
+      # Create session with error handling
+      log_msg "Starting monitoring session"
+      tmux new-session -d -s podman_monitor || { 
+        echo "❌ Failed to create tmux session. Is tmux installed?"; 
+        exit 1; 
+      }
+      
+      # Set up attractive appearance
+      tmux rename-window -t podman_monitor "🚀 EE Builder"
+      tmux set -g status-style "bg=#0066cc,fg=white"
+      tmux set -g pane-border-style "fg=cyan"
+      tmux set -g pane-active-border-style "fg=#00cc00,bold"
+      tmux set -g status-left "#[fg=white,bold]EE Builder#[default]"
+      tmux set -g status-right "#[fg=yellow]%H:%M:%S#[default]"
+      
+      # Split into 3 panes with a more attractive layout
+      tmux split-window -v -p 70 -t podman_monitor
+      tmux split-window -h -p 50 -t podman_monitor
+      
+      # Setup improved image display with column formatting
+      tmux select-pane -t podman_monitor:0.1
+      tmux send-keys -t podman_monitor:0.1 "watch -n 2 'echo -e \"\\e[1;36m📦 CONTAINER IMAGES\\e[0m\"; printf \"\\n\"; podman images --format \"table {{.Repository}}\\t{{.Tag}}\\t{{.Size}}\" | grep -v \"<none>\" || echo \"No images found\"'" Enter
+      
+      # Setup enhanced system monitor with colors
+      tmux select-pane -t podman_monitor:0.2
+      tmux send-keys -t podman_monitor:0.2 "while true; do clear; echo -e \"\\e[1;33m⚙️ SYSTEM MONITOR\\e[0m\"; echo; echo -e \"\\e[1m CPU:\\e[0m\"; top -bn1 | head -3 | grep '%Cpu'; echo; echo -e \"\\e[1m MEMORY:\\e[0m\"; free -h | head -2; echo; echo -e \"\\e[1m DISK:\\e[0m\"; df -h / | grep -v Filesystem; echo; echo -e \"\\e[1m TIME:\\e[0m $(date '+%H:%M:%S')\"; sleep 3; done" Enter
+      
+      # Status display with improved formatting
+      tmux select-pane -t podman_monitor:0.0
+      tmux send-keys -t podman_monitor:0.0 "while true; do clear; echo -e \"\\e[1;32m🔍 BUILD STATUS\\e[0m\"; echo; if [ -f /tmp/ee-containers/build_status.txt ]; then cat /tmp/ee-containers/build_status.txt | grep -E --color=always 'SUCCESS|FAILED|$'; else echo -e \"\\e[1;33mWaiting for build to start...\\e[0m\"; fi; echo; echo -e \"\\e[90mRefreshing every 2 seconds. Press Ctrl+C to exit.\\e[0m\"; sleep 2; done" Enter
+      
+      # Return to first pane
+      tmux select-pane -t podman_monitor:0.0
+      
+      # Check attach parameter
+      if [ "$1" == "attach" ]; then
+        exec tmux attach-session -t podman_monitor
+      else
+        log_msg "Monitor started in detached mode (connect with 'tmux attach -t podman_monitor')"
+      fi
+  when: var_check is succeeded
+
+# Create platform-specific launcher script
+- name: Create platform-specific launcher script
+  ansible.builtin.template:
+    src: tmux_launcher.sh.j2
+    dest: "/tmp/ee-containers/tmux_launcher.sh"
+    mode: 0755
+  vars:
+    os_type: "{{ os_type | default('linux') }}"
+    is_wsl: "{{ is_wsl | default(false) }}"
+  when: var_check is succeeded
+
+# Create the template for the launcher script
+- name: Create launcher script template
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/roles/ee-builder/templates/tmux_launcher.sh.j2"
+    mode: 0755
+    content: |
+      #!/bin/bash
+      
+      # Cross-platform terminal launcher for tmux
+      # Supports Linux, macOS, Windows WSL, and various terminal types
+      
+      # Helper function to log messages
+      log_msg() {
+        echo "[$(date '+%H:%M:%S')] $1"
+      }
+      
+      # Set monitor script path
+      MONITOR_SCRIPT="/tmp/ee-containers/build_monitor.sh"
+      
+      # Make sure the script exists
+      if [ ! -f "$MONITOR_SCRIPT" ]; then
+        log_msg "❌ Monitor script not found at $MONITOR_SCRIPT"
+        exit 1
+      fi
+      
+      # Function to try various Linux terminals
+      try_linux_terminals() {
+        # Check common terminal emulators in order of preference
+        for cmd in gnome-terminal konsole xfce4-terminal mate-terminal terminator kitty alacritty xterm; do
+          if command -v $cmd >/dev/null 2>&1; then
+            case $cmd in
+              gnome-terminal)
+                gnome-terminal -- bash "$MONITOR_SCRIPT" attach &
+                return 0
+                ;;
+              konsole)
+                konsole -e bash "$MONITOR_SCRIPT" attach &
+                return 0
+                ;;
+              xfce4-terminal)
+                xfce4-terminal -e "bash '$MONITOR_SCRIPT' attach" &
+                return 0
+                ;;
+              mate-terminal)
+                mate-terminal -e "bash '$MONITOR_SCRIPT' attach" &
+                return 0
+                ;;
+              terminator)
+                terminator -e "bash '$MONITOR_SCRIPT' attach" &
+                return 0
+                ;;
+              kitty)
+                kitty bash "$MONITOR_SCRIPT" attach &
+                return 0
+                ;;
+              alacritty)
+                alacritty -e bash "$MONITOR_SCRIPT" attach &
+                return 0
+                ;;
+              xterm)
+                xterm -title "EE Builder Monitor" -geometry 120x40 -e bash "$MONITOR_SCRIPT" attach &
+                return 0
+                ;;
+            esac
+          fi
+        done
+        return 1
+      }
+      
+      # Function to handle WSL-specific launch
+      launch_in_wsl() {
+        # Try to use Windows Terminal if available (PowerShell command through WSL)
+        if command -v powershell.exe >/dev/null 2>&1; then
+          log_msg "Trying to launch through Windows Terminal..."
+          powershell.exe -Command "Start-Process wt -ArgumentList 'wsl.exe -d {{ ansible_distribution | lower }} bash $MONITOR_SCRIPT attach'" &>/dev/null
+          if [ $? -eq 0 ]; then
+            log_msg "✅ Launched in Windows Terminal"
+            return 0
+          fi
+        fi
+        
+        # Fallback to cmd.exe
+        if command -v cmd.exe >/dev/null 2>&1; then
+          log_msg "Trying to launch through cmd.exe..."
+          cmd.exe /c start wsl.exe -d {{ ansible_distribution | lower }} bash "$MONITOR_SCRIPT" attach &>/dev/null
+          if [ $? -eq 0 ]; then
+            log_msg "✅ Launched in WSL through cmd.exe"
+            return 0
+          fi
+        fi
+        
+        # If Windows methods fail, try X11 terminals
+        if [ -n "$DISPLAY" ]; then
+          try_linux_terminals
+          if [ $? -eq 0 ]; then
+            return 0
+          fi
+        fi
+        
+        return 1
+      }
+      
+      # Function to handle macOS terminal launch
+      launch_in_macos() {
+        # Try using open command with Terminal.app
+        if command -v open >/dev/null 2>&1; then
+          log_msg "Launching in macOS Terminal..."
+          # Create a temporary AppleScript file
+          cat > /tmp/ee-containers/launch_terminal.scpt << EOF
+      tell application "Terminal"
+          do script "bash $MONITOR_SCRIPT attach"
+          activate
+      end tell
+      EOF
+          # Run the AppleScript
+          osascript /tmp/ee-containers/launch_terminal.scpt &>/dev/null
+          if [ $? -eq 0 ]; then
+            log_msg "✅ Launched in macOS Terminal"
+            return 0
+          fi
+          
+          # Try iTerm if Terminal.app fails
+          cat > /tmp/ee-containers/launch_iterm.scpt << EOF
+      tell application "iTerm"
+          create window with default profile
+          tell current session of current window
+              write text "bash $MONITOR_SCRIPT attach"
+          end tell
+      end tell
+      EOF
+          # Run the AppleScript for iTerm
+          osascript /tmp/ee-containers/launch_iterm.scpt &>/dev/null
+          if [ $? -eq 0 ]; then
+            log_msg "✅ Launched in iTerm"
+            return 0
+          fi
+        fi
+        
+        # Try X11 terminals as fallback
+        if [ -n "$DISPLAY" ]; then
+          try_linux_terminals
+          if [ $? -eq 0 ]; then
+            return 0
+          fi
+        fi
+        
+        return 1
+      }
+      
+      # Main logic based on detected OS
+      log_msg "Detected OS: {{ os_type }}{{ ' (WSL)' if is_wsl else '' }}"
+      
+      # Try to launch based on OS type
+      success=1
+      
+      if {{ 'true' if is_wsl else 'false' }}; then
+        # WSL-specific handling
+        launch_in_wsl
+        success=$?
+      elif [ "{{ os_type }}" == "darwin" ]; then
+        # macOS-specific handling
+        launch_in_macos
+        success=$?
+      elif [ -n "$DISPLAY" ]; then
+        # Linux with X11
+        try_linux_terminals
+        success=$?
+      fi
+      
+      # Fallback to detached mode if all else fails
+      if [ $success -ne 0 ]; then
+        log_msg "⚠️ No suitable terminal found. Starting in detached mode."
+        bash "$MONITOR_SCRIPT" &
+        log_msg "✅ Monitor started in detached mode. To attach:"
+        log_msg "   $ tmux attach -t podman_monitor"
+      fi
+      
+      exit 0
+  when: var_check is succeeded
+
+# Launch the appropriate terminal based on platform
+- name: Launch tmux in platform-appropriate terminal
+  ansible.builtin.command:
+    cmd: "bash /tmp/ee-containers/tmux_launcher.sh"
+  async: 0
+  poll: 0
+  changed_when: false
+  when: var_check is succeeded
+
+# Create build status with attractive formatting and better error handling
+- name: Create build status file for monitor
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/build_status.txt"
+    content: |
+      ╔═══════════════════════════════════════════════════════╗
+      ║           ANSIBLE EXECUTION ENVIRONMENT               ║
+      ║                    BUILD STATUS                       ║
+      ╚═══════════════════════════════════════════════════════╝
+      
+      🕒 Started at: {{ ansible_date_time.iso8601 }}
+      
+      📋 Selected environments ({{ environments_to_build | default([]) | length }}):
+      {% if environments_to_build is defined and environments_to_build %}
+      {% for env in environments_to_build %}
+      ▶️ {{ env }}
+      {% endfor %}
+      {% else %}
+      ⚠️ No environments selected
+      {% endif %}
+      
+      📬 Status: Build will start momentarily...
+    mode: 0644
+  register: status_file
+  when: var_check is succeeded
+  failed_when: false
+
+# Register a handler to clean up tmux session after playbook finishes
+- name: Register tmux cleanup handler
+  ansible.builtin.command:
+    cmd: "echo 'Creating tmux cleanup script'"
+  changed_when: false
+  notify: cleanup_tmux_session
