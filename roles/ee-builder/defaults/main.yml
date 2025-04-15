@@ -3,7 +3,7 @@
 # System packages to install via package manager
 required_system_packages:
   - python3-pip
-  - ansible-builder
+  # - ansible-builder
   - ansible-core
   - git
   - podman
