@@ -101,6 +101,14 @@
       ansible.builtin.debug:
         msg: "{{ auth_content.stdout }}"
 
+    - name: Verify auth file content
+      ansible.builtin.shell: |
+        cat /etc/containers/auth.json | grep -v password | grep -v auth
+      register: auth_verify
+      no_log: false
+      ignore_errors: true
+      become: true
+
     # Try alternative authentication methods
     - name: Try alternative authentication method if first approach failed
       ansible.builtin.shell: |
@@ -149,7 +157,7 @@
     # Verify auth is working before attempting build
     - name: Test registry authentication
       ansible.builtin.command:
-        cmd: "podman pull registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+        cmd: "podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
       register: auth_test
       changed_when: false
       ignore_errors: true
@@ -423,7 +431,7 @@
             
             # Use default base image if none found
             if [ -z "$base_img" ]; then
-              base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+              base_img="registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
             fi
             
             # Create a new file with proper structure using printf instead of heredoc
@@ -494,7 +502,6 @@
           echo "Build completed successfully"
           exit 0
 
-    # Fix execution-environment.yml files
     - name: Create comprehensive fix script for execution-environment.yml files
       ansible.builtin.copy:
         dest: "/tmp/ee-containers/fix_execution_environment.sh"
@@ -552,7 +559,6 @@
             fi
           done
 
-    # Create a fixes script that follows ansible-builder's actual schema requirements
     - name: Create schema-compliant fix script for execution-environment.yml files
       ansible.builtin.copy:
         dest: "/tmp/ee-containers/fix_ee_schema.sh"
@@ -575,7 +581,7 @@
             
             # Use default base image if none found
             if [ -z "$base_img" ]; then
-              base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+              base_img="registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
             fi
             
             # Create a new file with proper structure using printf instead of heredoc
@@ -590,7 +596,6 @@
             
             # Replace original with fixed version
             mv ${file}.new $file
-    # Fix the ansible_config property in execution-environment.yml files
     - name: Fix all double slashes and version issues in execution-environment.yml files
       ansible.builtin.shell: |
         for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
@@ -605,7 +610,7 @@
           
           # Fix quotes in image names
           sed -i 's|name: "\(.*\)"|name: \1|g' "$file"
-          sed -i "s|name: '\(.*\)'|name: \1|g" "$file"
+          sed -i "s|name: '\(.*\)'|name: \1|g' "$file"
           
           echo "Fixed image references in $file"
         done
@@ -845,58 +850,41 @@
           exit 0
       ignore_errors: true
 
-    # Replace the failing registry authentication task with this robust approach
-    - name: Create registry authentication configuration
-      ansible.builtin.copy:
-        dest: /etc/containers/auth.json
-        content: |
-          {
-            "auths": {
-              "registry.redhat.io": {
-                "auth": "{{ (rh_username ~ ':' ~ rh_password) | b64encode }}"
-              }
-            }
-          }
-        mode: "0600"
-      become: true
-      no_log: true
-
-    - name: Ensure correct ownership of auth file
-      ansible.builtin.file:
-        path: "/etc/containers/auth.json"
-        owner: root
-        group: root
-        mode: "0600"
-      become: true
-
-    - name: Test registry authentication with verbose error handling
+    - name: Check and fix missing base_image name in execution-environment.yml files
       ansible.builtin.shell: |
-        # First try with system auth
-        echo "Trying system-level authentication..."
-        podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest && exit 0
-
-        # If that fails, try explicit login
-        echo "Trying explicit login..."
-        podman logout registry.redhat.io || true
-        podman login registry.redhat.io --username {{ rh_username }} --password {{ rh_password }} || {
-          echo "Login failed. Check your Red Hat credentials."
-          exit 1
-        }
-
-        # Try pulling again after login
-        echo "Trying pull after login..."
-        podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest || {
-          echo "Pull failed after successful login. This may be a network or image path issue."
-          exit 1
-        }
-        
-        echo "Authentication successful!"
-        exit 0
-      register: registry_test
-      changed_when: false
-      ignore_errors: true
-      no_log: true
-
-    - name: Display registry authentication status
-      ansible.builtin.debug:
-        msg: "{{ 'Registry authentication successful!' if registry_test.rc == 0 else 'Registry authentication failed. Builds may not succeed.' }}"
+        for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+          # Check if base_image name is null or missing
+          if ! grep -q "name: [^[:space:]]\+" "$file" || grep -q "name:[[:space:]]*$" "$file"; then
+            echo "Fixing missing base image in $file"
+            
+            # Make a backup
+            cp "$file" "${file}.bak"
+            
+            # Set a default base image if missing
+            if grep -q "^images:" "$file"; then
+              # File has images section but no base_image name, fix it
+              awk '
+              /^images:/ { 
+                print; 
+                print "  base_image:"; 
+                print "    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"; 
+                next; 
+              }
+              { print }' "${file}.bak" > "$file"
+            else
+                # File is missing the images section entirely, add it
+                  cat > "$file" << 'EOFMARKER'
+                  version: 1
+                  
+                  images:
+                    base_image:
+                      name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+                  
+                  $(grep -v "^version:" "${file}.bak")
+                  EOFMARKER
+                          fi
+                        fi
+                      done
+                    register: base_image_fix
+                    changed_when: base_image_fix.rc == 0
+                    ignore_errors: true

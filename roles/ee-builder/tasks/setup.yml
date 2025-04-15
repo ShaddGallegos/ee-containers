@@ -19,6 +19,7 @@
     recurse: "{{ item.recurse | default(false) }}"
   loop:
     - { path: "{{ work_dir }}/_build/configs" }
+    - { path: "{{ playbook_dir }}/scripts" }
     - { path: "/tmp/ansible_safe" }
     - { path: "/tmp/ee-containers" }
     - { path: "/tmp/ee-containers/_build" }
@@ -26,6 +27,7 @@
     - { path: "/tmp/ee-containers/environments" }
     - { path: "/tmp/ee-containers/collections/ansible_collections", recurse: true }
     - { path: "~/.docker", mode: "0700" }
+    - { path: "~/.ansible/vars", mode: "0755" }
     - { path: "~/.config/containers", mode: "0700" }
     - { path: "/etc/containers", become: true }
   become: "{{ item.become | default(false) }}"
