@@ -11,6 +11,16 @@
   ansible.builtin.import_tasks: setup.yml
   tags: ['init', 'setup']
 
+# Fix Red Hat registry authentication
+- name: Fix Red Hat registry authentication
+  ansible.builtin.import_tasks: registry_auth.yml
+  tags: ['init', 'auth']
+
+# Fix execution environment files
+- name: Fix execution environment files
+  ansible.builtin.import_tasks: fix_ee_files.yml
+  tags: ['init', 'fix']
+
 # Display environment menu and get selection
 - name: Get environment selection from user
   ansible.builtin.include_tasks: environment_menu.yml

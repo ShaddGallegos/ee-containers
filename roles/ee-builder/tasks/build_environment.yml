@@ -1,829 +1,902 @@
 ---
-# Tasks for building execution environments
+    - name: Create safe directory for Ansible configuration
+      ansible.builtin.file:
+        path: "/tmp/ansible_safe"
+        state: directory
+        mode: "0755"
+      become: true
+      
+    - name: Create custom Ansible configuration
+      ansible.builtin.copy:
+        dest: "/tmp/ansible_safe/ansible.cfg"
+        content: |
+          [defaults]
+          inventory = /tmp/ansible_safe/inventory
+          nocows = True
+          deprecation_warnings = False
+          command_warnings = False
+          system_warnings = False
+          localhost_warning = False
+          interpreter_python = auto_silent
+          
+          [inventory]
+          enable_plugins = host_list, script, auto, yaml, ini
+        mode: "0644"
+      become: true
+      
+    - name: Create explicit inventory file
+      ansible.builtin.copy:
+        dest: "/tmp/ansible_safe/inventory"
+        content: |
+          [local]
+          localhost ansible_connection=local
+        mode: "0644"
+      become: true
 
-# Debug to show working directory and verify paths
-- name: Debug playbook directory
-  ansible.builtin.debug:
-    msg: "Playbook directory: {{ playbook_dir }}"
+    - name: Set Ansible environment variables
+      ansible.builtin.shell: |
+        export ANSIBLE_CONFIG=/tmp/ansible_safe/ansible.cfg
+        export ANSIBLE_INVENTORY=/tmp/ansible_safe/inventory
+        export ANSIBLE_HOST_KEY_CHECKING=False
+        export ANSIBLE_DEPRECATION_WARNINGS=False
+        export ANSIBLE_COMMAND_WARNINGS=False
+        export ANSIBLE_SYSTEM_WARNINGS=False
+      changed_when: false
 
-# First, verify the environments directory exists
-- name: Check if environments directory exists
-  ansible.builtin.stat:
-    path: "{{ playbook_dir }}/environments"
-  register: env_dir_exists
+    - name: Debug playbook directory
+      ansible.builtin.debug:
+        msg: "Playbook directory: {{ playbook_dir }}"
 
-- name: Fail if environments directory doesn't exist
-  ansible.builtin.fail:
-    msg: "Environments directory not found at {{ playbook_dir }}/environments"
-  when: not env_dir_exists.stat.exists
+    - name: Check if environments directory exists
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/environments"
+      register: env_dir_exists
 
-- name: Login to container registry
-  ansible.builtin.command:
-    cmd: >
-      podman login {{ item }} 
-      -u {{ rh_username }}
-      -p {{ rh_password }}
-      --authfile {{ user_home }}/.docker/config.json
-  loop: "{{ container_registries }}"
-  register: registry_login
-  when: 
-    - rh_username is defined and rh_username != ""
-    - rh_password is defined and rh_password != ""
-  no_log: true
-  failed_when: false
+    - name: Fail if environments directory doesn't exist
+      ansible.builtin.fail:
+        msg: "Environments directory not found at {{ playbook_dir }}/environments"
+      when: not env_dir_exists.stat.exists
 
-# Fix registry authentication for build process - CORRECTED SYNTAX
-- name: Re-authenticate to registry with system-wide credentials
-  ansible.builtin.shell: "podman logout registry.redhat.io || true && podman login registry.redhat.io -u {{ rh_username }} -p {{ rh_password }} --authfile /etc/containers/auth.json && chmod 644 /etc/containers/auth.json"
-  become: true
-  no_log: true
-  register: auth_fix
-  when: 
-    - rh_username is defined and rh_username != ""
-    - rh_password is defined and rh_password != ""
+    - name: Login to container registry
+      ansible.builtin.command:
+        cmd: >
+          podman login {{ item }} 
+          -u {{ rh_username }}
+          -p {{ rh_password }}
+          --authfile {{ user_home }}/.docker/config.json
+      loop: "{{ container_registries }}"
+      register: registry_login
+      when: 
+        - rh_username is defined and rh_username != ""
+        - rh_password is defined and rh_password != ""
+      no_log: true
+      failed_when: false
 
-# Fix registry authentication for ansible-builder
-- name: Create system-wide auth file for podman
-  ansible.builtin.copy:
-    dest: "/etc/containers/auth.json"
-    mode: "0644"
-    content: |
-      {
-        "auths": {
-          "registry.redhat.io": {
-            "auth": "{{ (rh_username + ':' + rh_password) | b64encode }}",
-            "username": "{{ rh_username }}",
-            "password": "{{ rh_password }}"
+    # Replace these registry authentication tasks with this more robust solution
+    - name: Check if auth file exists
+      ansible.builtin.stat:
+        path: "/etc/containers/auth.json"
+      register: auth_file
+      become: true
+
+    - name: Display auth file information
+      ansible.builtin.debug:
+        msg: "Auth file exists: {{ auth_file.stat.exists }}. Size: {{ auth_file.stat.size|default('0') }} bytes. Readable: {{ auth_file.stat.readable|default(false) }}"
+
+    # Add debug task to inspect auth file content (redacted for passwords)
+    - name: Check auth file content
+      ansible.builtin.shell: |
+        if [ -f /etc/containers/auth.json ]; then
+          # Show structure without revealing passwords
+          jq 'if .auths then .auths | keys else "No auths section" end' /etc/containers/auth.json || echo "File exists but not valid JSON"
+        else
+          echo "Auth file does not exist"
+        fi
+      register: auth_content
+      changed_when: false
+      ignore_errors: true
+      become: true
+
+    - name: Display auth file content
+      ansible.builtin.debug:
+        msg: "{{ auth_content.stdout }}"
+
+    # Try alternative authentication methods
+    - name: Try alternative authentication method if first approach failed
+      ansible.builtin.shell: |
+        # Log out first to clear any cached credentials
+        podman logout registry.redhat.io || true
+        
+        # Try login with explicit credential storage
+        podman login registry.redhat.io \
+          --username {{ rh_username }} \
+          --password {{ rh_password }} \
+          --authfile ~/.config/containers/auth.json
+        
+        # Test pull with explicit auth file
+        podman pull --authfile ~/.config/containers/auth.json registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+        
+        # Print result
+        echo "Authentication and pull successful"
+      register: alt_auth
+      no_log: true  # Keep credentials hidden from logs
+      changed_when: alt_auth.rc == 0
+      failed_when: false
+      # Remove reference to undefined variable at this point
+
+    # Fix registry authentication for ansible-builder
+    - name: Create system-wide auth file for podman
+      ansible.builtin.copy:
+        dest: "/etc/containers/auth.json"
+        mode: "0644"
+        content: |
+          {
+            "auths": {
+              "registry.redhat.io": {
+                "auth": "{{ (rh_username + ':' + rh_password) | b64encode }}",
+                "username": "{{ rh_username }}",
+                "password": "{{ rh_password }}"
+              }
+            }
           }
+      become: true
+      no_log: true
+      register: auth_create
+      when: 
+        - rh_username is defined and rh_username != ""
+        - rh_password is defined and rh_password != ""
+
+    # Verify auth is working before attempting build
+    - name: Test registry authentication
+      ansible.builtin.command:
+        cmd: "podman pull registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+      register: auth_test
+      changed_when: false
+      ignore_errors: true
+
+    # Show auth test results
+    - name: Display auth test results
+      ansible.builtin.debug:
+        msg: "Authentication test result: {{ 'SUCCESS' if auth_test.rc == 0 else 'FAILED - ' + auth_test.stderr }}"
+
+    # Create simplified registries.conf
+    - name: Create simplified registries.conf
+      ansible.builtin.copy:
+        dest: "/etc/containers/registries.conf"
+        content: |
+          [registries.search]
+          registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
+          
+          [registries.insecure]
+          registries = []
+          
+          [registries.block]
+          registries = []
+        mode: '0644'
+      become: true
+
+    # Create ansible.cfg file from template with variables from config file
+    - name: Load variables from config file
+      ansible.builtin.include_vars:
+        file: "~/.ansible/vars/config"
+        name: config_vars
+      ignore_errors: true  # Continue if file doesn't exist
+
+    # Create ansible.cfg from template with loaded variables
+    - name: Create ansible.cfg file from template
+      ansible.builtin.template:
+        src: "{{ role_path }}/templates/ansible.cfg.j2"
+        dest: "/tmp/ee-containers/ansible.cfg"
+        mode: '0644'
+      vars:
+        ansible_vars: "{{ config_vars | default({}) }}"
+
+    # Copy the ansible.cfg to each environment directory
+    - name: Copy ansible.cfg to each environment
+      ansible.builtin.copy:
+        src: "/tmp/ee-containers/ansible.cfg"
+        dest: "/tmp/ee-containers/environments/{{ item }}/ansible.cfg"
+        mode: '0644'
+      loop: "{{ environments_to_build }}"
+
+    # Create empty requirements.yml for environments that need it
+    - name: Create requirements.yml for environments that expect it
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/environments/{{ item }}/requirements.yml"
+        content: |
+          ---
+          collections: []
+        mode: '0644'
+      loop: "{{ environments_to_build }}"
+      failed_when: false
+
+    # Build the selected environments
+    - name: Check if environments exist before building
+      ansible.builtin.stat:
+        path: "/tmp/ee-containers/environments/{{ item }}"
+      loop: "{{ environments_to_build }}"
+      register: env_exists
+
+    # Check for required files before building
+    - name: Check if execution-environment.yml exists for each environment
+      ansible.builtin.stat:
+        path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
+      loop: "{{ env_exists.results }}"
+      when: item.stat.exists and item.stat.isdir
+      register: ee_file_exists
+
+    # Show warning for missing files
+    - name: Warn about missing execution-environment.yml files
+      ansible.builtin.debug:
+        msg: "WARNING: No execution-environment.yml found for {{ item.item.item }}. This environment will be skipped."
+      loop: "{{ ee_file_exists.results }}"
+      when: item is defined and not item.stat.exists
+      loop_control:
+        label: "{{ item.item.item }}"
+
+    # Initialize base_images as an empty list before we try to append to it
+    - name: Initialize base_images variable
+      ansible.builtin.set_fact:
+        base_images: []
+
+    # Extract base images from execution-environment.yml files
+    - name: Read base images from execution-environment.yml
+      ansible.builtin.slurp:
+        src: "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml"
+      loop: "{{ ee_file_exists.results }}"
+      when: item.stat.exists
+      register: ee_file_contents
+      ignore_errors: true
+
+    # Fix for extracting base images from YAML files
+    - name: Read base images from execution-environment.yml
+      ansible.builtin.shell: |
+        grep -e "^\s*name:" "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml" | awk -F"'" '{print $2}' | grep -v "^$" || 
+        grep -e "^\s*name:" "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml" | awk '{print $2}'
+      register: base_image_grep
+      loop: "{{ ee_file_exists.results }}"
+      when: item.stat.exists
+      ignore_errors: true
+      changed_when: false
+
+    # Collect clean base images
+    - name: Initialize base_images variable
+      ansible.builtin.set_fact:
+        base_images: []
+
+    - name: Collect base images
+      ansible.builtin.set_fact:
+        base_images: "{{ base_images + [item.stdout] }}"
+      loop: "{{ base_image_grep.results | default([]) }}"
+      when: item.stdout is defined and item.stdout != ''
+      ignore_errors: true
+
+    # Debug found base images
+    - name: Display found base images
+      ansible.builtin.debug:
+        msg: "Found base images: {{ base_images | unique }}"
+
+    # Pull base images - now with proper image names
+    - name: Pull required base images
+      ansible.builtin.command:
+        cmd: "podman pull {{ item }}"
+      loop: "{{ base_images | unique }}"
+      register: image_pull_results
+      ignore_errors: true
+
+    # Verify images exist in podman
+    - name: Check if images exist in podman
+      ansible.builtin.command:
+        cmd: "podman images --format '{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}'"
+      register: available_images
+      changed_when: false
+
+    # Debug available images
+    - name: Show available images
+      ansible.builtin.debug:
+        msg: "Available images: {{ available_images.stdout_lines }}"
+
+    # Generate a timestamp for the image tag (format: YYYYMMDDHHmmss)
+    - name: Generate timestamp for image tag
+      ansible.builtin.set_fact:
+        timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+    - name: Debug environment state before building
+      ansible.builtin.shell: |
+        echo "Environment: {{ item.item }}"
+        echo "Directory exists: {{ item.stat.exists }}"
+        echo "Is directory: {{ item.stat.isdir }}"
+        echo "Contents:"
+        ls -la /tmp/ee-containers/environments/{{ item.item }}
+      loop: "{{ env_exists.results }}"
+      register: env_debug
+      ignore_errors: true
+      changed_when: false
+
+    # Create required files and directories before script execution:
+    - name: Create fix-packaging.sh file
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix-packaging.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # This script fixes packaging issues
+          echo "Running packaging fixes"
+          exit 0
+
+    - name: Create build hook directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "/tmp/ee-containers/hooks"
+        - "/tmp/ee-containers/context"
+        - "/tmp/ee-containers/context/hooks"
+
+    - name: Create pre-build hook script to fix container environment
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/hooks/pre-build"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          echo "Running pre-build hook"
+          cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
+          exit 0
+
+    - name: Create comprehensive fix script for execution-environment.yml files
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix_execution_environment.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          
+          # Process all execution-environment.yml files
+          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+            echo "Fixing $file"
+            
+            # Make a backup
+            cp $file ${file}.bak
+            
+            # Remove problematic properties
+            sed -i '/ansible_config:/d' $file
+            
+            # Fix the images section properly
+            if grep -q "images:" $file; then
+              # Extract base image if possible
+              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
+              
+              # Remove the images section completely
+              sed -i '/^images:/,/^[a-z]/{/^[a-z]/!d;}' $file
+              
+              # Add proper build_arg_defaults with base image
+              if [ ! -z "$base_img" ]; then
+                echo "Using base image: $base_img"
+                if ! grep -q "build_arg_defaults:" $file; then
+                  # Add build_arg_defaults as a proper object
+                  sed -i "/^version:/a build_arg_defaults:\\n  EE_BASE_IMAGE: $base_img\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+                fi
+              else
+                # Add minimal build_arg_defaults
+                if ! grep -q "build_arg_defaults:" $file; then
+                  # Add build_arg_defaults as a proper object
+                  sed -i "/^version:/a build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+                fi
+              fi
+            fi
+            
+            # Fix YAML syntax errors - make sure it's valid YAML
+            if ! grep -q "^version:" $file; then
+              echo "version: 1" > ${file}.new
+              cat $file >> ${file}.new
+              mv ${file}.new $file
+            fi
+            
+            # Validate YAML format
+            if command -v python3 &>/dev/null; then
+              if ! python3 -c "import yaml; yaml.safe_load(open('$file')); print('YAML is valid')" 2>/dev/null; then
+                echo "YAML validation failed for $file, restoring backup"
+                cp ${file}.bak $file
+              fi
+            fi
+          done
+
+    - name: Create schema-compliant fix script for execution-environment.yml files
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix_ee_schema.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          
+          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+            echo "Fixing schema for $file"
+            cp $file ${file}.bak
+            
+            # Extract version if it exists
+            version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
+            
+            # Extract base image if available
+            base_img=""
+            if grep -q "images:" $file; then
+              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
+            fi
+            
+            # Use default base image if none found
+            if [ -z "$base_img" ]; then
+              base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+            fi
+            
+            # Create a new file with proper structure using printf instead of heredoc
+            printf "version: %s\n\n" "${version}" > ${file}.new
+            printf "images:\n  base_image:\n    name: %s\n\n" "${base_img}" >> ${file}.new
+            printf "build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}.new
+            
+            # Copy any custom dependencies sections from original file
+            if grep -q "^dependencies:" $file; then
+              grep -A 100 "^dependencies:" $file >> ${file}.new
+            fi
+            
+            # Replace original with fixed version
+            mv ${file}.new $file
+            
+            echo "Fixed schema format for $file"
+          done
+
+    - name: Create custom assemble script to replace ansible-builder's default
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/custom-assemble.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -e
+          
+          source /etc/os-release
+          RELEASE=$(echo $ID)
+          
+          # Detect available package manager
+          if [ -x /usr/bin/dnf ]; then
+            PKGMGR=/usr/bin/dnf
+          elif [ -x /usr/bin/microdnf ]; then
+            PKGMGR=/usr/bin/microdnf
+          elif [ -x /usr/bin/yum ]; then
+            PKGMGR=/usr/bin/yum
+          else
+            echo "No supported package manager found"
+            # Continue without package manager
+            PKGMGR=""
+          fi
+          
+          PKGMGR_OPTS=""
+          PKGMGR_PRESERVE_CACHE=""
+          PYCMD="/usr/bin/python3"
+          PIPCMD="${PYCMD} -m pip"
+          
+          # Create output directories
+          mkdir -p /output/bindep
+          mkdir -p /output/wheels
+          mkdir -p /tmp/src
+          cd /tmp/src
+          
+          # Process Python requirements directly with pip
+          if [ -f /tmp/src/requirements.txt ]; then
+            echo "Installing Python requirements from requirements.txt"
+            ${PIPCMD} install --cache-dir=/output/wheels -r /tmp/src/requirements.txt
+            # Copy requirements to output
+            cp /tmp/src/requirements.txt /output/requirements.txt
+          fi
+          
+          # Skip package manager operations if no package manager available
+          if [ -n "$PKGMGR" ] && [ -f /tmp/src/bindep.txt ]; then
+            echo "Installing system packages with $PKGMGR"
+            $PKGMGR install -y $(cat /tmp/src/bindep.txt) || echo "Some packages may not be available, continuing"
+          fi
+          
+          echo "Build completed successfully"
+          exit 0
+
+    # Fix execution-environment.yml files
+    - name: Create comprehensive fix script for execution-environment.yml files
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix_execution_environment.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          
+          # Process all execution-environment.yml files
+          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+            echo "Fixing $file"
+            
+            # Make a backup
+            cp $file ${file}.bak
+            
+            # Remove problematic properties
+            sed -i '/ansible_config:/d' $file
+            
+            # Fix the images section properly
+            if grep -q "images:" $file; then
+              # Extract base image if possible
+              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
+              
+              # Remove the images section completely
+              sed -i '/^images:/,/^[a-z]/{/^[a-z]/!d;}' $file
+              
+              # Add proper build_arg_defaults with base image
+              if [ ! -z "$base_img" ]; then
+                echo "Using base image: $base_img"
+                if ! grep -q "build_arg_defaults:" $file; then
+                  # Add build_arg_defaults as a proper object
+                  sed -i "/^version:/a build_arg_defaults:\\n  EE_BASE_IMAGE: $base_img\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+                fi
+              else
+                # Add minimal build_arg_defaults
+                if ! grep -q "build_arg_defaults:" $file; then
+                  # Add build_arg_defaults as a proper object
+                  sed -i "/^version:/a build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
+                fi
+              fi
+            fi
+            
+            # Fix YAML syntax errors - make sure it's valid YAML
+            if ! grep -q "^version:" $file; then
+              echo "version: 1" > ${file}.new
+              cat $file >> ${file}.new
+              mv ${file}.new $file
+            fi
+            
+            # Validate YAML format
+            if command -v python3 &>/dev/null; then
+              if ! python3 -c "import yaml; yaml.safe_load(open('$file')); print('YAML is valid')" 2>/dev/null; then
+                echo "YAML validation failed for $file, restoring backup"
+                cp ${file}.bak $file
+              fi
+            fi
+          done
+
+    # Create a fixes script that follows ansible-builder's actual schema requirements
+    - name: Create schema-compliant fix script for execution-environment.yml files
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix_ee_schema.sh"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          
+          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+            echo "Fixing schema for $file"
+            cp $file ${file}.bak
+            
+            # Extract version if it exists
+            version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
+            
+            # Extract base image if available
+            base_img=""
+            if grep -q "images:" $file; then
+              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
+            fi
+            
+            # Use default base image if none found
+            if [ -z "$base_img" ]; then
+              base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
+            fi
+            
+            # Create a new file with proper structure using printf instead of heredoc
+            printf "version: %s\n\n" "${version}" > ${file}.new
+            printf "images:\n  base_image:\n    name: %s\n\n" "${base_img}" >> ${file}.new
+            printf "build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}.new
+            
+            # Copy any custom dependencies sections from original file
+            if grep -q "^dependencies:" $file; then
+              grep -A 100 "^dependencies:" $file >> ${file}.new
+            fi
+            
+            # Replace original with fixed version
+            mv ${file}.new $file
+    # Fix the ansible_config property in execution-environment.yml files
+    - name: Fix all double slashes and version issues in execution-environment.yml files
+      ansible.builtin.shell: |
+        for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
+          # Back up the file
+          cp "$file" "${file}.bak"
+          
+          # Fix double slashes everywhere
+          sed -i 's|//|/|g' "$file"
+          
+          # Fix version mismatches
+          sed -i 's|ansible-automation-platform-23/|ansible-automation-platform-25/|g' "$file"
+          
+          # Fix quotes in image names
+          sed -i 's|name: "\(.*\)"|name: \1|g' "$file"
+          sed -i "s|name: '\(.*\)'|name: \1|g" "$file"
+          
+          echo "Fixed image references in $file"
+        done
+      register: slash_fix
+      changed_when: slash_fix.rc == 0
+      ignore_errors: true
+
+    # Fix additional_build_steps schema issue
+    - name: Fix additional_build_steps section in execution-environment.yml files
+      ansible.builtin.shell: |
+        for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
+          echo "Checking additional_build_steps in $file"
+          
+          # Fix the prepend property if it exists
+          if grep -q "additional_build_steps:" $file && grep -q "prepend:" $file; then
+            echo "Fixing additional_build_steps format in $file"
+            
+            # Get the content of the prepend block
+            prepend_content=$(grep -A5 "prepend:" $file | grep -v "prepend:" | grep -v "^additional_build_steps:" | sed '/^[a-z]/,$d' | sed 's/^  //')
+            
+            # Remove the entire additional_build_steps section
+            sed -i '/^additional_build_steps:/,/^[a-z]/{/^[a-z]/!d;}' $file
+            
+            # Add it back with correct format
+            if [ -n "$prepend_content" ]; then
+              echo "" >> $file
+              echo "additional_build_steps:" >> $file
+              echo "  prepend_base: |" >> $file
+              echo "$prepend_content" | sed 's/^/    /' >> $file
+            fi
+          fi
+        done
+      register: fix_additional_steps
+      changed_when: fix_additional_steps.rc == 0
+      ignore_errors: true
+
+    # Run the new schema fix script
+    - name: Run schema fix script
+      ansible.builtin.command:
+        cmd: "/tmp/ee-containers/fix_ee_schema.sh"
+      register: schema_fix
+      ignore_errors: true
+
+    # Check if images already exist before building
+    - name: Check for existing images in podman
+      ansible.builtin.command:
+        cmd: "podman images --format '{% raw %}{{.Repository}}{% endraw %}' | grep -w '^{{ item.item }}$'"
+      loop: "{{ env_exists.results }}"
+      register: image_exists_check
+      ignore_errors: true
+      failed_when: false
+      changed_when: false
+      when: item.stat.exists and item.stat.isdir
+
+    # ADD DEBUG TASKS HERE
+    - name: Debug execution-environment.yml paths
+      ansible.builtin.stat:
+        path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+      loop: "{{ environments_to_build }}"
+      register: ee_files_debug
+
+    - name: Show execution-environment.yml debugging
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ 'Found' if item.stat.exists else 'Missing' }} execution-environment.yml"
+      loop: "{{ ee_files_debug.results }}"
+
+    # Filter required images based on OS selection (fixed)
+    - name: Filter required images based on OS selection (fixed)
+      ansible.builtin.set_fact:
+        filtered_required_images: "{{ required_images | default([]) | select('search', 'rhel8') | list if selected_os_type == '1' else 
+                                  required_images | default([]) | select('search', 'rhel9') | list if selected_os_type == '2' else 
+                                  required_images | default([]) }}"
+
+    # Debug the filtered images to verify format
+    - name: Debug filtered_required_images
+      ansible.builtin.debug:
+        var: filtered_required_images
+        verbosity: 0
+
+    # Add validation to catch double slashes in image paths
+    - name: Fix any double slashes in image paths
+      ansible.builtin.set_fact:
+        filtered_required_images: "{{ filtered_required_images | map('regex_replace', '//', '/') | list }}"
+      when: filtered_required_images is defined
+
+    # Do the same for base_images
+    - name: Fix any double slashes in base image paths
+      ansible.builtin.set_fact:
+        base_images: "{{ base_images | map('regex_replace', '//', '/') | list }}"
+      when: base_images is defined
+
+    # Check which required images already exist
+    - name: Check which required images already exist
+      ansible.builtin.shell: |
+        podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}' | grep -q '^{{ item }}$' || echo "NOT_FOUND"
+      loop: "{{ filtered_required_images | default([]) }}"
+      register: image_check_results
+      changed_when: false
+      failed_when: false
+
+    # Only download images that don't already exist
+    - name: Download missing required images
+      ansible.builtin.command:
+        cmd: "podman pull {{ item.item }}"
+      loop: "{{ image_check_results.results | default([]) }}"
+      when: item.rc != 0  # RC of 0 means grep found the image, non-zero means it's missing
+      register: image_pull_results
+      ignore_errors: true
+
+    # Add this before your build tasks to ensure versions match
+    - name: Initialize build_results if no builds ran
+      ansible.builtin.set_fact:
+        build_results: {"results": []}
+      when: build_results is not defined or build_results.results | length == 0
+
+    # Update the count task to handle empty build results
+    - name: Count build successes and failures
+      ansible.builtin.set_fact:
+        successful_builds: "{{ build_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length }}"
+        failed_builds: "{{ build_results.results | default([]) | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length }}"
+        skipped_builds: "{{ build_results.results | default([]) | selectattr('skipped', 'defined') | list | length }}"
+        total_environments: "{{ environments_to_build | length }}"
+
+    # Display build results
+    - name: Show build results
+      ansible.builtin.debug:
+        msg: |
+          Build Results:
+          {% for result in build_results.results %}
+          {% if result.skipped is not defined %}
+          - {{ result.item.item }}: {{ 'SUCCESS' if result.rc == 0 else 'FAILED (see error above)' }}
+          {% endif %}
+          {% endfor %}
+        verbosity: 0
+
+
+    - name: Show prominent build summary
+      ansible.builtin.debug:
+        msg: |
+          
+          ********************************************************************
+          *                                                                  *
+          *                     BUILD SUMMARY REPORT                         *
+          *                                                                  *
+          ********************************************************************
+          
+          Total environments selected: {{ total_environments }}
+          Successfully built: {{ successful_builds }}
+          Failed builds: {{ failed_builds }}
+          Skipped builds: {{ skipped_builds }}
+          
+          DETAILED RESULTS:
+          {% for result in build_results.results %}
+          {% if result.skipped is defined %}
+          - SKIPPED: {{ result.item.item }} - Missing execution-environment.yml
+          {% elif result.rc is defined and result.rc == 0 %}
+          - SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}
+          {% elif result.rc is defined %}
+          - FAILED: {{ result.item.item }} - Error code: {{ result.rc }}
+          {% endif %}
+          {% endfor %}
+          
+          {% if successful_builds != 0 %}
+          Successfully built containers are available with 'podman images'
+          {% endif %}
+          
+          ********************************************************************
+
+
+    - name: Print build summary to terminal
+      ansible.builtin.shell: |
+        echo ""
+        echo "********************************************************************"
+        echo "*                     BUILD SUMMARY REPORT                         *"
+        echo "********************************************************************"
+        echo ""
+        echo "Total environments selected: {{ total_environments }}"
+        echo "Successfully built: {{ successful_builds }}"
+        echo "Failed builds: {{ failed_builds }}"
+        echo "Skipped builds: {{ skipped_builds }}"
+        echo ""
+        {% for result in build_results.results %}
+        {% if result.skipped is not defined %}
+        {% if result.rc == 0 %}
+        echo "✅ SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}"
+        {% else %}
+        echo "❌ FAILED: {{ result.item.item }} - Error code: {{ result.rc }}"
+        {% endif %}
+        {% else %}
+        echo "⚠️ SKIPPED: {{ result.item.item }} - Missing execution-environment.yml"
+        {% endif %}
+        {% endfor %}
+        echo ""
+        {% if successful_builds|int > 0 %}
+        echo "Successfully built containers are available with 'podman images'"
+        {% endif %}
+
+    # Move this task to happen AFTER all fixes and BEFORE the build:
+    - name: Copy custom assemble script to environments before building
+      ansible.builtin.copy:
+        src: "/tmp/ee-containers/custom-assemble.sh"
+        dest: "/tmp/ee-containers/environments/{{ item }}/custom-assemble.sh"
+        mode: "0755"
+      loop: "{{ environments_to_build }}"
+
+    # Then run the build task:
+    - name: Start image build process with custom hooks
+      ansible.builtin.shell: |
+        # Export auth file location for ansible-builder and all subprocesses
+        export REGISTRY_AUTH_FILE=/etc/containers/auth.json
+        
+        # Run the build with correct parameters for this version
+        ansible-builder build --no-cache -v3 \
+          -f /tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml \
+          --context /tmp/ee-containers/context \
+          --tag {{ item.item }}:{{ timestamp }}
+      environment:
+        REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
+      loop: "{{ env_exists.results }}"
+      when: item.stat.exists and item.stat.isdir
+      register: build_results
+      ignore_errors: true
+
+    # Clean up dangling (<none>:<none>) images after build
+    - name: Remove dangling images after build
+      ansible.builtin.shell: |
+        podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
+    # Create pre-build hook script for the context directory
+    - name: Create pre-build hook script for context directory
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/context/hooks/pre-build"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          echo "Running pre-build hook"
+          cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
+          exit 0
+      ignore_errors: true
+
+    # Replace the failing registry authentication task with this robust approach
+    - name: Create registry authentication configuration
+      ansible.builtin.copy:
+        dest: /etc/containers/auth.json
+        content: |
+          {
+            "auths": {
+              "registry.redhat.io": {
+                "auth": "{{ (rh_username ~ ':' ~ rh_password) | b64encode }}"
+              }
+            }
+          }
+        mode: "0600"
+      become: true
+      no_log: true
+
+    - name: Ensure correct ownership of auth file
+      ansible.builtin.file:
+        path: "/etc/containers/auth.json"
+        owner: root
+        group: root
+        mode: "0600"
+      become: true
+
+    - name: Test registry authentication with verbose error handling
+      ansible.builtin.shell: |
+        # First try with system auth
+        echo "Trying system-level authentication..."
+        podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest && exit 0
+
+        # If that fails, try explicit login
+        echo "Trying explicit login..."
+        podman logout registry.redhat.io || true
+        podman login registry.redhat.io --username {{ rh_username }} --password {{ rh_password }} || {
+          echo "Login failed. Check your Red Hat credentials."
+          exit 1
         }
-      }
-  become: true
-  no_log: true
-  register: auth_create
-  when: 
-    - rh_username is defined and rh_username != ""
-    - rh_password is defined and rh_password != ""
 
-# Verify auth is working before attempting build
-- name: Test registry authentication
-  ansible.builtin.command:
-    cmd: "podman pull registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
-  register: auth_test
-  changed_when: false
-  ignore_errors: true
-
-# Show auth test results
-- name: Display auth test results
-  ansible.builtin.debug:
-    msg: "Authentication test result: {{ 'SUCCESS' if auth_test.rc == 0 else 'FAILED - ' + auth_test.stderr }}"
-
-# Create simplified registries.conf
-- name: Create simplified registries.conf
-  ansible.builtin.copy:
-    dest: "/etc/containers/registries.conf"
-    content: |
-      [registries.search]
-      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
-      
-      [registries.insecure]
-      registries = []
-      
-      [registries.block]
-      registries = []
-    mode: '0644'
-  become: true
-
-# Create ansible.cfg file from template with variables from config file
-- name: Load variables from config file
-  ansible.builtin.include_vars:
-    file: "~/.ansible/vars/config"
-    name: config_vars
-  ignore_errors: true  # Continue if file doesn't exist
-
-# Create ansible.cfg from template with loaded variables
-- name: Create ansible.cfg file from template
-  ansible.builtin.template:
-    src: "{{ role_path }}/templates/ansible.cfg.j2"
-    dest: "/tmp/ee-containers/ansible.cfg"
-    mode: '0644'
-  vars:
-    ansible_vars: "{{ config_vars | default({}) }}"
-
-# Copy the ansible.cfg to each environment directory
-- name: Copy ansible.cfg to each environment
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/ansible.cfg"
-    dest: "/tmp/ee-containers/environments/{{ item }}/ansible.cfg"
-    mode: '0644'
-  loop: "{{ environments_to_build }}"
-
-# Create empty requirements.yml for environments that need it
-- name: Create requirements.yml for environments that expect it
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/environments/{{ item }}/requirements.yml"
-    content: |
-      ---
-      collections: []
-    mode: '0644'
-  loop: "{{ environments_to_build }}"
-  failed_when: false
-
-# Build the selected environments
-- name: Check if environments exist before building
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item }}"
-  loop: "{{ environments_to_build }}"
-  register: env_exists
-
-# Check for required files before building
-- name: Check if execution-environment.yml exists for each environment
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir
-  register: ee_file_exists
-
-# Show warning for missing files
-- name: Warn about missing execution-environment.yml files
-  ansible.builtin.debug:
-    msg: "WARNING: No execution-environment.yml found for {{ item.item.item }}. This environment will be skipped."
-  loop: "{{ ee_file_exists.results }}"
-  when: item is defined and not item.stat.exists
-  loop_control:
-    label: "{{ item.item.item }}"
-
-# Initialize base_images as an empty list before we try to append to it
-- name: Initialize base_images variable
-  ansible.builtin.set_fact:
-    base_images: []
-
-# Extract base images from execution-environment.yml files
-- name: Read base images from execution-environment.yml
-  ansible.builtin.slurp:
-    src: "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml"
-  loop: "{{ ee_file_exists.results }}"
-  when: item.stat.exists
-  register: ee_file_contents
-  ignore_errors: true
-
-# Fix for extracting base images from YAML files
-- name: Read base images from execution-environment.yml
-  ansible.builtin.shell: |
-    grep -e "^\s*name:" "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml" | awk -F"'" '{print $2}' | grep -v "^$" || 
-    grep -e "^\s*name:" "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml" | awk '{print $2}'
-  register: base_image_grep
-  loop: "{{ ee_file_exists.results }}"
-  when: item.stat.exists
-  ignore_errors: true
-  changed_when: false
-
-# Collect clean base images
-- name: Initialize base_images variable
-  ansible.builtin.set_fact:
-    base_images: []
-
-- name: Collect base images
-  ansible.builtin.set_fact:
-    base_images: "{{ base_images + [item.stdout] }}"
-  loop: "{{ base_image_grep.results | default([]) }}"
-  when: item.stdout is defined and item.stdout != ''
-  ignore_errors: true
-
-# Debug found base images
-- name: Display found base images
-  ansible.builtin.debug:
-    msg: "Found base images: {{ base_images | unique }}"
-
-# Pull base images - now with proper image names
-- name: Pull required base images
-  ansible.builtin.command:
-    cmd: "podman pull {{ item }}"
-  loop: "{{ base_images | unique }}"
-  register: image_pull_results
-  ignore_errors: true
-
-# Verify images exist in podman
-- name: Check if images exist in podman
-  ansible.builtin.command:
-    cmd: "podman images --format '{{ '{{' }}.Repository{{ '}}' }}:{{ '{{' }}.Tag{{ '}}' }}'"
-  register: available_images
-  changed_when: false
-
-# Debug available images
-- name: Show available images
-  ansible.builtin.debug:
-    msg: "Available images: {{ available_images.stdout_lines }}"
-
-# Generate a timestamp for the image tag (format: YYYYMMDDHHmmss)
-- name: Generate timestamp for image tag
-  ansible.builtin.set_fact:
-    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
-
-- name: Debug environment state before building
-  ansible.builtin.shell: |
-    echo "Environment: {{ item.item }}"
-    echo "Directory exists: {{ item.stat.exists }}"
-    echo "Is directory: {{ item.stat.isdir }}"
-    echo "Contents:"
-    ls -la /tmp/ee-containers/environments/{{ item.item }}
-  loop: "{{ env_exists.results }}"
-  register: env_debug
-  ignore_errors: true
-  changed_when: false
-
-# Move these tasks to be before any script execution:
-- name: Create fix-packaging.sh file
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix-packaging.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      # This script fixes packaging issues
-      echo "Running packaging fixes"
-      exit 0
-
-- name: Create build hook directory and scripts
-  ansible.builtin.file:
-    path: "/tmp/ee-containers/hooks"
-    state: directory
-    mode: "0755"
-
-- name: Create pre-build hook script to fix container environment
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/hooks/pre-build"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      echo "Running pre-build hook"
-      cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
-      exit 0
-
-- name: Create comprehensive fix script for execution-environment.yml files
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix_execution_environment.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      
-      # Process all execution-environment.yml files
-      for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-        echo "Fixing $file"
+        # Try pulling again after login
+        echo "Trying pull after login..."
+        podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest || {
+          echo "Pull failed after successful login. This may be a network or image path issue."
+          exit 1
+        }
         
-        # Make a backup
-        cp $file ${file}.bak
-        
-        # Remove problematic properties
-        sed -i '/ansible_config:/d' $file
-        
-        # Fix the images section properly
-        if grep -q "images:" $file; then
-          # Extract base image if possible
-          base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-          
-          # Remove the images section completely
-          sed -i '/^images:/,/^[a-z]/{/^[a-z]/!d;}' $file
-          
-          # Add proper build_arg_defaults with base image
-          if [ ! -z "$base_img" ]; then
-            echo "Using base image: $base_img"
-            if ! grep -q "build_arg_defaults:" $file; then
-              # Add build_arg_defaults as a proper object
-              sed -i "/^version:/a build_arg_defaults:\\n  EE_BASE_IMAGE: $base_img\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-            fi
-          else
-            # Add minimal build_arg_defaults
-            if ! grep -q "build_arg_defaults:" $file; then
-              # Add build_arg_defaults as a proper object
-              sed -i "/^version:/a build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-            fi
-          fi
-        fi
-        
-        # Fix YAML syntax errors - make sure it's valid YAML
-        if ! grep -q "^version:" $file; then
-          echo "version: 1" > ${file}.new
-          cat $file >> ${file}.new
-          mv ${file}.new $file
-        fi
-        
-        # Validate YAML format
-        if command -v python3 &>/dev/null; then
-          if ! python3 -c "import yaml; yaml.safe_load(open('$file')); print('YAML is valid')" 2>/dev/null; then
-            echo "YAML validation failed for $file, restoring backup"
-            cp ${file}.bak $file
-          fi
-        fi
-      done
+        echo "Authentication successful!"
+        exit 0
+      register: registry_test
+      changed_when: false
+      ignore_errors: true
+      no_log: true
 
-- name: Create schema-compliant fix script for execution-environment.yml files
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix_ee_schema.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      
-      for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-        echo "Fixing schema for $file"
-        cp $file ${file}.bak
-        
-        # Extract version if it exists
-        version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
-        
-        # Extract base image if available
-        base_img=""
-        if grep -q "images:" $file; then
-          base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-        fi
-        
-        # Use default base image if none found
-        if [ -z "$base_img" ]; then
-          base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
-        fi
-        
-        # Create a new file with proper structure using printf instead of heredoc
-        printf "version: %s\n\n" "${version}" > ${file}.new
-        printf "images:\n  base_image:\n    name: %s\n\n" "${base_img}" >> ${file}.new
-        printf "build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}.new
-        
-        # Copy any custom dependencies sections from original file
-        if grep -q "^dependencies:" $file; then
-          grep -A 100 "^dependencies:" $file >> ${file}.new
-        fi
-        
-        # Replace original with fixed version
-        mv ${file}.new $file
-        
-        echo "Fixed schema format for $file"
-      done
-
-- name: Create custom assemble script to replace ansible-builder's default
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/custom-assemble.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      set -e
-      
-      source /etc/os-release
-      RELEASE=$(echo $ID)
-      
-      # Detect available package manager
-      if [ -x /usr/bin/dnf ]; then
-        PKGMGR=/usr/bin/dnf
-      elif [ -x /usr/bin/microdnf ]; then
-        PKGMGR=/usr/bin/microdnf
-      elif [ -x /usr/bin/yum ]; then
-        PKGMGR=/usr/bin/yum
-      else
-        echo "No supported package manager found"
-        # Continue without package manager
-        PKGMGR=""
-      fi
-      
-      PKGMGR_OPTS=""
-      PKGMGR_PRESERVE_CACHE=""
-      PYCMD="/usr/bin/python3"
-      PIPCMD="${PYCMD} -m pip"
-      
-      # Create output directories
-      mkdir -p /output/bindep
-      mkdir -p /output/wheels
-      mkdir -p /tmp/src
-      cd /tmp/src
-      
-      # Process Python requirements directly with pip
-      if [ -f /tmp/src/requirements.txt ]; then
-        echo "Installing Python requirements from requirements.txt"
-        ${PIPCMD} install --cache-dir=/output/wheels -r /tmp/src/requirements.txt
-        # Copy requirements to output
-        cp /tmp/src/requirements.txt /output/requirements.txt
-      fi
-      
-      # Skip package manager operations if no package manager available
-      if [ -n "$PKGMGR" ] && [ -f /tmp/src/bindep.txt ]; then
-        echo "Installing system packages with $PKGMGR"
-        $PKGMGR install -y $(cat /tmp/src/bindep.txt) || echo "Some packages may not be available, continuing"
-      fi
-      
-      echo "Build completed successfully"
-      exit 0
-
-# Fix execution-environment.yml files
-- name: Create comprehensive fix script for execution-environment.yml files
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix_execution_environment.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      
-      # Process all execution-environment.yml files
-      for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-        echo "Fixing $file"
-        
-        # Make a backup
-        cp $file ${file}.bak
-        
-        # Remove problematic properties
-        sed -i '/ansible_config:/d' $file
-        
-        # Fix the images section properly
-        if grep -q "images:" $file; then
-          # Extract base image if possible
-          base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-          
-          # Remove the images section completely
-          sed -i '/^images:/,/^[a-z]/{/^[a-z]/!d;}' $file
-          
-          # Add proper build_arg_defaults with base image
-          if [ ! -z "$base_img" ]; then
-            echo "Using base image: $base_img"
-            if ! grep -q "build_arg_defaults:" $file; then
-              # Add build_arg_defaults as a proper object
-              sed -i "/^version:/a build_arg_defaults:\\n  EE_BASE_IMAGE: $base_img\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-            fi
-          else
-            # Add minimal build_arg_defaults
-            if ! grep -q "build_arg_defaults:" $file; then
-              # Add build_arg_defaults as a proper object
-              sed -i "/^version:/a build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-            fi
-          fi
-        fi
-        
-        # Fix YAML syntax errors - make sure it's valid YAML
-        if ! grep -q "^version:" $file; then
-          echo "version: 1" > ${file}.new
-          cat $file >> ${file}.new
-          mv ${file}.new $file
-        fi
-        
-        # Validate YAML format
-        if command -v python3 &>/dev/null; then
-          if ! python3 -c "import yaml; yaml.safe_load(open('$file')); print('YAML is valid')" 2>/dev/null; then
-            echo "YAML validation failed for $file, restoring backup"
-            cp ${file}.bak $file
-          fi
-        fi
-      done
-
-# Create a fixes script that follows ansible-builder's actual schema requirements
-- name: Create schema-compliant fix script for execution-environment.yml files
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix_ee_schema.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      
-      for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-        echo "Fixing schema for $file"
-        cp $file ${file}.bak
-        
-        # Extract version if it exists
-        version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
-        
-        # Extract base image if available
-        base_img=""
-        if grep -q "images:" $file; then
-          base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-        fi
-        
-        # Use default base image if none found
-        if [ -z "$base_img" ]; then
-          base_img="registry.redhat.io/ansible-automation-platform-23/ee-minimal-rhel9:latest"
-        fi
-        
-        # Create a new file with proper structure using printf instead of heredoc
-        printf "version: %s\n\n" "${version}" > ${file}.new
-        printf "images:\n  base_image:\n    name: %s\n\n" "${base_img}" >> ${file}.new
-        printf "build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}.new
-        
-        # Copy any custom dependencies sections from original file
-        if grep -q "^dependencies:" $file; then
-          grep -A 100 "^dependencies:" $file >> ${file}.new
-        fi
-        
-        # Replace original with fixed version
-        mv ${file}.new $file
-        
-        echo "Fixed schema format for $file"
-      done
-
-# Fix the ansible_config property in execution-environment.yml files
-- name: Fix all double slashes and version issues in execution-environment.yml files
-  ansible.builtin.shell: |
-    for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
-      # Back up the file
-      cp "$file" "${file}.bak"
-      
-      # Fix double slashes everywhere
-      sed -i 's|//|/|g' "$file"
-      
-      # Fix version mismatches
-      sed -i 's|ansible-automation-platform-23/|ansible-automation-platform-25/|g' "$file"
-      
-      # Fix quotes in image names
-      sed -i 's|name: "\(.*\)"|name: \1|g' "$file"
-      sed -i "s|name: '\(.*\)'|name: \1|g' "$file"
-      
-      echo "Fixed image references in $file"
-    done
-  register: slash_fix
-  changed_when: slash_fix.rc == 0
-  ignore_errors: true
-
-# Fix additional_build_steps schema issue
-- name: Fix additional_build_steps section in execution-environment.yml files
-  ansible.builtin.shell: |
-    for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-      echo "Checking additional_build_steps in $file"
-      
-      # Fix the prepend property if it exists
-      if grep -q "additional_build_steps:" $file && grep -q "prepend:" $file; then
-        echo "Fixing additional_build_steps format in $file"
-        
-        # Get the content of the prepend block
-        prepend_content=$(grep -A5 "prepend:" $file | grep -v "prepend:" | grep -v "^additional_build_steps:" | sed '/^[a-z]/,$d' | sed 's/^  //')
-        
-        # Remove the entire additional_build_steps section
-        sed -i '/^additional_build_steps:/,/^[a-z]/{/^[a-z]/!d;}' $file
-        
-        # Add it back with correct format
-        if [ -n "$prepend_content" ]; then
-          echo "" >> $file
-          echo "additional_build_steps:" >> $file
-          echo "  prepend_base: |" >> $file
-          echo "$prepend_content" | sed 's/^/    /' >> $file
-        fi
-      fi
-    done
-  register: fix_additional_steps
-  changed_when: fix_additional_steps.rc == 0
-  ignore_errors: true
-
-# Run the new schema fix script
-- name: Run schema fix script
-  ansible.builtin.command:
-    cmd: "/tmp/ee-containers/fix_ee_schema.sh"
-  register: schema_fix
-  ignore_errors: true
-
-# Check if images already exist before building
-- name: Check for existing images in podman
-  ansible.builtin.command:
-    cmd: "podman images --format '{% raw %}{{.Repository}}{% endraw %}' | grep -w '^{{ item.item }}$'"
-  loop: "{{ env_exists.results }}"
-  register: image_exists_check
-  ignore_errors: true
-  failed_when: false
-  changed_when: false
-  when: item.stat.exists and item.stat.isdir
-
-# ADD DEBUG TASKS HERE
-- name: Debug execution-environment.yml paths
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
-  loop: "{{ environments_to_build }}"
-  register: ee_files_debug
-
-- name: Show execution-environment.yml debugging
-  ansible.builtin.debug:
-    msg: "{{ item.item }}: {{ 'Found' if item.stat.exists else 'Missing' }} execution-environment.yml"
-  loop: "{{ ee_files_debug.results }}"
-
-# Filter required images based on OS selection (fixed)
-- name: Filter required images based on OS selection (fixed)
-  ansible.builtin.set_fact:
-    filtered_required_images: "{{ required_images | default([]) | select('search', 'rhel8') | list if selected_os_type == '1' else 
-                              required_images | default([]) | select('search', 'rhel9') | list if selected_os_type == '2' else 
-                              required_images | default([]) }}"
-
-# Debug the filtered images to verify format
-- name: Debug filtered_required_images
-  ansible.builtin.debug:
-    var: filtered_required_images
-    verbosity: 0
-
-# Add validation to catch double slashes in image paths
-- name: Fix any double slashes in image paths
-  ansible.builtin.set_fact:
-    filtered_required_images: "{{ filtered_required_images | map('regex_replace', '//', '/') | list }}"
-  when: filtered_required_images is defined
-
-# Do the same for base_images
-- name: Fix any double slashes in base image paths
-  ansible.builtin.set_fact:
-    base_images: "{{ base_images | map('regex_replace', '//', '/') | list }}"
-  when: base_images is defined
-
-# Check which required images already exist
-- name: Check which required images already exist
-  ansible.builtin.shell: |
-    podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}' | grep -q '^{{ item }}$' || echo "NOT_FOUND"
-  loop: "{{ filtered_required_images | default([]) }}"
-  register: image_check_results
-  changed_when: false
-  failed_when: false
-
-# Only download images that don't already exist
-- name: Download missing required images
-  ansible.builtin.command:
-    cmd: "podman pull {{ item.item }}"
-  loop: "{{ image_check_results.results | default([]) }}"
-  when: item.rc != 0  # RC of 0 means grep found the image, non-zero means it's missing
-  register: image_pull_results
-  ignore_errors: true
-
-# Add this before your build tasks to ensure versions match
-- name: Initialize build_results if no builds ran
-  ansible.builtin.set_fact:
-    build_results: {"results": []}
-  when: build_results is not defined or build_results.results | length == 0
-
-# Update the count task to handle empty build results
-- name: Count build successes and failures
-  ansible.builtin.set_fact:
-    successful_builds: "{{ build_results.results | default([]) | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length }}"
-    failed_builds: "{{ build_results.results | default([]) | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length }}"
-    skipped_builds: "{{ build_results.results | default([]) | selectattr('skipped', 'defined') | list | length }}"
-    total_environments: "{{ environments_to_build | length }}"
-
-# Display build results
-- name: Show build results
-  ansible.builtin.debug:
-    msg: |
-      Build Results:
-      {% for result in build_results.results %}
-      {% if result.skipped is not defined %}
-      - {{ result.item.item }}: {{ 'SUCCESS' if result.rc == 0 else 'FAILED (see error above)' }}
-      {% endif %}
-      {% endfor %}
-    verbosity: 0
-
-
-- name: Show prominent build summary
-  ansible.builtin.debug:
-    msg: |
-      
-      ********************************************************************
-      *                                                                  *
-      *                     BUILD SUMMARY REPORT                         *
-      *                                                                  *
-      ********************************************************************
-      
-      Total environments selected: {{ total_environments }}
-      Successfully built: {{ successful_builds }}
-      Failed builds: {{ failed_builds }}
-      Skipped builds: {{ skipped_builds }}
-      
-      DETAILED RESULTS:
-      {% for result in build_results.results %}
-      {% if result.skipped is defined %}
-      - SKIPPED: {{ result.item.item }} - Missing execution-environment.yml
-      {% elif result.rc is defined and result.rc == 0 %}
-      - SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}
-      {% elif result.rc is defined %}
-      - FAILED: {{ result.item.item }} - Error code: {{ result.rc }}
-      {% endif %}
-      {% endfor %}
-      
-      {% if successful_builds != 0 %}
-      Successfully built containers are available with 'podman images'
-      {% endif %}
-      
-      ********************************************************************
-
-
-- name: Print build summary to terminal
-  ansible.builtin.shell: |
-    echo ""
-    echo "********************************************************************"
-    echo "*                     BUILD SUMMARY REPORT                         *"
-    echo "********************************************************************"
-    echo ""
-    echo "Total environments selected: {{ total_environments }}"
-    echo "Successfully built: {{ successful_builds }}"
-    echo "Failed builds: {{ failed_builds }}"
-    echo "Skipped builds: {{ skipped_builds }}"
-    echo ""
-    {% for result in build_results.results %}
-    {% if result.skipped is not defined %}
-    {% if result.rc == 0 %}
-    echo "✅ SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}"
-    {% else %}
-    echo "❌ FAILED: {{ result.item.item }} - Error code: {{ result.rc }}"
-    {% endif %}
-    {% else %}
-    echo "⚠️ SKIPPED: {{ result.item.item }} - Missing execution-environment.yml"
-    {% endif %}
-    {% endfor %}
-    echo ""
-    {% if successful_builds|int > 0 %}
-    echo "Successfully built containers are available with 'podman images'"
-    {% endif %}
-    echo ""
-    echo "********************************************************************"
-  changed_when: false
-
-- name: Create fix-packaging.sh file
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix-packaging.sh"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      # This script fixes packaging issues
-      echo "Running packaging fixes"
-      exit 0
-
-- name: Create build hook directory and scripts
-  ansible.builtin.file:
-    path: "/tmp/ee-containers/hooks"
-    state: directory
-    mode: "0755"
-
-- name: Create pre-build hook script to fix container environment
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/hooks/pre-build"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      echo "Running pre-build hook"
-      cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
-      exit 0
-
-# Move this task to happen AFTER all fixes and BEFORE the build:
-- name: Copy custom assemble script to environments before building
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/custom-assemble.sh"
-    dest: "/tmp/ee-containers/environments/{{ item }}/custom-assemble.sh"
-    mode: "0755"
-  loop: "{{ environments_to_build }}"
-
-# Modify your build command to use the custom context
-- name: Update build command to include hooks
-  ansible.builtin.lineinfile:
-    path: "/tmp/ee-containers/Containerfile"
-    regexp: "^COPY fix-packaging.sh"
-    line: "COPY hooks/pre-build /hooks/pre-build"
-    state: present
-  ignore_errors: true
-
-# Then run the build task:
-- name: Start image build process with correct parameters
-  ansible.builtin.command:
-    cmd: "ansible-builder build -f /tmp/ee-containers/environments/{{ item }}/execution-environment.yml -t {{ item }}:{{ timestamp }} --container-runtime podman --prune"
-  loop: "{{ environments_to_build }}"
-  register: build_results
-  ignore_errors: true
-  failed_when: false
-  changed_when: false
-
-# Clean up dangling (<none>:<none>) images after build
-- name: Remove dangling images after build
-  ansible.builtin.shell: |
-    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
-  register: dangling_removal
-  changed_when: dangling_removal.stdout != ""
-  failed_when: false
-  become: true
-  ignore_errors: true
-
-# Create build hook directory and scripts BEFORE build starts
-- name: Create build hook directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-  loop:
-    - "/tmp/ee-containers/context"
-    - "/tmp/ee-containers/context/hooks"
-  ignore_errors: true
-
-# Create pre-build hook script to fix container environment
-- name: Create pre-build hook script
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/context/hooks/pre-build"
-    mode: "0755"
-    content: |
-      #!/bin/bash
-      echo "Running pre-build hook"
-      cp /tmp/ee-containers/fix-packaging.sh /fix-packaging.sh 2>/dev/null || true
-      exit 0
-  ignore_errors: true
-
-# Modify the build command to use our custom context directory
-- name: Start image build process with custom hooks
-  ansible.builtin.shell: |
-    # Export auth file location for ansible-builder and all subprocesses
-    export REGISTRY_AUTH_FILE=/etc/containers/auth.json
-    
-    # Run the build with correct parameters for this version
-    ansible-builder build --no-cache -v3 \
-      -f /tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml \
-      --context /tmp/ee-containers/context \
-      --tag {{ item.item }}:{{ timestamp }}
-  environment:
-    REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir
-  register: build_results
-  ignore_errors: true
+    - name: Display registry authentication status
+      ansible.builtin.debug:
+        msg: "{{ 'Registry authentication successful!' if registry_test.rc == 0 else 'Registry authentication failed. Builds may not succeed.' }}"

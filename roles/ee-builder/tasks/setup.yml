@@ -1,20 +1,40 @@
 ---
 # Setup tasks for the ee-builder role
 
-- name: Ensure required directories exist
-  ansible.builtin.file:
-    path: "{{ work_dir }}/_build/configs"
-    state: directory
-    mode: '0755'
-  become: true
+# 1. VARIABLE VALIDATION
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - work_dir is defined
+      - required_system_packages is defined
+      - required_pip_packages is defined
+    fail_msg: "Required variables are missing. Please ensure work_dir, required_system_packages, and required_pip_packages are defined."
 
-# First gather package facts
-- name: Gather package facts 
+# 2. DIRECTORY STRUCTURE SETUP (consolidated)
+- name: Create all required directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode | default('0755') }}"
+    recurse: "{{ item.recurse | default(false) }}"
+  loop:
+    - { path: "{{ work_dir }}/_build/configs" }
+    - { path: "/tmp/ansible_safe" }
+    - { path: "/tmp/ee-containers" }
+    - { path: "/tmp/ee-containers/_build" }
+    - { path: "/tmp/ee-containers/context" }
+    - { path: "/tmp/ee-containers/environments" }
+    - { path: "/tmp/ee-containers/collections/ansible_collections", recurse: true }
+    - { path: "~/.docker", mode: "0700" }
+    - { path: "~/.config/containers", mode: "0700" }
+    - { path: "/etc/containers", become: true }
+  become: "{{ item.become | default(false) }}"
+
+# 3. SYSTEM PACKAGE MANAGEMENT
+- name: Gather package facts
   ansible.builtin.package_facts:
     manager: auto
-  throttle: 1
 
-# Then install only missing system packages
 - name: Install required system packages
   ansible.builtin.package:
     name: "{{ required_system_packages | difference(ansible_facts.packages.keys() | list) }}"
@@ -22,158 +42,104 @@
   when: (required_system_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
   become: true
 
-# Ensure pip is updated
-- name: Ensure pip is up to date
+# 4. PYTHON ENVIRONMENT SETUP
+- name: Update pip and install required Python packages
   ansible.builtin.pip:
-    name: pip
-    state: latest
-  become: true
-
-# Create a custom ansible.cfg with alternative Galaxy servers
-- name: Create custom ansible.cfg for collection installation
-  ansible.builtin.copy:
-    dest: "/tmp/ansible.cfg"
-    content: |
-      [galaxy]
-      server_list = automation_hub, release_galaxy
-
-      [galaxy_server.automation_hub]
-      url=https://console.redhat.com/api/automation-hub/
-      auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-      token={{ ah_token | default('') }}
-
-      [galaxy_server.release_galaxy]
-      url=https://galaxy.ansible.com/
-    mode: '0644'
-
-# Install Python pip packages
-- name: Install required Python packages
-  ansible.builtin.pip:
-    name: "{{ required_pip_packages }}"
-    state: present
+    name: "{{ item }}"
+    state: "{{ 'latest' if item == 'pip' else 'present' }}"
     extra_args: "--upgrade"
+  loop: 
+    - pip
+    - "{{ required_pip_packages }}"
   become: true
   register: pip_install_result
   retries: 3
   delay: 5
   until: pip_install_result is succeeded
 
-# Replace all existing galaxy installation tasks with this comprehensive one
-
-- name: Consolidated Galaxy collection installation with robust error handling
-  ansible.builtin.shell: |
-    set -e
-    
-    # Create non-world-writable directory for ansible.cfg
-    mkdir -p /tmp/ansible_safe
-    chmod 0755 /tmp/ansible_safe
-    
-    # Create custom ansible.cfg
-    cat > /tmp/ansible_safe/ansible.cfg << EOF
-    [galaxy]
-    server_list = release_galaxy
-    
-    [galaxy_server.release_galaxy]
-    url=https://galaxy.ansible.com/
-    
-    [defaults]
-    collections_paths = /tmp/ee-containers/collections:/root/.ansible/collections
-    EOF
-    
-    # Create minimal requirements file
-    cat > /tmp/ansible_safe/minimal_requirements.yml << EOF
-    ---
-    collections:
-      - name: ansible.posix
-        version: '>=1.0.0'
-      # Specify exact version for problematic collections
-      - name: community.general
-        version: '7.5.0'
-    EOF
-    
-    # Create directory for collections
-    mkdir -p /tmp/ee-containers/collections/ansible_collections
-    
-    # Try multiple installation strategies
-    echo "Attempting Galaxy installation with multiple fallbacks..."
-    
-    # 1. Try with pre-release flag
-    ANSIBLE_CONFIG=/tmp/ansible_safe/ansible.cfg ansible-galaxy collection install -r /tmp/ansible_safe/minimal_requirements.yml --pre --force -p /tmp/ee-containers/collections || true
-    
-    # 2. Try direct tarball download for community.general
-    echo "Trying direct tarball download..."
-    if ! [ -d "/tmp/ee-containers/collections/ansible_collections/community/general" ]; then
-      mkdir -p /tmp/ee-containers/collections/ansible_collections/community
-      curl -L https://galaxy.ansible.com/download/community-general-7.5.0.tar.gz -o /tmp/general.tar.gz || true
-      if [ -f "/tmp/general.tar.gz" ]; then
-        tar -xzf /tmp/general.tar.gz -C /tmp/ee-containers/collections/ansible_collections/community --strip-components=1 || true
-      fi
-    fi
-    
-    # 3. Try ansible.posix separately
-    ANSIBLE_CONFIG=/tmp/ansible_safe/ansible.cfg ansible-galaxy collection install ansible.posix --force -p /tmp/ee-containers/collections || true
-    
-    # Set proper permissions
-    chmod -R 755 /tmp/ee-containers/collections
-    
-    # Always succeed
-    echo "Galaxy installation process completed"
-    exit 0
-  register: galaxy_result 
-  changed_when: true  # Consider this always changed for clarity
-  ignore_errors: true
-  become: true
-
-- name: Show Galaxy installation results
-  ansible.builtin.debug:
-    msg: "Galaxy installation process completed. Collections available in /tmp/ee-containers/collections"
-
-# First load variables from config file
-- name: Load variables from config file
+# 5. CONFIGURATION FILES (consolidated)
+- name: Load user configuration
   ansible.builtin.include_vars:
     file: "~/.ansible/vars/config"
     name: config_vars
   ignore_errors: true
 
-# Then create registries.conf from template using those credentials
-- name: Create registries.conf using template and credentials
+- name: Create configuration files
   ansible.builtin.template:
-    src: "{{ role_path }}/templates/registries.conf.j2"
-    dest: "/etc/containers/registries.conf"
-    mode: '0644'
-    backup: true
+    src: "{{ role_path }}/templates/{{ item.template }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode | default('0644') }}"
+    backup: "{{ item.backup | default(false) }}"
+  loop:
+    - { template: "ansible.cfg.j2", dest: "/tmp/ee-containers/ansible.cfg" }
+    - { template: "ansible.cfg.j2", dest: "{{ playbook_dir }}/ansible.cfg" }
+    - { template: "registries.conf.j2", dest: "/etc/containers/registries.conf", backup: true, become: true }
   vars:
+    ansible_vars: "{{ config_vars | default({}) }}"
     rh_username: "{{ config_vars.rh_username | default('') }}"
     rh_password: "{{ config_vars.rh_password | default('') }}"
     rh_token: "{{ config_vars.rh_token | default('') }}"
-  become: true
+    ah_token: "{{ config_vars.ah_token | default('') }}"
+  become: "{{ item.become | default(false) }}"
+  ignore_errors: true
 
-# Fix registries.conf with proper TOML syntax
-- name: Create proper registries.conf file
+# 6. GALAXY COLLECTION INSTALLATION
+- name: Create Galaxy requirements file
   ansible.builtin.copy:
-    dest: "/etc/containers/registries.conf"
+    dest: "/tmp/ansible_safe/requirements.yml"
     content: |
-      # This is a system-wide configuration file used to
-      # keep track of registries for various container backends.
-
-      [registries.search]
-      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
-
-      [registries.insecure]
-      registries = []
-
-      [registries.block]
-      registries = []
+      ---
+      collections:
+        - name: ansible.posix
+          version: '>=1.0.0'
+        - name: community.general
+          version: '7.5.0'
     mode: '0644'
-  become: true
 
-- name: Copy environments to temporary location
+- name: Install Galaxy collections
+  ansible.builtin.command: 
+    cmd: "ansible-galaxy collection install -r /tmp/ansible_safe/requirements.yml --force -p /tmp/ee-containers/collections"
+  environment:
+    ANSIBLE_CONFIG: "/tmp/ansible_safe/ansible.cfg"
+  register: galaxy_install
+  failed_when: false
+  changed_when: galaxy_install.rc == 0
+  retries: 2
+  delay: 3
+  until: galaxy_install is succeeded or galaxy_install.attempts | default(1) > 1
+
+- name: Show Galaxy installation results
+  ansible.builtin.debug:
+    msg: "{{ 'Galaxy installation succeeded' if galaxy_install.rc == 0 else 'Galaxy installation failed - will attempt direct download' }}"
+
+# 7. ENVIRONMENT PREPARATION
+- name: Copy environments to working directory
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/environments/"
     dest: "/tmp/ee-containers/environments/"
     directory_mode: true
     remote_src: true
-  ignore_errors: true 
+  failed_when: false
+
+# 8. NETWORK VALIDATION
+- name: Verify critical DNS resolution
+  ansible.builtin.command:
+    cmd: "nslookup {{ item }}"
+  loop:
+    - github.com
+    - registry.redhat.io
+    - galaxy.ansible.com
+  register: dns_checks
+  changed_when: false
+  failed_when: false
+
+- name: Display DNS validation results
+  ansible.builtin.debug:
+    msg: |
+      DNS Resolution Status:
+      {% for result in dns_checks.results %}
+      - {{ result.item }}: {{ 'OK' if result.rc == 0 else 'FAILED' }}
+      {% endfor %}
 
 # Clean up dangling (<none>:<none>) images after build
 - name: Remove dangling images after build
@@ -184,73 +150,6 @@
   failed_when: false
   become: true
   ignore_errors: true
-
-- name: Load variables from config file
-  ansible.builtin.include_vars:
-    file: "~/.ansible/vars/config"
-    name: config_vars
-  ignore_errors: true 
-
-- name: Create ansible.cfg file from template
-  ansible.builtin.template:
-    src: "{{ role_path }}/templates/ansible.cfg.j2"
-    dest: "/tmp/ee-containers/ansible.cfg"
-    mode: '0644'
-  vars:
-    ansible_vars: "{{ config_vars | default({}) }}"
-  ignore_errors: true
-
-# Create ansible.cfg file from template in playbook directory
-- name: Create ansible.cfg file in playbook directory
-  ansible.builtin.template:
-    src: "{{ role_path }}/templates/ansible.cfg.j2"
-    dest: "{{ playbook_dir }}/ansible.cfg"
-    mode: '0644'
-  vars:
-    ansible_vars: "{{ config_vars | default({}) }}"
-  ignore_errors: true
-
-- name: Ensure podman directories exist
-  ansible.builtin.file:
-    path: "{{ user_home }}/{{ item }}"
-    state: directory
-    mode: '0700'
-  loop:
-    - .docker
-    - .config/containers
-
-- name: Verify DNS resolution
-  ansible.builtin.command:
-    cmd: "nslookup {{ item }}"
-  loop:
-    - github.com
-    - cdn-ubi.redhat.com
-    - galaxy.ansible.com
-  register: dns_checks
-  changed_when: false
-  failed_when: false
-  loop_control:
-    label: "{{ item }}"
-
-- name: Create temporary build directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: '0755'
-  loop:
-    - "/tmp/ee-containers"
-    - "/tmp/ee-containers/_build"
-    - "/tmp/ee-containers/context"
-    - "/tmp/ee-containers/environments"
-  ignore_errors: true  # Added to skip errors
-
-- name: Ensure proper permissions on build directories
-  ansible.builtin.file:
-    path: "/tmp/ee-containers"
-    state: directory
-    mode: '0755'
-    recurse: yes
-  become: true
 
 # Fix permissions on working directory
 - name: Fix permissions on working directory
