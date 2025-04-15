@@ -14,24 +14,24 @@
   ansible.builtin.copy:
     dest: "/tmp/ee-containers/tmux_header.txt"
     mode: 0644
-    content: |
-                                @@@@@@@                                                            
-                               @@@@@@@@@
-                              @@@@@@@@@@@
-                             @@@@@@ @@@@@@                                                      
-                  ╔═════════@@@@@@════@@@@@═════════════════════════════════════════════════════╗
-                  ║        @@@@@@      @@@@@@                                                   ║  
-                  ║       @@@@@@        @@@@@@                                                  ║  
-                  ║      @@@@@@          @@@@@@                                                 ║  
-                  ║     @@@@@@            @@@@@                                                 ║  
-                  ║    @@@@@@@@            @@@@@@                                               ║  
-                  ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
-                  ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
-                  ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
-                  ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
-                  @@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║ 
-                 @@@@@@@══════════════════@@@@@@@@@@@@══════════════════════════════════════════╝
-                @@@@@@@                      @@@@@@@@
+    content: >
+      "                           @@@@@@@                                                            
+                                 @@@@@@@@@
+                                @@@@@@@@@@@
+                               @@@@@@ @@@@@@                                                      
+                    ╔═════════@@@@@@════@@@@@═════════════════════════════════════════════════════╗
+                    ║        @@@@@@      @@@@@@                                                   ║  
+                    ║       @@@@@@        @@@@@@                                                  ║  
+                    ║      @@@@@@          @@@@@@                                                 ║  
+                    ║     @@@@@@            @@@@@                                                 ║  
+                    ║    @@@@@@@@            @@@@@@                                               ║  
+                    ║   @@@@@@@@@@@@@         @@@@@@                                              ║  
+                    ║  @@@@@@  @@@@@@@@@       @@@@@@                                             ║  
+                    ║ @@@@@@      @@@@@@@@@     @@@@@@ NSIBLE & PODMAN                            ║  
+                    ╠@@@@@@══════════@@@@@@@@@═══@@@@@@═══════════════════════════════════════════╣  
+                   @@@@@@@              @@@@@@@@@@@@@@@@ EXECUTION BUILD MONITOR                  ║ 
+                  @@@@@@@══════════════════@@@@@@@@@@@@══════════════════════════════════════════╝
+                 @@@@@@                      @@@@@@@@"
       
       🕒 Started at: {{ ansible_date_time.iso8601 }}
       
@@ -381,6 +381,100 @@
   changed_when: false
   notify: cleanup_tmux_session
 
+- name: Create Python fix script for execution-environment.yml files
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/fix_ee_files.py"
+    mode: "0755"
+    content: |
+      #!/usr/bin/env python3
+      import os
+      import re
+      import sys
+      import yaml
+
+      def fix_file(filepath):
+          try:
+              with open(filepath, 'r') as f:
+                  try:
+                      data = yaml.safe_load(f)
+                  except yaml.YAMLError:
+                      print(f"Error parsing YAML in {filepath}, trying to fix manually")
+                      with open(filepath, 'r') as f2:
+                          content = f2.read()
+                      
+                      # Fix double slashes
+                      content = content.replace('//', '/')
+                      
+                      # Fix version mismatches
+                      content = content.replace('ansible-automation-platform-23/', 
+                                          'ansible-automation-platform-25/')
+                      
+                      # Write fixed content
+                      with open(filepath, 'w') as f2:
+                          f2.write(content)
+                      return True
+                  
+              # If we can parse it as YAML, make sure it has a valid base image
+              if data is None:
+                  data = {}
+              
+              modified = False
+              
+              # Ensure we have a valid version
+              if 'version' not in data or not data['version']:
+                  data['version'] = 1
+                  modified = True
+              
+              # Ensure we have images and base_image sections
+              if 'images' not in data:
+                  data['images'] = {}
+                  modified = True
+              
+              if 'base_image' not in data['images']:
+                  data['images']['base_image'] = {}
+                  modified = True
+              
+              # Ensure the base image has a name
+              if 'name' not in data['images']['base_image'] or not data['images']['base_image']['name']:
+                  data['images']['base_image']['name'] = 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest'
+                  modified = True
+              
+              # Write back if modified
+              if modified:
+                  with open(filepath, 'w') as f:
+                      yaml.dump(data, f, default_flow_style=False)
+                  print(f"Fixed {filepath}")
+                  return True
+              
+              return False
+          except Exception as e:
+              print(f"Error processing {filepath}: {str(e)}")
+              return False
+
+      def main():
+          count = 0
+          for root, dirs, files in os.walk('/tmp/ee-containers'):
+              for file in files:
+                  if file == 'execution-environment.yml':
+                      filepath = os.path.join(root, file)
+                      if fix_file(filepath):
+                          count += 1
+          
+          print(f"Fixed {count} files")
+
+      if __name__ == "__main__":
+          main()
+
+- name: Run Python fix script
+  ansible.builtin.command:
+    cmd: "python3 /tmp/ee-containers/fix_ee_files.py"
+  register: python_fix
+  changed_when: "'Fixed' in python_fix.stdout"
+  failed_when: false
+
+- name: Display Python fix results
+  ansible.builtin.debug:
+    msg: "{{ python_fix.stdout_lines }}"
 
 - name: Setup podman monitoring in tmux
   block:
