@@ -1,0 +1,10 @@
+---
+collections:
+  - name: ansible.controller
+  - name: community.general
+  - name: ansible.utils
+  - name: ansible.posix
+  - name: awx.awx
+  - name: ansible.netcommon
+  - name: servicenow.itsm
+  - name: kubealex.eda

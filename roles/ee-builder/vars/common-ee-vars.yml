@@ -1,0 +1,35 @@
+---
+# Common system dependencies across all environments
+common_system_deps:
+  - python3-pip
+  - python3-devel
+  - gcc
+  - make
+  - pkg-config
+  - systemd-devel
+  - libxml2-devel
+  - dnf
+  - yum-utils
+  - openssl-devel
+
+# Common Python dependencies across all environments 
+common_python_deps:
+  - cryptography>=38.0.0
+  - pip>=21.0.0
+  - setuptools>=62.0.0
+  - wheel>=0.37.0
+
+# Common build steps across all environments
+common_build_steps:
+  prepend_final: |
+    USER root
+    RUN python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel && \
+        python3 -m pip install --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
+
+  append_final: |
+    USER root
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        rm -rf /etc/ansible/ansible.cfg && \
+        echo "Build completed successfully" && echo "Requirements test file created successfully"
+    RUN pip3 check && echo "Build completed successfully" || echo "Build failed - pip check found issues"

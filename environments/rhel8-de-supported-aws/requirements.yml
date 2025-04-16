@@ -1,0 +1,11 @@
+---
+collections:
+  - name: servicenow.itsm
+  - name: amazon.aws
+  - name: ansible.controller
+  - name: ansible.platform
+  - name: ansible.posix
+  - name: awx.awx
+  - name: amazon.cloud
+  - name: community.aws
+  - name: cloud.terraform

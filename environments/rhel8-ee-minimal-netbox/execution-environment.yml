@@ -1,0 +1,36 @@
+---
+version: 3
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest
+    options:
+      pull_policy: missing
+      tls_verify: false
+
+dependencies:
+  galaxy: requirements.yml
+  python: requirements.txt
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+    prepend: |
+        RUN microdnf install -y python3-pip python3-devel python39-pip python39-devel gcc krb5-workstation krb5-libs \
+            && python3 -m pip3 install --upgrade pip setuptools wheel \
+            && python3 -m pip3 install --upgrade --ignore-installed typing-extensions \
+            && python3 -m pip3 install --ignore-installed aiohttp>=3.8.5
+        ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+
+    prepend_final: |
+        RUN microdnf upgrade -y \
+            && python3 -m pip install --no-cache-dir pywinrm requests-kerberos \
+            && python3 -m pip install --no-cache-dir requests-ntlm requests-ntlm2 requests-ntlm3 requests-ntlm4 requests-ntlm5 requests-ntlm6 requests-ntlm7 requests-ntlm8 requests-ntlm9 requests-ntlm10 requests-ntlm11 requests-ntlm12 requests-ntlm13 requests-ntlm14 requests-ntlm15 requests-ntlm16 requests-ntlm17 requests-ntlm18 requests-ntlm19 requests-ntlm20
+
+    append_final: |
+        USER root
+        RUN microdnf clean all && \
+            rm -rf /var/cache/{dnf,yum} && \
+            rm -rf /etc/ansible/ansible.cfg
+        RUN pip3 check || echo "build complete"

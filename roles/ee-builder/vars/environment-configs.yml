@@ -1,0 +1,20 @@
+---
+# Define environment-specific configurations that will be merged with common configs
+environment_configs:
+  rhel9-ee-minimal-general:
+    base_image: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+    python_dependencies: "{{ common_python_deps }}"
+    system_dependencies: "{{ common_system_deps }}"
+    galaxy_dependencies: "requirements.yml"
+    build_steps: "{{ common_build_steps }}"
+
+  rhel8-ee-minimal-network:
+    base_image: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
+    python_dependencies: "{{ common_python_deps + ['netaddr>=0.8.0', 'jmespath>=1.0.0'] }}"
+    system_dependencies: "{{ common_system_deps }}"
+    galaxy_dependencies: 
+      - "name: ansible.netcommon"
+      - "name: cisco.ios"
+    build_steps: "{{ common_build_steps }}"
+
+  # Add more environments as needed

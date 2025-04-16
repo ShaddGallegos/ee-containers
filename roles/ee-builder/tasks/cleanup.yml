@@ -6,7 +6,8 @@
   loop:
     - "/tmp/ee-banner.txt"
     - "/tmp/ee-builder"
-    - "/tmp/ee-containers"
+    # Don't remove the entire ee-containers directory
+    # - "/tmp/ee-containers" 
     - "{{ playbook_dir }}/ansible.cfg"
   ignore_errors: true
   become: true
@@ -73,4 +74,15 @@
     msg: "{{ item.stdout | default(item.stderr) }}"
   loop: "{{ logout_results.results }}"
   when: item.stdout is defined or item.stderr is defined
+
+# Only cleanup selective subdirectories and files
+- name: Clean up work directory selectively
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "/tmp/ansible_safe"
+    - "/tmp/ee-containers/hooks"
+    - "/tmp/ee-containers/custom-assemble.sh"
+  ignore_errors: true
 

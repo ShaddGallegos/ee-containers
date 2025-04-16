@@ -21,15 +21,31 @@
   ansible.builtin.import_tasks: fix_ee_files.yml
   tags: ['init', 'fix']
 
+# Include common EE variables
+- name: Include common EE variables
+  ansible.builtin.include_vars: 
+    file: "common-ee-vars.yml"
+
+# Include environment-specific configurations
+- name: Include environment-specific configurations
+  ansible.builtin.include_vars:
+    file: "environment-configs.yml"
+
 # Display environment menu and get selection
 - name: Get environment selection from user
   ansible.builtin.include_tasks: environment_menu.yml
   tags: ['menu', 'build']
 
-# DISABLED FOR NOW: Launch tmux monitoring session
-# - name: Launch tmux monitoring session
-#   ansible.builtin.include_tasks: tmux_session.yml
-#   tags: ['menu', 'build']
+# Set role facts
+- name: Set role facts
+  include_tasks: 
+    file: set_facts.yml
+    # Using explicit file parameter to make it clearer
+
+# Launch tmux monitoring session  # Fixed: removed extra space
+- name: Launch tmux monitoring session
+  ansible.builtin.include_tasks: tmux_session2.yml
+  tags: ['menu', 'build']
 
 # Include tasks for building the specified environments
 - name: Build selected environments
@@ -40,3 +56,10 @@
 - name: Cleanup after build
   ansible.builtin.include_tasks: cleanup.yml
   tags: ['cleanup']
+
+# Clean up temporary files only
+- name: Clean up temporary files only
+  include_tasks: cleanup.yml
+  tags:
+    - cleanup
+  when: cleanup_enabled | default(true)

@@ -1,2 +1,0 @@
-pywinrm>=0.4.3
-requests-kerberos>=0.14.0

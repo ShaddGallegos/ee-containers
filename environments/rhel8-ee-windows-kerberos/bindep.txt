@@ -1,2 +1,0 @@
-krb5-workstation
-krb5-libs

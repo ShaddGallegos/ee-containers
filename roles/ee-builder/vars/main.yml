@@ -16,7 +16,7 @@ required_images:
   - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest 
   - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest 
   - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest 
-  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest  # Note the single slash
+  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
   - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest 
   - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest
 

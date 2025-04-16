@@ -30,6 +30,7 @@
     - { path: "~/.ansible/vars", mode: "0755" }
     - { path: "~/.config/containers", mode: "0700" }
     - { path: "/etc/containers", become: true }
+    - { path: "/tmp/ee-containers/_build/rpms", mode: "0755" }
   become: "{{ item.become | default(false) }}"
 
 # 3. SYSTEM PACKAGE MANAGEMENT
