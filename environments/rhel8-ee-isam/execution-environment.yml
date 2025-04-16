@@ -13,7 +13,7 @@ dependencies:
   python: requirements.txt
 
 additional_build_files:
-   - src: ../ansible.cfg
+   - src: ansible.cfg
      dest: configs
 
 options:
@@ -22,8 +22,8 @@ options:
 additional_build_steps:
   prepend_base:
     - RUN $PYCMD -m pip install --upgrade pip setuptools
-#    - COPY _build/rpms/*.rpm /tmp/openshift-clients.rpm
-#    - RUN $PKGMGR install bash-completion
+    - COPY _build/rpms/*.rpm /tmp/openshift-clients.rpm
+    - RUN $PKGMGR install bash-completion
     - RUN git clone --branch ee-build-source-aap2-24 https://github.com/redhat-partner-tech/automated-smart-management.git
           && cp -r automated-smart-management/roles/* /usr/share/ansible/roles/
           && rm -rf automated-smart-management

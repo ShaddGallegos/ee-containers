@@ -17,13 +17,12 @@ images:
 options:
   package_manager_path: /usr/bin/microdnf
   container_init:
-    package_pip: 'packaging==20.9'  # Pin the packaging version
+    package_pip: 'packaging>=20.9' 
 additional_build_files:
   - src:  ansible.cfg
     dest: configs/ansible.cfg
-  - src: ../../scripts/fix-packaging.sh
+  - src: scripts/fix-packaging.sh
     dest: fix-packaging.sh
-    dest: configs/ansible.cfg
 
 
 dependencies:
@@ -34,6 +33,9 @@ dependencies:
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
+
+  options:
+  package_manager_path: /usr/bin/microdnf
 
 additional_build_steps:
   prepend_base: |

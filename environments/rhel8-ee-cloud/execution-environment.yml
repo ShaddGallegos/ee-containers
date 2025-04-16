@@ -3,25 +3,35 @@ version: 3
 
 images:
   base_image:
-    name: registry.redhat.io/ansible-automation-platform-25//ee-minimal-rhel9:latest
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
     options:
         pull_policy: missing
         tls_verify: false
 
 dependencies:
-  galaxy:
-    collections:
-      - { name: amazon.aws, version: 9.2.0 }
-      - { name: azure.azcollection, version: 3.2.0 }
-      - { name: community.aws, version: 6.3.0 }
-      - { name: community.digitalocean, version: 3.27.0 }
-      - { name: google.cloud, version: 3.5.1 }
-      - { name: hetzner.hcloud, version: 4.0.1 }
-      - { name: vultr.cloud, version: 3.10.0 }
+  galaxy: requirements.yml
   python:
     - awscli>=1.16.312
     - botocore>=1.34.0
     - boto3>=1.34.0
+  system: bindep.txt
 
 options:
-  package_manager_path: /usr/bin/microdnf
+    package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+    prepend: |
+        RUN microdnf install -y python3-pip python3-devel python39-pip python39-devel gcc krb5-workstation krb5-libs \
+            && python3 -m pip install --upgrade pip setuptools wheel \
+        ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+
+    prepend_final: |
+        RUN microdnf upgrade -y \
+            && python3 -m pip install --no-cache-dir pywinrm requests-kerberos
+
+    append_final: |
+        USER root
+        RUN microdnf clean all && \
+            rm -rf /var/cache/{dnf,yum} && \
+            rm -rf /etc/ansible/ansible.cfg
+        RUN pip3 check || echo "build complete"

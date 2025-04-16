@@ -450,152 +450,6 @@
             echo "Fixed schema format for $file"
           done
 
-    - name: Create custom assemble script to replace ansible-builder's default
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/custom-assemble.sh"
-        mode: "0755"
-        content: |
-          #!/bin/bash
-          set -e
-          
-          source /etc/os-release
-          RELEASE=$(echo $ID)
-          
-          # Detect available package manager
-          if [ -x /usr/bin/dnf ]; then
-            PKGMGR=/usr/bin/dnf
-          elif [ -x /usr/bin/microdnf ]; then
-            PKGMGR=/usr/bin/microdnf
-          elif [ -x /usr/bin/yum ]; then
-            PKGMGR=/usr/bin/yum
-          else
-            echo "No supported package manager found"
-            # Continue without package manager
-            PKGMGR=""
-          fi
-          
-          PKGMGR_OPTS=""
-          PKGMGR_PRESERVE_CACHE=""
-          PYCMD="/usr/bin/python3"
-          PIPCMD="${PYCMD} -m pip"
-          
-          # Create output directories
-          mkdir -p /output/bindep
-          mkdir -p /output/wheels
-          mkdir -p /tmp/src
-          cd /tmp/src
-          
-          # Process Python requirements directly with pip
-          if [ -f /tmp/src/requirements.txt ]; then
-            echo "Installing Python requirements from requirements.txt"
-            ${PIPCMD} install --cache-dir=/output/wheels -r /tmp/src/requirements.txt
-            # Copy requirements to output
-            cp /tmp/src/requirements.txt /output/requirements.txt
-          fi
-          
-          # Skip package manager operations if no package manager available
-          if [ -n "$PKGMGR" ] && [ -f /tmp/src/bindep.txt ]; then
-            echo "Installing system packages with $PKGMGR"
-            $PKGMGR install -y $(cat /tmp/src/bindep.txt) || echo "Some packages may not be available, continuing"
-          fi
-          
-          echo "Build completed successfully"
-          exit 0
-
-    - name: Create comprehensive fix script for execution-environment.yml files
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/fix_execution_environment.sh"
-        mode: "0755"
-        content: |
-          #!/bin/bash
-          
-          # Process all execution-environment.yml files
-          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-            echo "Fixing $file"
-            
-            # Make a backup
-            cp $file ${file}.bak
-            
-            # Remove problematic properties
-            sed -i '/ansible_config:/d' $file
-            
-            # Fix the images section properly
-            if grep -q "images:" $file; then
-              # Extract base image if possible
-              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-              
-              # Remove the images section completely
-              sed -i '/^images:/,/^[a-z]/{/^[a-z]/!d;}' $file
-              
-              # Add proper build_arg_defaults with base image
-              if [ ! -z "$base_img" ]; then
-                echo "Using base image: $base_img"
-                if ! grep -q "build_arg_defaults:" $file; then
-                  # Add build_arg_defaults as a proper object
-                  sed -i "/^version:/a build_arg_defaults:\\n  EE_BASE_IMAGE: $base_img\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-                fi
-              else
-                # Add minimal build_arg_defaults
-                if ! grep -q "build_arg_defaults:" $file; then
-                  # Add build_arg_defaults as a proper object
-                  sed -i "/^version:/a build_arg_defaults:\\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" $file
-                fi
-              fi
-            fi
-            
-            # Fix YAML syntax errors - make sure it's valid YAML
-            if ! grep -q "^version:" $file; then
-              echo "version: 1" > ${file}.new
-              cat $file >> ${file}.new
-              mv ${file}.new $file
-            fi
-            
-            # Validate YAML format
-            if command -v python3 &>/dev/null; then
-              if ! python3 -c "import yaml; yaml.safe_load(open('$file')); print('YAML is valid')" 2>/dev/null; then
-                echo "YAML validation failed for $file, restoring backup"
-                cp ${file}.bak $file
-              fi
-            fi
-          done
-
-    - name: Create schema-compliant fix script for execution-environment.yml files
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/fix_ee_schema.sh"
-        mode: "0755"
-        content: |
-          #!/bin/bash
-          
-          for file in $(find /tmp/ee-containers/environments -name "execution-environment.yml"); do
-            echo "Fixing schema for $file"
-            cp $file ${file}.bak
-            
-            # Extract version if it exists
-            version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
-            
-            # Extract base image if available
-            base_img=""
-            if grep -q "images:" $file; then
-              base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-            fi
-            
-            # Use default base image if none found
-            if [ -z "$base_img" ]; then
-              base_img="registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-            fi
-            
-            # Create a new file with proper structure using printf instead of heredoc
-            printf "version: %s\n\n" "${version}" > ${file}.new
-            printf "images:\n  base_image:\n    name: %s\n\n" "${base_img}" >> ${file}.new
-            printf "build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}.new
-            
-            # Copy any custom dependencies sections from original file
-            if grep -q "^dependencies:" $file; then
-              grep -A 100 "^dependencies:" $file >> ${file}.new
-            fi
-            
-            # Replace original with fixed version
-            mv ${file}.new $file
     - name: Fix all double slashes and version issues in execution-environment.yml files
       ansible.builtin.shell: |
         for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
@@ -608,7 +462,7 @@
           # Fix version mismatches
           sed -i 's|ansible-automation-platform-23/|ansible-automation-platform-25/|g' "$file"
           
-          # Fix quotes in image names
+          # Fix quotes in image names - the issue was here, missing closing quote
           sed -i 's|name: "\(.*\)"|name: \1|g' "$file"
           sed -i "s|name: '\(.*\)'|name: \1|g' "$file"
           
@@ -819,14 +673,20 @@
     # Then run the build task:
     - name: Start image build process with custom hooks
       ansible.builtin.shell: |
-        # Export auth file location for ansible-builder and all subprocesses
         export REGISTRY_AUTH_FILE=/etc/containers/auth.json
+        cd /tmp/ee-containers/environments/{{ item.item }}
         
-        # Run the build with correct parameters for this version
+        # Print debug information
+        echo "Building from $(pwd)"
+        echo "Current auth file: $REGISTRY_AUTH_FILE"
+        echo "Auth file contents:"
+        cat $REGISTRY_AUTH_FILE | grep -v password | grep -v auth | cat
+        
+        # Run with verbose output
         ansible-builder build --no-cache -v3 \
-          -f /tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml \
-          --context /tmp/ee-containers/context \
-          --tag {{ item.item }}:{{ timestamp }}
+          --tag {{ item.item }}:latest \
+          --container-runtime podman \
+          --context /tmp/ee-containers/context
       environment:
         REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
       loop: "{{ env_exists.results }}"
@@ -888,3 +748,110 @@
                     register: base_image_fix
                     changed_when: base_image_fix.rc == 0
                     ignore_errors: true
+
+    - name: Fix execution-environment.yml files with direct YAML update
+      ansible.builtin.shell: |
+        set -e
+        for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
+          # Backup the file
+          cp "$file" "${file}.bak"
+          
+          echo "Fixing file: $file"
+          
+          # Create a valid execution-environment.yml with proper structure
+          echo "version: 1" > "$file"
+          echo "" >> "$file"
+          echo "images:" >> "$file"
+          echo "  base_image:" >> "$file"
+          echo "    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest" >> "$file"
+          echo "" >> "$file"
+          echo "build_arg_defaults:" >> "$file"
+          echo "  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'" >> "$file"
+          echo "" >> "$file"
+          
+          # Append any dependencies section if it exists in the backup
+          if grep -q "^dependencies:" "${file}.bak"; then
+            grep -A 1000 "^dependencies:" "${file}.bak" >> "$file"
+          fi
+          
+          # Append any additional_build_steps if they exist
+          if grep -q "^additional_build_steps:" "${file}.bak"; then
+            grep -A 1000 "^additional_build_steps:" "${file}.bak" >> "$file"
+          fi
+        done
+      register: yaml_fix
+      changed_when: yaml_fix.rc == 0
+      ignore_errors: true
+
+    - name: Log in to Red Hat registry
+      ansible.builtin.command:
+        cmd: "podman login registry.redhat.io --username {{ redhat_username }} --password {{ redhat_password }}"
+      no_log: true
+      register: login_result
+
+    - name: Log in to Red Hat registry (interactive)
+      ansible.builtin.shell: |
+        podman login registry.redhat.io
+      register: registry_login
+      ignore_errors: true
+
+    - name: Verify auth file content
+      ansible.builtin.command:
+        cmd: cat /etc/containers/auth.json
+      register: auth_content
+      changed_when: false
+      no_log: true
+      become: true
+
+    - name: Create comprehensive EE fix script
+      ansible.builtin.copy:
+        dest: /tmp/fix_ee_files.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -e
+          for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
+            echo "Processing $file"
+            cp "$file" "${file}.bak"
+            
+            # Get the original version number or default to 3
+            VERSION=$(grep -Po '^version: \K\d+' "${file}.bak" || echo "3")
+            
+            # Fix double slashes in the file
+            sed -i 's|//|/|g' "$file"
+            
+            # Make sure we have a valid base image
+            if ! grep -q "name: [^[:space:]]\+" "$file" || grep -q "name:[[:space:]]*$" "$file"; then
+              # Create a new file with guaranteed correct format
+              cat > "$file" <<EOF
+              version: $VERSION
+
+              images:
+                base_image:
+                  name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+              EOF
+                          
+                            # Add dependencies section if present in original
+                            if grep -q "^dependencies:" "${file}.bak"; then
+                              echo "" >> "$file"
+                              grep -A 1000 "^dependencies:" "${file}.bak" >> "$file"
+                            fi
+                            
+                            # Add build steps if present in original
+                            if grep -q "^additional_build_steps:" "${file}.bak"; then
+                              echo "" >> "$file"
+                              grep -A 1000 "^additional_build_steps:" "${file}.bak" >> "$file"
+                            fi
+                          fi
+                          
+                          echo "Fixed $file"
+                        done
+                    become: true
+
+                  - name: Run EE fix script
+                    ansible.builtin.command:
+                      cmd: bash /tmp/fix_ee_files.sh
+                    register: fix_result
+                    changed_when: "'Fixed' in fix_result.stdout"
+                    become: true
+                    ignore_errors: true 

@@ -1,8 +1,8 @@
-gcc [platform:rpm]
-make [platform:rpm]
-pkg-config [platform:rpm]
-python3-devel [platform:rpm]
-systemd-devel [platform:rpm]
-python3-pip [platform:rpm]
-shadow-utils [platform:rpm]
-sudo [platform:rpm]1
+gcc
+make
+pkg-config
+python3-devel
+systemd-devel
+python3-pip
+shadow-utils
+sudo1

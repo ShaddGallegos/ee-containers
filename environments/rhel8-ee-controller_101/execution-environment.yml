@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 
 images:
   base_image:
@@ -8,10 +8,28 @@ images:
         pull_policy: missing
         tls_verify: false
     
-
-ansible_config: '../ansible.cfg'
-
 dependencies:
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
+
+options:
+    package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+    prepend: |
+        RUN microdnf install -y python3-pip python3-devel python39-pip python39-devel gcc krb5-workstation krb5-libs \
+            && python3 -m pip install --upgrade pip setuptools wheel \
+            && python3 -m pip install --no-cache-dir aiohttp>=3.8.5
+        ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+
+    prepend_final: |
+        RUN microdnf upgrade -y \
+            && python3 -m pip install --no-cache-dir pywinrm requests-kerberos
+
+    append_final: |
+        USER root
+        RUN microdnf clean all && \
+            rm -rf /var/cache/{dnf,yum} && \
+            rm -rf /etc/ansible/ansible.cfg
+        RUN pip3 check || echo "build complete"

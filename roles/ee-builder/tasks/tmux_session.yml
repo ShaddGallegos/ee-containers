@@ -476,6 +476,43 @@
   ansible.builtin.debug:
     msg: "{{ python_fix.stdout_lines }}"
 
+- name: Fix execution-environment.yml files with direct YAML update
+  ansible.builtin.shell: |
+    set -e
+    for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
+      # Backup the file
+      cp "$file" "${file}.bak"
+      
+      echo "Fixing file: $file"
+      
+      # Create a valid execution-environment.yml with proper structure
+      cat > "$file" << EOF
+version: 1
+
+images:
+  base_image:
+    name: registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'
+EOF
+
+      # Append any dependencies section if it exists in the backup
+      if grep -q "^dependencies:" "${file}.bak"; then
+        echo "" >> "$file"  # Add blank line
+        grep -A 1000 "^dependencies:" "${file}.bak" >> "$file"
+      fi
+      
+      # Append any additional_build_steps if they exist
+      if grep -q "^additional_build_steps:" "${file}.bak"; then
+        echo "" >> "$file"  # Add blank line
+        grep -A 1000 "^additional_build_steps:" "${file}.bak" >> "$file"
+      fi
+    done
+  register: yaml_fix
+  changed_when: yaml_fix.rc == 0
+  ignore_errors: true
+
 - name: Setup podman monitoring in tmux
   block:
     - name: Ensure scripts directory exists

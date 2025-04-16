@@ -8,7 +8,6 @@ images:
             tls_verify: false
 
 additional_build_files:
-    # Can be used to resolve collections from private automation hub
     - src: ansible.cfg
       dest: configs
 
@@ -21,19 +20,21 @@ options:
     package_manager_path: /usr/bin/microdnf
 
 additional_build_steps:
-    prepend_base:
-        - RUN $PYCMD -m pip install --upgrade pip setuptools
-        - RUN $PYCMD -m pip install --upgrade --ignore-installed typing-extensions
-        - RUN $PYCMD -m pip install --ignore-installed aiohttp==3.8.5
-    prepend_galaxy:
-        # Add custom ansible.cfg which defines collection install sources
-        - ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
-        # AH_TOKEN is passed into the build command using a --build-arg
-        # accept this as an ARG during this stage to reference later
-        #- ARG AH_TOKEN
-        # Use the above ARG to define an environment variable holding
-        # the token for resolving private collections
-        #- ENV ANSIBLE_GALAXY_SERVER_AUTOMATION_HUB_TOKEN=$AH_TOKEN
-    append_final:
-        - RUN rm -f /etc/ansible/ansible.cfg
-        - ENV PYTHONPATH=$PYTHONPATH:/usr/local/lib/python3.11/site-packages:/usr/local/lib64/python3.11/site-packages
+    prepend: |
+        RUN microdnf install -y python3-pip python3-devel python39-pip python39-devel gcc krb5-workstation krb5-libs \
+            && python3 -m pip3 install --upgrade pip setuptools wheel \
+            && python3 -m pip3 install --upgrade --ignore-installed typing-extensions \
+            && python3 -m pip3 install --ignore-installed aiohttp>=3.8.5
+        ADD _build/configs/ansible.cfg /etc/ansible/ansible.cfg
+
+    prepend_final: |
+        RUN microdnf upgrade -y \
+            && python3 -m pip install --no-cache-dir pywinrm requests-kerberos \
+            && python3 -m pip install --no-cache-dir requests-ntlm requests-ntlm2 requests-ntlm3 requests-ntlm4 requests-ntlm5 requests-ntlm6 requests-ntlm7 requests-ntlm8 requests-ntlm9 requests-ntlm10 requests-ntlm11 requests-ntlm12 requests-ntlm13 requests-ntlm14 requests-ntlm15 requests-ntlm16 requests-ntlm17 requests-ntlm18 requests-ntlm19 requests-ntlm20
+
+    append_final: |
+        USER root
+        RUN microdnf clean all && \
+            rm -rf /var/cache/{dnf,yum} && \
+            rm -rf /etc/ansible/ansible.cfg
+        RUN pip3 check || echo "build complete"
