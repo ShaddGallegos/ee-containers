@@ -8,16 +8,28 @@
     name: jmespath
     state: present
   become: true
+  tags:
+    - setup
+    - dependencies
+    - python_packages
 
 # Add this task near the beginning of your playbook (after the pip install task)
 - name: Install required Ansible collections for filters
   ansible.builtin.command: ansible-galaxy collection install community.general
   changed_when: false
   ignore_errors: true
+  tags:
+    - setup
+    - dependencies
+    - ansible_collections
 
 - name: Generate timestamp for image tag
   ansible.builtin.set_fact:
     timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+  tags:
+    - setup
+    - timestamp
+    - always
 
 - name: Initialize environment_configs if not defined
   ansible.builtin.set_fact:
@@ -277,6 +289,15 @@
     recurse: yes
   register: ee_yml_files
 
+# FIRST run validation to capture which files have YAML errors
+- name: Verify execution-environment.yml files are properly formatted
+  ansible.builtin.command:
+    cmd: python3 -c "import yaml; yaml.safe_load(open('{{ item.path }}'))"
+  loop: "{{ ee_yml_files.files }}"
+  register: yaml_validation
+  ignore_errors: true
+  changed_when: false
+
 # Then keep your existing tasks
 - name: Create backup directory for original files
   ansible.builtin.file:
@@ -291,7 +312,7 @@
     done
   changed_when: true
 
-# Replace your existing standardized execution-environment task with this more aggressive approach
+# THEN fix the broken files based on validation results
 - name: Force-fix all execution-environment.yml files
   ansible.builtin.copy:
     dest: "{{ item.path }}"
@@ -305,7 +326,7 @@
       
       images:
         base_image:
-          name: 'registry.redhat.io/ansible-automation-platform-25/ee-{% if 'minimal' in item.path %}minimal{% else %}supported{% endif %}-rhel{% if 'rhel8' in item.path %}8{% else %}9{% endif %}:latest'
+          name: 'registry.redhat.io/ansible-automation-platform-25/ee-{% if "minimal" in item.path %}minimal{% else %}supported{% endif %}-rhel{% if "rhel8" in item.path %}8{% else %}9{% endif %}:latest'
       
       options:
         package_manager_path: /usr/bin/microdnf
@@ -314,22 +335,13 @@
         python: requirements.txt
         system: bindep.txt
         galaxy: requirements.yml
-      
-      additional_build_steps:
-        prepend_base: |
-          USER root
-          RUN microdnf install -y python3-pip python3-devel gcc
-      
-        append_final: |
-          USER root
-          RUN microdnf clean all && \
-              rm -rf /var/cache/{dnf,yum}
     mode: '0644'
   loop: "{{ ee_yml_files.files }}"
   when: 
     - item.path.endswith('execution-environment.yml')
     - item.path in (yaml_validation.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | map(attribute='item.path') | list)
   ignore_errors: true
+    
 
 - name: Verify execution-environment.yml files are properly formatted
   ansible.builtin.command:
