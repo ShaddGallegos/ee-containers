@@ -1,0 +1,4 @@
+---
+collections:
+  - name: community.general
+    version: 30.4.0
