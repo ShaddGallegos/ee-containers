@@ -1,0 +1,22 @@
+FROM {{ base_image }} AS base
+USER root
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
+# Fix missing package managers
+RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
+      ln -s /usr/bin/microdnf /usr/bin/dnf || true; \
+    fi
+
+# Version 3 builder configuration
+ARG EE_BASE_IMAGE
+ARG PYCMD=python3
+ARG PKGMGR=dnf
+ARG ANSIBLE_GALAXY_CLI_COLLECTION_OPTS
+ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS
+
+COPY _build/scripts/ /output/scripts/
+COPY _build/scripts/entrypoint /opt/builder/bin/entrypoint
+
+# Install Python requirements and collections
+COPY --chown=root:root ansible.cfg /etc/ansible/ansible.cfg
+RUN /output/scripts/assemble

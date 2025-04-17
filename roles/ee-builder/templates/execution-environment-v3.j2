@@ -1,0 +1,30 @@
+version: 3
+
+build_arg_defaults:
+  EE_BASE_IMAGE: {{ base_image }}
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+
+ansible_config: 'ansible.cfg'
+
+dependencies:
+{% if has_python %}
+  python:{{ python_deps }}
+{% endif %}
+{% if has_system %}
+  system:{{ system_deps }}
+{% endif %}
+{% if has_galaxy %}
+  galaxy:{{ galaxy_deps }}
+{% endif %}
+{% if has_additional_steps %}
+
+additional_build_steps:
+{% if has_prepend %}
+  prepend:{{ prepend_steps }}
+{% endif %}
+{% if has_append %}
+  append:{{ append_steps }}
+{% endif %}
+{% endif %}
+

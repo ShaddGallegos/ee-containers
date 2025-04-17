@@ -1,0 +1,17 @@
+#!/bin/bash
+# Launcher for tmux monitoring session
+
+# Determine terminal type - prefer GUI terminals when available
+if command -v gnome-terminal &> /dev/null; then
+  gnome-terminal -- bash -c "cd {{ playbook_dir }} && /usr/bin/tmux attach -t {{ podman_monitor_name }}"
+elif command -v konsole &> /dev/null; then
+  konsole --new-tab -e "cd {{ playbook_dir }} && /usr/bin/tmux attach -t {{ podman_monitor_name }}"
+elif command -v xterm &> /dev/null; then
+  xterm -e "cd {{ playbook_dir }} && /usr/bin/tmux attach -t {{ podman_monitor_name }}"
+elif [ -n "$WSL_DISTRO_NAME" ] || [ "{{ is_wsl }}" == "true" ]; then
+  # WSL-specific approach
+  powershell.exe -Command "Start-Process wt -ArgumentList 'wsl.exe -d {{ os_type | default('Debian') }} bash -c \"cd {{ playbook_dir }} && tmux attach -t {{ podman_monitor_name }}\"'"
+else
+  # Default fallback - just attach directly
+  tmux attach -t {{ podman_monitor_name }}
+fi

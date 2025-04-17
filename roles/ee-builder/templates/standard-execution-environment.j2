@@ -1,0 +1,52 @@
+---
+version: 3
+
+build_arg_defaults:
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+  PKGMGR_PRESERVE_CACHE: 'false'
+
+images:
+  base_image:
+    name: '{{ base_image }}'
+    options:
+      pull_policy: missing
+      tls_verify: false
+
+options:
+  package_manager_path: /usr/bin/microdnf
+
+{% if has_python or has_system or has_galaxy %}
+dependencies:
+{% if has_python %}
+  python: {{ python_deps }}
+{% endif %}
+{% if has_system %}
+  system: {{ system_deps }}
+{% endif %}
+{% if has_galaxy %}
+  galaxy: {{ galaxy_deps }}
+{% endif %}
+{% endif %}
+
+{% if has_additional_steps %}
+additional_build_steps:
+  prepend_base: |
+    USER root
+    # Use --ignore-installed to prevent attempts to uninstall system packages
+    RUN microdnf upgrade -y && \
+        microdnf install -y gcc make pkg-config python3-devel python3-pip && \
+        python3 -m pip install --upgrade --ignore-installed pip setuptools wheel
+
+  prepend_final: |
+    USER root
+    RUN microdnf upgrade -y && \
+        microdnf install -y python3-pip python3-devel && \
+        python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel
+
+  append_final: |
+    USER root
+    RUN microdnf clean all && \
+        rm -rf /var/cache/{dnf,yum} && \
+        echo "Build completed successfully"
+{% endif %}

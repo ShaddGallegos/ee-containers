@@ -3,9 +3,24 @@
 # 1. INITIALIZATION AND SETUP
 ####################################
 
+- name: Install required Python packages for filters
+  ansible.builtin.pip:
+    name: jmespath
+    state: present
+  become: true
+
 - name: Generate timestamp for image tag
   ansible.builtin.set_fact:
     timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+- name: Initialize environment_configs if not defined
+  ansible.builtin.set_fact:
+    environment_configs: {}
+  when: environment_configs is undefined
+
+- name: Set OS type for environments
+  ansible.builtin.set_fact:
+    os_type: "{{ 'rhel8' if (environments_to_build | default([]) | select('search', 'rhel8') | list | length > 0) else 'rhel9' }}"
 
 - name: Create required directories
   ansible.builtin.file:
@@ -13,12 +28,12 @@
     state: directory
     mode: "0755"
   loop:
-    - "/tmp/ansible_safe"
-    - "/tmp/ee-containers/hooks"
-    - "/tmp/ee-containers/context"
-    - "/tmp/ee-containers/context/hooks"
-    - "/tmp/ee-containers/context/_build/scripts"
-    - "/tmp/ee-containers/containerfiles"
+    - "{{ dir_paths.ansible_config }}"
+    - "{{ dir_paths.hooks }}"
+    - "{{ dir_paths.context }}"
+    - "{{ dir_paths.context }}/hooks"
+    - "{{ dir_paths.build }}"
+    - "{{ dir_paths.containerfiles }}"
   become: true
 
 - name: Create Ansible configuration files
@@ -30,16 +45,8 @@
     - path: "/tmp/ansible_safe/ansible.cfg"
       content: |
         [defaults]
-        inventory = /tmp/ansible_safe/inventory
-        nocows = True
-        deprecation_warnings = False
-        command_warnings = False
-        system_warnings = False
-        localhost_warning = False
-        interpreter_python = auto_silent
-        
-        [inventory]
-        enable_plugins = host_list, script, auto, yaml, ini
+        ansible_log_path = /tmp/ee-containers/ansible.log
+        # rest of the ansible.cfg content...
     - path: "/tmp/ansible_safe/inventory"
       content: |
         [local]
@@ -60,18 +67,25 @@
   ansible.builtin.debug:
     msg: "Playbook directory: {{ playbook_dir }}"
 
-- name: Synchronize environments from playbook directory to working directory (rsync-style)
+- name: Synchronize environments from playbook directory to working directory
   ansible.builtin.synchronize:
     src: "{{ playbook_dir }}/environments/"
     dest: "/tmp/ee-containers/environments/"
-    delete: no        # Don't delete files in dest that aren't in src
-    archive: yes      # Preserve permissions
-    checksum: yes     # Use checksums to determine if files changed
-    recursive: yes    # Copy directories recursively
+    delete: no
+    archive: yes
+    checksum: yes
+    recursive: yes
   delegate_to: "{{ inventory_hostname }}"
   become: true
   register: env_synced
-  
+
+- name: Check if environment directories exist
+  ansible.builtin.stat:
+    path: "{{ paths.environments }}/{{ item }}"
+  loop: "{{ environments_to_build | default([]) }}"
+  register: env_exists
+  when: environments_to_build is defined
+
 - name: Debug environments_to_build list
   ansible.builtin.debug:
     msg: "Selected environments: {{ environments_to_build | join(', ') }}"
@@ -80,6 +94,8 @@
 ####################################
 # 2. ENVIRONMENT VALIDATION
 ####################################
+
+# IMPORTANT: This must come before any tasks that use env_exists
 
 - name: Check if environments directory exists
   ansible.builtin.stat:
@@ -91,12 +107,9 @@
     msg: "Environments directory not found at {{ playbook_dir }}/environments"
   when: not env_dir_exists.stat.exists
 
-- name: Check if environments exist before building
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item }}"
-  loop: "{{ environments_to_build }}"
-  register: env_exists
+# 
 
+# CONSOLIDATED: Check for execution-environment.yml files
 - name: Check if execution-environment.yml exists for each environment
   ansible.builtin.stat:
     path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
@@ -120,12 +133,12 @@
 
 - name: Create system-wide auth file for podman
   ansible.builtin.copy:
-    dest: "/etc/containers/auth.json"
+    dest: "{{ registry.redhat.auth_file }}"
     mode: "0644"
     content: |
       {
         "auths": {
-          "registry.redhat.io": {
+          "{{ registry.redhat.url }}": {
             "auth": "{{ (rh_username + ':' + rh_password) | b64encode }}",
             "username": "{{ rh_username }}",
             "password": "{{ rh_password }}"
@@ -180,7 +193,7 @@
     src: "{{ role_path }}/templates/ansible.cfg.j2"
     dest: "/tmp/ee-containers/ansible.cfg"
     mode: '0644'
-    force: no  # Don't overwrite if file already exists
+    force: no
   vars:
     ansible_vars: "{{ config_vars | default({}) }}"
 
@@ -191,22 +204,12 @@
     mode: '0644'
   loop: "{{ environments_to_build }}"
 
-- name: Create requirements.yml for each environment
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/environments/{{ item }}/requirements.yml"
-    content: |
-      ---
-      collections: []
-    mode: "0644"
-  loop: "{{ environments_to_build }}"
-  failed_when: false
-
-- name: Create requirements.txt for each environment
+- name: Create requirements.txt for each environment (if needed)
   ansible.builtin.copy:
     dest: "/tmp/ee-containers/environments/{{ item }}/requirements.txt"
-    content: |
       # No requirements specified
     mode: "0644"
+    force: false
   loop: "{{ environments_to_build }}"
   failed_when: false
 
@@ -214,74 +217,12 @@
 # 5. CREATE HELPER SCRIPTS
 ####################################
 
-- name: Create universal package manager detection script
+# Copy pre-built custom assemble script
+- name: Copy custom assemble script
   ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/ee-builder/scripts/custom-assemble.sh"
     dest: "/tmp/ee-containers/custom-assemble.sh"
     mode: "0755"
-    content: |
-      #!/bin/bash
-      set -e
-
-      source /etc/os-release
-      RELEASE=${ID}
-      
-      # Detect package manager - check multiple possible locations
-      if [ -x /usr/bin/dnf ]; then
-        PKGMGR=/usr/bin/dnf
-      elif [ -x /usr/bin/yum ]; then
-        PKGMGR=/usr/bin/yum
-      elif [ -x /usr/bin/microdnf ]; then
-        PKGMGR=/usr/bin/microdnf
-      elif [ -x /bin/dnf ]; then
-        PKGMGR=/bin/dnf
-      elif [ -x /bin/yum ]; then
-        PKGMGR=/bin/yum
-      else
-        echo "WARNING: No package manager found. Continuing without package installation."
-        PKGMGR="echo SKIPPING PACKAGE INSTALL:"
-      fi
-      
-      echo "Using package manager: $PKGMGR"
-      
-      PKGMGR_OPTS=""
-      PKGMGR_PRESERVE_CACHE=""
-      PYCMD=/usr/bin/python3
-      PIPCMD="${PYCMD} -m pip"
-      
-      mkdir -p /output/bindep
-      mkdir -p /output/wheels
-      mkdir -p /tmp/src
-      cd /tmp/src
-      
-      PACKAGES=""
-      PIP_OPTS=""
-      
-      # Install bindep packages if available
-      if [ -f bindep.txt ]; then
-        if command -v bindep >/dev/null 2>&1; then
-          PACKAGES=$(bindep -l newline | sort)
-          if [ "${RELEASE}" == "centos" ]; then
-            PACKAGES=$(echo "${PACKAGES}" | sed 's/python39-devel/python3-devel/')
-          fi
-          
-          compile_packages=$(bindep -b compile || true)
-          if [ ! -z "${compile_packages}" ]; then
-            echo "Installing compiler packages: ${compile_packages}"
-            $PKGMGR install -y ${compile_packages} || echo "WARNING: Some packages failed to install"
-          fi
-        else
-          echo "WARNING: bindep not available, skipping system package installation"
-        fi
-      fi
-      
-      # Install Python packages if requirements.txt exists
-      if [ -f requirements.txt ]; then
-        echo "Installing Python requirements"
-        $PIPCMD install -r requirements.txt || echo "WARNING: Some Python packages failed to install"
-      fi
-      
-      echo "Assembly completed successfully"
-      exit 0
 
 - name: Create Containerfile template with version 3 compatibility
   ansible.builtin.copy:
@@ -311,258 +252,68 @@
       COPY --chown=root:root ansible.cfg /etc/ansible/ansible.cfg
       RUN /output/scripts/assemble
 
-- name: Create pre-build hook script
+# Copy pre-built hook script from scripts directory
+- name: Copy pre-build hook
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/context/hooks/pre-build"
+    src: "{{ playbook_dir }}/roles/ee-builder/scripts/hooks/pre-build"
+    dest: "{{ paths.hooks }}/pre-build"
     mode: "0755"
-    content: |
-      #!/bin/bash
-      echo "Running pre-build hook"
-      
-      # Create symlink for package managers if needed
-      if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then
-        ln -s /usr/bin/microdnf /usr/bin/dnf || true
-        echo "Created symlink from microdnf to dnf"
-      fi
-      
-      exit 0
 
 ####################################
 # 6. FIX EXECUTION ENVIRONMENT YAML FILES
 ####################################
 
-- name: Fix all execution-environment.yml files for version 3 compatibility
+- name: Create backup directory for original files
+  ansible.builtin.file:
+    path: "/tmp/ee-containers/backups"
+    state: directory
+    mode: "0755"
+
+- name: Back up all execution-environment.yml files
   ansible.builtin.shell: |
-    set -e
-    for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
-      echo "Processing $file"
-      
-      # Make backup
-      cp "$file" "${file}.bak"
-      
-      # Extract base image if possible
-      BASE_IMG=$(grep -A 5 'base_image:' "$file" | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "")
-      
-      # Use default if none found
-      if [ -z "$BASE_IMG" ]; then
-        BASE_IMG="registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-      fi
-      
-      # Fix path issues
-      BASE_IMG=$(echo "$BASE_IMG" | sed 's|//|/|g')
-      BASE_IMG=$(echo "$BASE_IMG" | sed 's|ansible-automation-platform-23/|ansible-automation-platform-25/|g')
-      
-      # Create clean file with version 3 structure
-      cat > "${file}.new" << EOF
-      version: 3
-
-      build_arg_defaults:
-        EE_BASE_IMAGE: ${BASE_IMG}
-        ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'
-        ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
-
-      ansible_config: 'ansible.cfg'
-
-      dependencies:
-      EOF
-      
-      # Preserve dependencies section if it exists
-      if grep -q "python:" "${file}"; then
-        echo "  python:" >> "${file}.new"
-        sed -n '/python:/,/system/p' "$file" | grep -v "system:" >> "${file}.new" 
-      fi
-      
-      if grep -q "system:" "${file}"; then
-        echo "  system:" >> "${file}.new"
-        sed -n '/system:/,/additional_build_steps\|galaxy\|$/{/additional_build_steps\|galaxy/!p;}' "$file" >> "${file}.new"
-      fi
-      
-      if grep -q "galaxy:" "${file}"; then
-        echo "  galaxy:" >> "${file}.new"
-        sed -n '/galaxy:/,/additional_build_steps\|$/{/additional_build_steps/!p;}' "$file" >> "${file}.new"
-      fi
-      
-      # Preserve additional_build_steps if they exist
-      if grep -q "additional_build_steps:" "${file}"; then
-        echo "" >> "${file}.new"
-        echo "additional_build_steps:" >> "${file}.new"
-        
-        # Check for prepend section
-        if grep -q "prepend:" "${file}"; then
-          echo "  prepend:" >> "${file}.new"
-          sed -n '/prepend:/,/append\|$/{/append:/!p;}' "$file" | grep -v "prepend:" >> "${file}.new"
-        fi
-        
-        # Check for append section
-        if grep -q "append:" "${file}"; then
-          echo "  append:" >> "${file}.new"
-          sed -n '/append:/,/$/{/^---/!p;}' "$file" | grep -v "append:" >> "${file}.new"
-        fi
-      fi
-      
-      # Replace original
-      mv "${file}.new" "$file"
-      echo "Fixed $file to version 3 format"
+    for file in $(find /tmp/ee-containers -name "execution-environment.yml"); do
+      cp "$file" "/tmp/ee-containers/backups/$(basename $(dirname $file))-execution-environment.yml"
     done
-  args:
-    executable: /bin/bash
-  register: fix_ee_files
-  changed_when: fix_ee_files.rc == 0
-  failed_when: false
+  changed_when: true
 
-- name: Fix backslash syntax error in execution-environment.yml files
-  ansible.builtin.shell: |
-    set -e
-    for file in $(find /tmp/ee-containers -type f -name "execution-environment.yml"); do
-      # Fix incorrect backslash after ansible.cfg
-      sed -i 's|/etc/ansible/ansible.cfg \\\\|/etc/ansible/ansible.cfg \\|g' "$file"
-      sed -i 's|/etc/ansible/ansible.cfg \\\\|/etc/ansible/ansible.cfg \&\&|g' "$file"
-    done
-  args:
-    executable: /bin/bash
-  register: fix_backslash_issue
-  changed_when: fix_backslash_issue.rc == 0
-  failed_when: false
-
-- name: Create default version 3 template if needed
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/default_v3_template.yml"
-    mode: "0644"
-    content: |
-      ---
-      version: 3
-
-      build_arg_defaults:
-        EE_BASE_IMAGE: 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest'
-        ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'
-        ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
-
-      ansible_config: 'ansible.cfg'
-
-      dependencies:
-      ansible-core<=2.14.0
-      ansible-runner<=2.14.0
-        python:
-          - cryptography>=38.0.0
-        system:
-          - python3-pip
-          - python3-devel
-          - gcc
-          - make
-          - pkg-config
-          - systemd-devel
-          - libxml2-devel
-          - dnf
-          - yum-utils
-          - openssl-devel
-
-      additional_build_steps:
-        prepend_final: |
-          USER root
-          RUN python3 -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel && \
-              python3 -m pip install --no-cache-dir --upgrade --ignore-installed ansible-core ansible-runner
-
-        append_final: |
-          USER root
-          RUN microdnf clean all && \
-              rm -rf /var/cache/{dnf,yum} && \
-              rm -rf /etc/ansible/ansible.cfg && \
-              echo "Build completed successfully" && echo "Requirements test file created successfully"
-          RUN pip3 check && echo "Build completed successfully" || echo "Build failed - pip check found issues"
-
-- name: Create default execution-environment.yml files where missing
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/default_v3_template.yml"
-    dest: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
-    mode: "0644"
-    force: false 
-  loop: "{{ ee_yml_exists.results }}"
-  when: 
-    - item.stat is defined
-    - not item.stat.exists
-  register: created_default_ee
-
-- name: Check if environment files exist
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir
-  register: ee_file_checks
-
-- name: Create default execution-environment.yml files only if missing
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/default_v3_template.yml"
-    dest: "/tmp/ee-containers/environments/{{ item.item.item }}/execution-environment.yml"
-    mode: "0644"
-  loop: "{{ ee_file_checks.results }}"
-  when: 
-    - item.stat is defined 
-    - not item.stat.exists
-
-- name: Generate consistent execution-environment.yml files
+- name: Create standardized execution-environment.yml files
   ansible.builtin.template:
-    src: "base-ee-template.yml.j2"
-    dest: "/tmp/ee-containers/environments/{{ item.key }}/execution-environment.yml"
+    src: "{{ role_path }}/templates/standard-execution-environment.j2"
+    dest: "{{ item.path }}"
     mode: "0644"
-  loop: "{{ environment_configs | dict2items }}"
-  when: item.key in environments_to_build
   vars:
-    ee_version: 3  # Set this to 1 or 3 based on your preference
-  register: ee_files_generated
+    file_content: "{{ lookup('file', item.path) }}"
+    # Extract key elements from the original file
+    base_image_match: "{{ file_content | regex_search('base_image:[\\s\\S]*?name:[\\s]*([^\\n]*)') }}"
+    base_image: "{{ (base_image_match | regex_replace('base_image:[\\s\\S]*?name:[\\s]*', '') | trim) if base_image_match else 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest' }}"
+    python_deps: "{{ file_content | regex_findall('python:([\\s\\S]*?)(?:system:|galaxy:|additional_build_steps:|$)') | first | default('') }}"
+    system_deps: "{{ file_content | regex_findall('system:([\\s\\S]*?)(?:python:|galaxy:|additional_build_steps:|$)') | first | default('') }}"
+    galaxy_deps: "{{ file_content | regex_findall('galaxy:([\\s\\S]*?)(?:python:|system:|additional_build_steps:|$)') | first | default('') }}"
+    additional_steps: "{{ file_content | regex_search('additional_build_steps:[\\s\\S]*?(?:dependencies:|$)') | default('') }}"
+    # Check for existence
+    has_python: "{{ 'python:' in file_content }}"
+    has_system: "{{ 'system:' in file_content }}"
+    has_galaxy: "{{ 'galaxy:' in file_content }}"
+    has_additional_steps: "{{ 'additional_build_steps:' in file_content }}"
+  loop: "{{ ee_yml_files.files }}"
+  ignore_errors: true
 
-- name: Check if requirements.yml files exist
-  ansible.builtin.stat:
-    path: "/tmp/ee-containers/environments/{{ item.item }}/requirements.yml"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir
-  register: req_yml_exists
-
-- name: Check if existing requirements.yml files are empty
-  ansible.builtin.shell: "[ -s '/tmp/ee-containers/environments/{{ item.item }}/requirements.yml' ] && echo 'not_empty' || echo 'empty'"
-  register: req_yml_content
+- name: Verify execution-environment.yml files are properly formatted
+  ansible.builtin.command:
+    cmd: python3 -c "import yaml; yaml.safe_load(open('{{ item.path }}'))"
+  loop: "{{ ee_yml_files.files }}"
+  register: yaml_validation
+  ignore_errors: true
   changed_when: false
-  loop: "{{ req_yml_exists.results }}"
-  when: 
-    - item.stat is defined
-    - item.stat.exists
 
-- name: Create default requirements.yml template
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/default_requirements_template.yml"
-    content: |
-      ---
-      # Default requirements file for execution environment
-      collections:
-        - name: ansible.posix
-        - name: community.general
-        
-      python:
-        - pytz
-        - boto3
-    mode: "0644"
-
-- name: Create default requirements.yml files where missing
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/default_requirements_template.yml"
-    dest: "/tmp/ee-containers/environments/{{ item.item }}/requirements.yml"
-    mode: "0644"
-    force: false
-  loop: "{{ req_yml_exists.results }}"
-  when: 
-    - item.stat is defined
-    - not item.stat.exists
-  register: created_req_files
-
-- name: Create requirements.yml for empty files
-  ansible.builtin.copy:
-    src: "/tmp/ee-containers/default_requirements_template.yml"
-    dest: "/tmp/ee-containers/environments/{{ item.item.item }}/requirements.yml"
-    mode: "0644"
-  loop: "{{ req_yml_content.results }}"
-  when: 
-    - item.stdout is defined
-    - item.stdout == 'empty'
-  register: updated_req_files
+- name: Display validation results for execution-environment.yml files
+  ansible.builtin.debug:
+    msg: |
+      Valid YAML files: {{ yaml_validation.results | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length }}
+      Invalid YAML files: {{ yaml_validation.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length }}
+      {% if yaml_validation.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length > 0 %}
+      Warning: Some files still have YAML errors. The build may fail.
+      {% endif %}
 
 ####################################
 # 7. GENERATE CUSTOM CONTAINERFILES
@@ -575,23 +326,17 @@
     mode: "0755"
   ignore_errors: true
 
+# CONSOLIDATED: Generate custom Containerfile for each environment
 - name: Generate custom Containerfile for each environment
-  ansible.builtin.shell: |
-    # Prepare for the build
-    cd /tmp/ee-containers/environments/{{ item.item }}
-    
-    # Get base image from execution-environment.yml
-    BASE_IMAGE=$(grep -A 5 'base_image:' execution-environment.yml | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"'"'" || echo "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest")
-    
-    # Generate custom Containerfile from template
-    cat /tmp/ee-containers/containerfiles/Containerfile.j2 | sed "s|{{ '{{' }} base_image {{ '}}' }}|$BASE_IMAGE|g" > Containerfile
-    
-    echo "Created custom Containerfile for {{ item.item }} with base image: $BASE_IMAGE"
+  ansible.builtin.template:
+    src: "Containerfile.j2"
+    dest: "{{ paths.environments }}/{{ item.item }}/Containerfile"
+    mode: "0644"
+  vars:
+    base_image: "{{ lookup('file', paths.environments + '/' + item.item + '/execution-environment.yml') | from_yaml | json_query('images.base_image.name') | default(images.base.rhel9) }}"
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
   register: containerfile_gen
-  changed_when: containerfile_gen.rc == 0
-  ignore_errors: true
 
 - name: Verify environments before building
   ansible.builtin.shell: |
@@ -617,108 +362,12 @@
 # 8. BUILD IMAGES
 ####################################
 
-- name: Create modified assemble script with proper package manager usage
+# Copy pre-built assemble script from scripts directory
+- name: Copy modified assemble script
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/context/_build/scripts/assemble"
+    src: "{{ playbook_dir }}/roles/ee-builder/scripts/build/assemble"
+    dest: "{{ paths.build }}"
     mode: "0755"
-    content: |
-      #!/bin/bash
-      set -e
-      
-      # Create DNF symlink as the very first step if needed
-      if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then
-        echo "Creating symlink from microdnf to dnf"
-        ln -s /usr/bin/microdnf /usr/bin/dnf
-      elif [ ! -f /usr/bin/dnf ]; then
-        echo "Creating fallback wrapper for dnf"
-        cat > /usr/bin/dnf << 'WRAPPER'
-      #!/bin/sh
-      # DNF fallback wrapper that uses available package manager or warns
-      if [ -x /usr/bin/microdnf ]; then
-        exec /usr/bin/microdnf "$@"
-      elif [ -x /bin/microdnf ]; then
-        exec /bin/microdnf "$@"
-      elif [ -x /usr/bin/yum ]; then
-        exec /usr/bin/yum "$@"
-      else
-        echo "No package manager found. Skipping package installation."
-        echo "Command attempted: dnf $@"
-        # Return success to allow build to continue
-        exit 0
-      fi
-      WRAPPER
-        chmod +x /usr/bin/dnf
-      fi
-      
-      # Now proceed with normal script
-      source /etc/os-release
-      RELEASE=${ID}
-      
-      if [ -x /usr/bin/dnf ]; then
-        PKGMGR=/usr/bin/dnf
-      elif [ -x /usr/bin/yum ]; then
-        PKGMGR=/usr/bin/yum
-      elif [ -x /usr/bin/microdnf ]; then
-        PKGMGR=/usr/bin/microdnf
-      else
-        echo "WARNING: No package manager found. Continuing without system package installation."
-        # Create stub function to avoid failures
-        function dummy_install() {
-          echo "WOULD INSTALL: $@"
-          return 0
-        }
-        PKGMGR="dummy_install"
-      fi
-      
-      echo "Using package manager: $PKGMGR"
-      
-      # Normal assemble script continues
-      PKGMGR_OPTS=""
-      PKGMGR_PRESERVE_CACHE=""
-      PYCMD=/usr/bin/python3
-      PIPCMD="${PYCMD} -m pip"
-      
-      mkdir -p /output/bindep
-      mkdir -p /output/wheels
-      mkdir -p /tmp/src
-      cd /tmp/src
-      
-      # Install bindep packages if available
-      if [ -f bindep.txt ]; then
-        if command -v bindep >/dev/null 2>&1; then
-          echo "Running bindep to determine packages needed"
-          PACKAGES=$(bindep -l newline | sort || echo "")
-          if [ "${RELEASE}" == "centos" ]; then
-            PACKAGES=$(echo "${PACKAGES}" | sed 's/python39-devel/python3-devel/')
-          fi
-          
-          compile_packages=$(bindep -b compile || echo "")
-          if [ ! -z "${compile_packages}" ]; then
-            echo "Installing compiler packages: ${compile_packages}"
-            if [ "$PKGMGR" = "dummy_install" ]; then
-              echo "SKIPPING INSTALL: ${compile_packages}"
-            else
-              # THIS LINE FIXED - Use $PKGMGR instead of hardcoded /usr/bin/dnf
-              $PKGMGR install -y ${compile_packages} || echo "WARNING: Some packages failed to install"
-            fi
-          fi
-        else
-          echo "WARNING: bindep not available, skipping system package installation"
-        fi
-      fi
-      
-      # Install Python packages if requirements.txt exists
-      if [ -f requirements.txt ]; then
-        echo "Installing Python requirements"
-        $PIPCMD install -r requirements.txt || echo "WARNING: Some Python packages failed to install"
-      fi
-      
-      echo "Assembly completed successfully"
-      pip3 check && echo "Build status: SUCCESS - All dependencies are satisfied" || echo "Build status: WARNING - pip check found issues"
-      exit 0
-    force: yes
-  register: custom_assemble
-  changed_when: custom_assemble is changed
 
 - name: Start image build process with custom hooks
   ansible.builtin.shell: |
@@ -812,4 +461,9 @@
       {% if successful_builds != 0 %}
       Successfully built containers are available with 'podman images'
       {% endif %}
+
+
+
+
+
 

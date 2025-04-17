@@ -1,23 +1,77 @@
-# ee-containers/roles/ee-builder/vars/main.yml
-container_registries:
-  - registry.redhat.io
-  - console.redhat.com
-  - registry.access.redhat.com
-  - quay.io
-  - registry.connect.redhat.com
+---
+# Registry and Image Configuration
+registry:
+  redhat:
+    url: "registry.redhat.io"
+    auth_file: "/etc/containers/auth.json"
+  search_paths:
+    - "registry.access.redhat.com"
+    - "registry.redhat.io"
+    - "docker.io"
+    - "quay.io"
 
-dns_servers:
-  - '8.8.8.8'
-  - '8.8.4.4'
+images:
+  base:
+    rhel8: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest"
+    rhel9: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+  platform_version: "25"  # Used to replace older versions in paths
 
-required_images:
-  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest 
-  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest 
-  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest 
-  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest 
-  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest 
-  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
-  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest 
-  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest
+# Path Configuration
+paths:
+  base: "/tmp/ee-containers"
+  scripts: "{{ playbook_dir }}/scripts"
+  tmux:
+    header: "/tmp/ee-containers/tmux_header.txt"
+    launcher: "/tmp/ee-containers/tmux_launcher.sh"
+    monitor: "/tmp/podman-monitor.sh"
+  status_file: "/tmp/ee-containers/build_status.txt"
+  fix_script: "/tmp/ee-containers/fix_ee_files.py"
+  environments: "/tmp/ee-containers/environments"
+  containerfiles: "/tmp/ee-containers/containerfiles"
+  hooks: "/tmp/ee-containers/hooks"
+  context: "/tmp/ee-containers/context"
+  build: "/tmp/ee-containers/context/_build/scripts"
+  ansible_config: "/tmp/ansible_safe"
 
-work_dir: '/tmp/ee-containers'
+# For backwards compatibility
+dir_paths:
+  base: "/tmp/ee-containers"
+  ansible_config: "/tmp/ansible_safe"
+  hooks: "/tmp/ee-containers/hooks"
+  context: "/tmp/ee-containers/context"
+  build: "/tmp/ee-containers/context/_build/scripts"
+  containerfiles: "/tmp/ee-containers/containerfiles"
+  environments: "/tmp/ee-containers/environments"
+
+# tmux Configuration
+tmux:
+  session_name: "podman_monitor"
+  header_template: "tmux_header.j2"
+  launcher_template: "tmux_launcher.sh.j2"
+  monitor_script: "build_monitor.sh"
+
+# File Templates
+templates:
+  requirements:
+    collections:
+      - name: "ansible.utils"
+        version: ">=2.0.0"
+      - name: "ansible.posix"
+        version: ">=1.5.0"
+      - name: "community.general"
+        version: ">=7.0.0"
+    python:
+      - "pytz"
+      - "boto3"
+  
+  execution_environment:
+    version: 3
+    build_args:
+      ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--ignore-errors --force"
+      ANSIBLE_GALAXY_CLI_ROLE_OPTS: "--ignore-errors"
+
+  status_header: |
+    ╔═══════════════════════════════════════════════════════╗
+    ║           ANSIBLE EXECUTION ENVIRONMENT               ║
+    ║                    BUILD STATUS                       ║
+    ╚═══════════════════════════════════════════════════════╝

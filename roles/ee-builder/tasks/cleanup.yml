@@ -4,76 +4,9 @@
     path: "{{ item }}"
     state: absent
   loop:
-    - "/tmp/ee-banner.txt"
-    - "/tmp/ee-builder"
-    # Don't remove the entire ee-containers directory
-    # - "/tmp/ee-containers" 
-    - "{{ playbook_dir }}/ansible.cfg"
+    - "/tmp/ansible_safe"
+    # Add other temp paths as needed
   ignore_errors: true
-  become: true
-
-# Add before/after comparison to identify what's changing
-- name: List images before any operations
-  ansible.builtin.command:
-    cmd: "podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}'"
-  register: images_before
-  changed_when: false
-
-# Clean up dangling (<none>:<none>) images after build
-- name: Remove dangling images after build
-  ansible.builtin.shell: |
-    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
-  register: dangling_removal
-  changed_when: dangling_removal.stdout != ""
-  failed_when: false
-  become: true
-  ignore_errors: true
-
-# Check login status for each registry
-- name: Check registry login status
-  ansible.builtin.command:
-    cmd: "podman login --get-login {{ item }}"
-  loop:
-    - "registry.redhat.io"
-    - "registry.access.redhat.com"
-    - "docker.io"
-    - "quay.io"
-  register: login_check
-  changed_when: false
-  failed_when: false
-  ignore_errors: true
-
-# Debug login status
-- name: Show login status
-  ansible.builtin.debug:
-    msg: "{{ item.item }}: {{ 'Logged in' if item.rc == 0 else 'Not logged in' }}"
-  loop: "{{ login_check.results }}"
-  when: item is defined
-
-# Log out only from registries that are logged in
-- name: Log out of container registries
-  ansible.builtin.command:
-    cmd: "podman logout {{ item.item }}"
-  loop: "{{ login_check.results }}"
-  register: logout_results
-  when: item.rc == 0  # Only log out if we're logged in
-  changed_when: "'Removed login credentials' in logout_results.stdout"
-  failed_when: false
-  ignore_errors: true
-
-# Show logout results
-- name: Display registry logout results
-  ansible.builtin.debug:
-    msg: "{{ item.stdout | default(item.stderr) }}"
-  loop: "{{ logout_results.results | default([]) }}"
-  when: item is defined and (item.stdout is defined or item.stderr is defined)
-
-# Show logout results
-- name: Display registry logout results
-  ansible.builtin.debug:
-    msg: "{{ item.stdout | default(item.stderr) }}"
-  loop: "{{ logout_results.results }}"
-  when: item.stdout is defined or item.stderr is defined
 
 # Only cleanup selective subdirectories and files
 - name: Clean up work directory selectively
@@ -85,4 +18,3 @@
     - "/tmp/ee-containers/hooks"
     - "/tmp/ee-containers/custom-assemble.sh"
   ignore_errors: true
-

@@ -12,6 +12,9 @@ dependencies:
       - community.windows
       - chocolatey.chocolatey
       - microsoft.sql
+      - ansible.posix
+      - ansible.utils
+      - community.general
   system:
     - pkgconf-pkg-config
     - systemd-devel
@@ -27,5 +30,13 @@ dependencies:
     - msgraph-sdk>=1.0.0
     - psycopg2-binary
     - urllib3>=1.26.15
+    - requests-kerberos
 options:
   package_manager_path: /usr/bin/microdnf
+
+additional_build_steps:
+  prepend_final: |
+    RUN microdnf upgrade -y \
+        && microdnf install -y python39-pip python39-devel gcc krb5-workstation krb5-libs \
+        && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel 
+

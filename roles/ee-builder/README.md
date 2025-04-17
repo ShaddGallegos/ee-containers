@@ -19,8 +19,11 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 * Internet connectivity for downloading dependencies
 * At least 2GB of free disk space
 * Sudo/root privileges for container operations
+* tmux (for build monitoring)
 
-## How to Run
+## Initial Setup
+
+Before running the playbook, you'll need to set up the project structure:
 
 1. Clone the repository:
 

@@ -12,13 +12,13 @@
 # Create tmux header file first (before any other tmux operations)
 - name: Create tmux header file
   ansible.builtin.template:
-    src: "tmux_header.j2"
-    dest: "/tmp/ee-containers/tmux_header.txt"
+    src: "{{ tmux.header_template }}"
+    dest: "{{ paths.tmux.header }}"
     mode: 0644
 
 - name: Ensure monitoring directory exists
   ansible.builtin.file:
-    path: "/tmp/ee-containers"
+    path: "{{ paths.base }}"
     state: directory
     mode: 0755
   when: var_check is succeeded
@@ -55,110 +55,24 @@
     selected_environments: "{{ environments_to_build | default([]) }}"
   when: var_check is succeeded
 
-# Create tmux monitor script - using single consistent name
-- name: Create tmux monitor script
+# Create tmux monitor script
+# Copy pre-built monitor script
+- name: Copy tmux monitor script
   ansible.builtin.copy:
-    dest: "{{ playbook_dir }}/scripts/build_monitor.sh"
-    mode: 0755
-    content: |
-      #!/bin/bash
-      
-      # Function to log messages with timestamps
-      log_msg() {
-        echo "[$(date '+%H:%M:%S')] $1"
-      }
-      
-      # Check prerequisites
-      for cmd in tmux podman top free; do
-        if ! command -v $cmd &> /dev/null; then
-          log_msg "⚠️ Required command '$cmd' not found. Some features may not work."
-        fi
-      done
-      
-      # Safely kill existing session if it exists
-      if tmux has-session -t podman_monitor 2>/dev/null; then
-        log_msg "Cleaning up existing monitor session"
-        tmux kill-session -t podman_monitor
-      fi
-      
-      # Create session with error handling
-      log_msg "Starting monitoring session"
-      tmux new-session -d -s podman_monitor || { 
-        echo "❌ Failed to create tmux session. Is tmux installed?"; 
-        exit 1; 
-      }
-      
-      # Display header at the beginning
-      tmux send-keys -t podman_monitor "clear; cat /tmp/ee-containers/tmux_header.txt; echo; echo 'Initializing monitoring...'; sleep 2" Enter
-      
-      # Set up attractive appearance
-      tmux rename-window -t podman_monitor "🚀 EE Builder"
-      tmux set -g status-style "bg=#0066cc,fg=white"
-      tmux set -g pane-border-style "fg=cyan"
-      tmux set -g pane-active-border-style "fg=#00cc00,bold"
-      tmux set -g status-left "#[fg=white,bold]EE Builder#[default]"
-      tmux set -g status-right "#[fg=yellow]%H:%M:%S#[default]"
-      
-      # Split into 3 panes with a more attractive layout
-      tmux split-window -v -p 70 -t podman_monitor
-      tmux split-window -h -p 50 -t podman_monitor
-      
-      # Setup improved image display with column formatting
-      tmux select-pane -t podman_monitor:0.1
-      tmux send-keys -t podman_monitor:0.1 "watch -n 2 'echo -e \"\\e[1;36m📦 CONTAINER IMAGES\\e[0m\"; printf \"\\n\"; podman images --format \"table {{.Repository}}\\t{{.Tag}}\\t{{.Size}}\" | grep -v \"<none>\" || echo \"No images found\"'" Enter
-      
-      # Setup enhanced system monitor with colors
-      tmux select-pane -t podman_monitor:0.2
-      tmux send-keys -t podman_monitor:0.2 "while true; do clear; echo -e \"\\e[1;33m⚙️ SYSTEM MONITOR\\e[0m\"; echo; echo -e \"\\e[1m CPU:\\e[0m\"; top -bn1 | head -3 | grep '%Cpu'; echo; echo -e \"\\e[1m MEMORY:\\e[0m\"; free -h | head -2; echo; echo -e \"\\e[1m DISK:\\e[0m\"; df -h / | grep -v Filesystem; echo; echo -e \"\\e[1m TIME:\\e[0m $(date '+%H:%M:%S')\"; sleep 3; done" Enter
-      
-      # Status display with improved formatting - now reads from header file first
-      tmux select-pane -t podman_monitor:0.0
-      tmux send-keys -t podman_monitor:0.0 "while true; do clear; cat /tmp/ee-containers/tmux_header.txt; echo; echo -e \"\\e[1;32m🔍 BUILD STATUS\\e[0m\"; echo; if [ -f /tmp/ee-containers/build_status.txt ]; then cat /tmp/ee-containers/build_status.txt | grep -E --color=always 'SUCCESS|FAILED|$'; else echo -e \"\\e[1;33mWaiting for build to start...\\e[0m\"; fi; echo; echo -e \"\\e[90mRefreshing every 2 seconds. Press Ctrl+C to exit.\\e[0m\"; sleep 2; done" Enter
-      
-      # Return to first pane
-      tmux select-pane -t podman_monitor:0.0
-      
-      # Check attach parameter
-      if [ "$1" == "attach" ]; then
-        exec tmux attach-session -t podman_monitor
-      else
-        log_msg "Monitor started in detached mode (connect with 'tmux attach -t podman_monitor')"
-      fi
-  when: var_check is succeeded
-
-# Create launcher script template
-- name: Create launcher script template
-  ansible.builtin.template:
-    src: "tmux_launcher.sh.j2" 
-    dest: "/tmp/ee-containers/tmux_launcher.sh"
-    mode: 0755
-  vars:
-    os_type: "{{ os_type | default('linux') }}"
-    is_wsl: "{{ is_wsl | default(false) }}"
-    podman_monitor_name: "podman_monitor"
-  when: var_check is succeeded
-
-# Launch the appropriate terminal based on platform
-- name: Launch tmux in platform-appropriate terminal
-  ansible.builtin.command:
-    cmd: "bash /tmp/ee-containers/tmux_launcher.sh"
-  async: 0
-  poll: 0
-  changed_when: false
+    src: "{{ playbook_dir }}/roles/ee-builder/scripts/build_monitor.sh"
+    dest: "{{ paths.scripts }}/{{ tmux.monitor_script }}"
+    mode: "0755"
   when: var_check is succeeded
 
 # Create build status with attractive formatting and better error handling
 - name: Create build status file for monitor
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/build_status.txt"
+    dest: "{{ paths.status_file }}"
     content: |
-      ╔═══════════════════════════════════════════════════════╗
-      ║           ANSIBLE EXECUTION ENVIRONMENT               ║
-      ║                    BUILD STATUS                       ║
-      ╚═══════════════════════════════════════════════════════╝
+      {{ templates.status_header }}
       
       🕒 Started at: {{ ansible_date_time.iso8601 }}
-      
+      🏷️ Environment: {{ environment_display_name }}
       📋 Selected environments ({{ environments_to_build | default([]) | length }}):
       {% if environments_to_build is defined and environments_to_build %}
       {% for env in environments_to_build %}
@@ -174,91 +88,36 @@
   when: var_check is succeeded
   failed_when: false
 
-# Create Python fix script for execution-environment.yml files
-- name: Create Python fix script for execution-environment.yml files
+# Create status header file
+- name: Create status header file
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/fix_ee_files.py"
-    mode: "0755"
+    dest: "{{ paths.status_file }}"
     content: |
-      #!/usr/bin/env python3
-      import os
-      import re
-      import sys
-      import yaml
+      {{ templates.status_header }}
+    mode: "0644"
 
-      def fix_file(filepath):
-          try:
-              with open(filepath, 'r') as f:
-                  try:
-                      data = yaml.safe_load(f)
-                  except yaml.YAMLError:
-                      print(f"Error parsing YAML in {filepath}, trying to fix manually")
-                      with open(filepath, 'r') as f2:
-                          content = f2.read()
-                      
-                      # Fix double slashes
-                      content = content.replace('//', '/')
-                      
-                      # Fix version mismatches
-                      content = content.replace('ansible-automation-platform-23/', 
-                                          'ansible-automation-platform-25/')
-                      
-                      # Write fixed content
-                      with open(filepath, 'w') as f2:
-                          f2.write(content)
-                      return True
-                  
-              # If we can parse it as YAML, make sure it has a valid base image
-              if data is None:
-                  data = {}
-              
-              modified = False
-              
-              # Ensure we have a valid version
-              if 'version' not in data or not data['version']:
-                  data['version'] = 1
-                  modified = True
-              
-              # Ensure we have images and base_image sections
-              if 'images' not in data:
-                  data['images'] = {}
-                  modified = True
-              
-              if 'base_image' not in data['images']:
-                  data['images']['base_image'] = {}
-                  modified = True
-              
-              # Ensure the base image has a name
-              if 'name' not in data['images']['base_image'] or not data['images']['base_image']['name']:
-                  data['images']['base_image']['name'] = 'registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest'
-                  modified = True
-              
-              # Write back if modified
-              if modified:
-                  with open(filepath, 'w') as f:
-                      yaml.dump(data, f, default_flow_style=False)
-                  print(f"Fixed {filepath}")
-                  return True
-              
-              return False
-          except Exception as e:
-              print(f"Error processing {filepath}: {str(e)}")
-              return False
-
-      def main():
-          count = 0
-          for root, dirs, files in os.walk('/tmp/ee-containers'):
-              for file in files:
-                  if file == 'execution-environment.yml':
-                      filepath = os.path.join(root, file)
-                      if fix_file(filepath):
-                          count += 1
-          
-          print(f"Fixed {count} files")
-
-      if __name__ == "__main__":
-          main()
+# OPTION 1: If the script already exists in your scripts directory (preferred)
+- name: Copy fix_ee_files script
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/ee-builder/scripts/fix_ee_files.sh"
+    dest: "/tmp/ee-containers/fix_ee_files.sh"
+    mode: "0755"
   when: var_check is succeeded
+
+# OR OPTION 2: If you want to create the script with inline content
+# - name: Create fix_ee_files script
+#   ansible.builtin.copy:
+#     dest: "/tmp/ee-containers/fix_ee_files.sh"
+#     mode: "0755"
+#     content: |
+#       #!/usr/bin/env python3
+#       import os
+#       import re
+#       import sys
+#       import yaml
+#       
+#       # Rest of your Python script content...
+#   when: var_check is succeeded
 
 - name: Run Python fix script
   ansible.builtin.command:

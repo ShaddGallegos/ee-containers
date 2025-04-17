@@ -33,6 +33,38 @@
     - { path: "/tmp/ee-containers/_build/rpms", mode: "0755" }
   become: "{{ item.become | default(false) }}"
 
+# Creating directories
+- name: Create required directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ dir_paths.ansible_config }}"
+    - "{{ dir_paths.hooks }}"
+    - "{{ dir_paths.context }}"
+    - "{{ dir_paths.context }}/hooks"
+    - "{{ dir_paths.build }}"
+    - "{{ dir_paths.containerfiles }}"
+  become: true
+
+# Add this task before "Create requirements.yml with proper format"
+- name: Check if environments exist in the target directory
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item }}"
+  loop: "{{ environments_to_build | default([]) }}"
+  register: env_exists
+  when: environments_to_build is defined and environments_to_build
+
+# Using template content
+- name: Create requirements.yml with proper format
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/requirements.yml.j2"
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/requirements.yml"
+    mode: "0644"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+
 # 3. SYSTEM PACKAGE MANAGEMENT
 - name: Gather package facts
   ansible.builtin.package_facts:
@@ -124,6 +156,38 @@
     remote_src: true
   failed_when: false
 
+# CORRECTED: First check if requirements.yml files exist
+- name: Check if environment directories exist
+  ansible.builtin.find:
+    paths: "/tmp/ee-containers/environments"
+    file_type: directory
+  register: environment_dirs
+
+# For each directory, check if requirements.yml exists
+- name: Check for existing requirements.yml files
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item.path | basename }}/requirements.yml"
+  loop: "{{ environment_dirs.files }}"
+  register: req_yml_exists
+
+# Create requirements.yml with proper format
+- name: Create requirements.yml with proper format
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/environments/{{ item.item.path | basename }}/requirements.yml"
+    content: |
+      ---
+      collections:
+        - name: ansible.utils
+          version: '>=2.0.0'
+        - name: ansible.posix
+          version: '>=1.5.0'
+        - name: community.general
+          version: '>=7.0.0'
+    mode: "0644"
+  loop: "{{ req_yml_exists.results }}"
+  when: 
+    - not item.stat.exists or item.stat.size == 0
+
 # 8. NETWORK VALIDATION
 - name: Verify critical DNS resolution
   ansible.builtin.command:
@@ -161,4 +225,36 @@
     mode: '0755'
   become: true
   ignore_errors: true
+
+# Example of using the new variables
+- name: Create system-wide auth file for podman
+  ansible.builtin.copy:
+    dest: "{{ registry.redhat.auth_file }}"
+    content: |
+      {
+        "auths": {
+          "{{ registry.redhat.url }}": {
+            "auth": "{{ (rh_username + ':' + rh_password) | b64encode }}",
+            "username": "{{ rh_username }}",
+            "password": "{{ rh_password }}"
+          }
+        }
+      }
+    mode: '0600'
+
+# Creating directories
+- name: Create required directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ dir_paths.ansible_config }}"
+    - "{{ dir_paths.hooks }}"
+    - "{{ dir_paths.context }}"
+    - "{{ dir_paths.context }}/hooks"
+    - "{{ dir_paths.build }}"
+    - "{{ dir_paths.containerfiles }}"
+  become: true
+
 
