@@ -4,10 +4,16 @@
   ansible.builtin.set_fact:
     menu_already_displayed: "{{ menu_already_displayed | default(false) }}"
 
+# Use a variable for the environments path to ensure consistency
+- name: Set environments path
+  ansible.builtin.set_fact:
+    environments_path: "{{ playbook_dir }}/environments"
+  when: not menu_already_displayed
+
 # Scan environments directory BEFORE showing menu
 - name: Scan environments directory
   ansible.builtin.find:
-    paths: "/tmp/ee-containers/environments"
+    paths: "{{ environments_path }}"
     file_type: directory
     excludes: "general"
   register: environment_dirs

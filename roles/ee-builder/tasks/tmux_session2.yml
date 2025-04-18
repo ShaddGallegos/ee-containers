@@ -48,6 +48,26 @@
     - wsl_check.rc is defined
     - wsl_check.rc == 0
 
+# Add this if you're having issues with WSL display
+- name: Create WSL-specific terminal settings
+  ansible.builtin.copy:
+    dest: "/tmp/wsl-tmux-fix.sh"
+    mode: 0755
+    content: |
+      #!/bin/bash
+      export TERM=xterm-256color
+      if grep -q microsoft /proc/version; then
+        echo "WSL environment detected, setting terminal compatibility mode"
+        export DISPLAY=:0
+        # Export additional WSL-specific environment settings if needed
+      fi
+      
+      # Now launch the actual monitor script
+      /tmp/podman-monitor.sh
+  when: 
+    - var_check is succeeded
+    - is_wsl | bool
+
 # Set default values for undefined variables
 - name: Set default values for variables
   ansible.builtin.set_fact:
@@ -132,18 +152,54 @@
     msg: "{{ python_fix.stdout_lines }}"
   when: var_check is succeeded and python_fix is defined and python_fix.stdout_lines is defined
 
-# Create simple access script for convenience
-- name: Create simple access script
+# Create better access script with error handling
+- name: Create enhanced access script
   ansible.builtin.copy:
     dest: "/tmp/podman-monitor.sh"
     mode: 0755
     content: |
       #!/bin/bash
-      echo -e "\033[1;32mConnecting to podman monitoring session...\033[0m"
-      tmux attach -t podman_monitor
+      set -e
+      
+      # ANSI color codes
+      GREEN='\033[0;32m'
+      RED='\033[0;31m'
+      YELLOW='\033[0;33m'
+      NC='\033[0m' # No Color
+      
+      echo -e "${GREEN}Connecting to podman monitoring session...${NC}"
+      
+      if ! command -v tmux &>/dev/null; then
+          echo -e "${RED}Error: tmux is not installed${NC}"
+          echo -e "${YELLOW}Try: sudo apt-get install tmux${NC}"
+          exit 1
+      fi
+      
+      # Check if tmux session exists
+      if ! tmux has-session -t podman_monitor 2>/dev/null; then
+          echo -e "${RED}Error: podman_monitor session not found${NC}"
+          echo -e "${YELLOW}It may have been closed or never started${NC}"
+          
+          # Offer to create a new session
+          read -p "Would you like to start a new monitoring session? (y/n) " -n 1 -r
+          echo
+          if [[ $REPLY =~ ^[Yy]$ ]]; then
+              tmux new-session -d -s podman_monitor -n monitor
+              tmux split-window -h -t podman_monitor
+              tmux send-keys -t podman_monitor:0.0 "cd {{ paths.base }} && {{ paths.scripts }}/{{ tmux.monitor_script }}" C-m
+              tmux send-keys -t podman_monitor:0.1 "cd {{ paths.base }} && watch -n 2 podman images" C-m
+              tmux select-pane -t 0
+              echo -e "${GREEN}New tmux session 'podman_monitor' created successfully${NC}"
+          else
+              echo -e "${YELLOW}No new session created. Exiting.${NC}"
+              exit 0
+          fi
+      else
+          tmux attach -t podman_monitor
+      fi
   when: var_check is succeeded
 
-# Show instructions for accessing monitor
+# Show improved instructions for accessing monitor
 - name: Show instructions for accessing monitor
   ansible.builtin.debug:
     msg: |
@@ -151,5 +207,48 @@
       
       To view the monitoring session:
       1. Run in any terminal: tmux attach -t podman_monitor
-      2. Or run: /tmp/podman-monitor.sh
+      2. Or simply run: /tmp/podman-monitor.sh
+      
+      If using WSL, use: /tmp/wsl-tmux-fix.sh
+      
+      Session Layout:
+      - Left pane: Build status monitor
+      - Right pane: Container images list (updates every 2 seconds)
+      
+      Tmux basic commands:
+      - Detach from session: Ctrl+B, then D
+      - Switch panes: Ctrl+B, then arrow keys
+      - Scroll: Ctrl+B, then [ (use arrow keys to scroll, q to exit scroll mode)
   when: var_check is succeeded
+
+# Add this after your existing code to actually create the TMux session
+- name: Check if tmux session already exists
+  ansible.builtin.shell: tmux has-session -t podman_monitor 2>/dev/null
+  register: tmux_session_exists
+  failed_when: false
+  changed_when: false
+  ignore_errors: true
+  when: var_check is succeeded
+
+- name: Kill existing tmux session if it exists
+  ansible.builtin.command: tmux kill-session -t podman_monitor
+  when:
+    - var_check is succeeded
+    - tmux_session_exists.rc == 0
+  ignore_errors: true
+
+- name: Create tmux session for build monitoring
+  ansible.builtin.shell: |
+    tmux new-session -d -s podman_monitor -n monitor
+    tmux split-window -h -t podman_monitor
+    tmux send-keys -t podman_monitor:0.0 "cd {{ paths.base }} && {{ paths.scripts }}/{{ tmux.monitor_script }}" C-m
+    tmux send-keys -t podman_monitor:0.1 "cd {{ paths.base }} && watch -n 2 podman images" C-m
+    tmux select-pane -t 0
+    echo "Tmux session 'podman_monitor' created successfully"
+  args:
+    executable: /bin/bash
+  register: tmux_create
+  failed_when: false
+  when:
+    - var_check is succeeded
+    - tmux_session_exists.rc != 0 or tmux_session_exists.rc is not defined

@@ -35,10 +35,19 @@
   ansible.builtin.set_fact:
     environment_configs: {}
   when: environment_configs is undefined
+  tags:
+    - setup
+    - initialize
+    - variables
 
 - name: Set OS type for environments
   ansible.builtin.set_fact:
     os_type: "{{ 'rhel8' if (environments_to_build | default([]) | select('search', 'rhel8') | list | length > 0) else 'rhel9' }}"
+  tags:
+    - setup
+    - initialize
+    - variables
+    - os_type
 
 - name: Create required directories
   ansible.builtin.file:
@@ -53,6 +62,10 @@
     - "{{ dir_paths.build }}"
     - "{{ dir_paths.containerfiles }}"
   become: true
+  tags:
+    - setup
+    - directories
+    - filesystem
 
 - name: Create Ansible configuration files
   ansible.builtin.copy:
@@ -70,20 +83,36 @@
         [local]
         localhost ansible_connection=local
   become: true
+  tags:
+    - setup
+    - config
+    - ansible_config
 
-- name: Set Ansible environment variables
-  ansible.builtin.shell: |
-    export ANSIBLE_CONFIG=/tmp/ansible_safe/ansible.cfg
-    export ANSIBLE_INVENTORY=/tmp/ansible_safe/inventory
-    export ANSIBLE_HOST_KEY_CHECKING=False
-    export ANSIBLE_DEPRECATION_WARNINGS=False
-    export ANSIBLE_COMMAND_WARNINGS=False
-    export ANSIBLE_SYSTEM_WARNINGS=False
-  changed_when: false
+- name: Define Ansible environment variables
+  ansible.builtin.set_fact:
+    ansible_environment:
+      ANSIBLE_CONFIG: "/tmp/ansible_safe/ansible.cfg"
+      ANSIBLE_INVENTORY: "/tmp/ansible_safe/inventory" 
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      ANSIBLE_DEPRECATION_WARNINGS: "False"
+      ANSIBLE_COMMAND_WARNINGS: "False"
+      ANSIBLE_SYSTEM_WARNINGS: "False"
+  tags:
+    - setup
+    - environment
+    - ansible_config
+
+- name: Run command with custom Ansible environment
+  ansible.builtin.command: ansible --version
+  environment: "{{ ansible_environment }}"
 
 - name: Debug playbook directory
   ansible.builtin.debug:
     msg: "Playbook directory: {{ playbook_dir }}"
+  tags:
+    - setup
+    - debug
+    - paths
 
 - name: Synchronize environments from playbook directory to working directory
   ansible.builtin.synchronize:
@@ -96,6 +125,10 @@
   delegate_to: "{{ inventory_hostname }}"
   become: true
   register: env_synced
+  tags:
+    - setup
+    - sync
+    - environments
 
 - name: Check if environment directories exist
   ansible.builtin.stat:
@@ -103,11 +136,19 @@
   loop: "{{ environments_to_build | default([]) }}"
   register: env_exists
   when: environments_to_build is defined
+  tags:
+    - setup
+    - validation
+    - environments
 
 - name: Debug environments_to_build list
   ansible.builtin.debug:
     msg: "Selected environments: {{ environments_to_build | join(', ') }}"
     verbosity: 1
+  tags:
+    - setup
+    - debug
+    - environments
 
 ####################################
 # 2. ENVIRONMENT VALIDATION
@@ -119,11 +160,20 @@
   ansible.builtin.stat:
     path: "{{ playbook_dir }}/environments"
   register: env_dir_exists
+  tags:
+    - validation
+    - environments
+    - filesystem
 
 - name: Fail if environments directory doesn't exist
   ansible.builtin.fail:
     msg: "Environments directory not found at {{ playbook_dir }}/environments"
   when: not env_dir_exists.stat.exists
+  tags:
+    - validation
+    - environments
+    - filesystem
+    - always
 
 # 
 
@@ -134,6 +184,10 @@
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
   register: ee_yml_exists
+  tags:
+    - validation
+    - environments
+    - yaml_files
 
 - name: Warn about missing execution-environment.yml files
   ansible.builtin.debug:
@@ -144,6 +198,11 @@
     - (item.stat is defined and not item.stat.exists) or item.skipped is defined
   loop_control:
     label: "{{ item.item.item if item.item is defined else 'unknown' }}"
+  tags:
+    - validation
+    - environments
+    - warnings
+    - yaml_files
 
 ####################################
 # 3. REGISTRY AUTHENTICATION
@@ -169,6 +228,11 @@
   when: 
     - rh_username is defined and rh_username != ""
     - rh_password is defined and rh_password != ""
+  tags:
+    - auth
+    - registry
+    - credentials
+    - podman
 
 - name: Create simplified registries.conf
   ansible.builtin.copy:
@@ -184,6 +248,11 @@
       registries = []
     mode: '0644'
   become: true
+  tags:
+    - auth
+    - registry
+    - config
+    - podman
 
 - name: Test registry authentication
   ansible.builtin.command:
@@ -191,10 +260,20 @@
   register: auth_test
   changed_when: false
   ignore_errors: true
+  tags:
+    - auth
+    - registry
+    - test
+    - podman
 
 - name: Display auth test results
   ansible.builtin.debug:
     msg: "Authentication test result: {{ 'SUCCESS' if auth_test.rc == 0 else 'FAILED - ' + auth_test.stderr }}"
+  tags:
+    - auth
+    - registry
+    - debug
+    - podman
 
 ####################################
 # 4. PREPARE ENVIRONMENT FILES
@@ -205,6 +284,10 @@
     file: "~/.ansible/vars/config"
     name: config_vars
   ignore_errors: true
+  tags:
+    - prepare
+    - config
+    - variables
 
 - name: Create ansible.cfg file from template if not exists
   ansible.builtin.template:
@@ -214,6 +297,11 @@
     force: no
   vars:
     ansible_vars: "{{ config_vars | default({}) }}"
+  tags:
+    - prepare
+    - config
+    - ansible_config
+    - templates
 
 - name: Copy ansible.cfg to each environment
   ansible.builtin.copy:
@@ -221,6 +309,11 @@
     dest: "/tmp/ee-containers/environments/{{ item }}/ansible.cfg"
     mode: '0644'
   loop: "{{ environments_to_build }}"
+  tags:
+    - prepare
+    - config
+    - ansible_config
+    - copy
 
 - name: Create requirements.txt for each environment (if needed)
   ansible.builtin.copy:
@@ -230,6 +323,11 @@
     force: false
   loop: "{{ environments_to_build }}"
   failed_when: false
+  tags:
+    - prepare
+    - config
+    - python
+    - requirements
 
 ####################################
 # 5. CREATE HELPER SCRIPTS
@@ -241,6 +339,10 @@
     src: "{{ playbook_dir }}/roles/ee-builder/scripts/custom-assemble.sh"
     dest: "/tmp/ee-containers/custom-assemble.sh"
     mode: "0755"
+  tags:
+    - scripts
+    - copy
+    - assemble
 
 - name: Create Containerfile template with version 3 compatibility
   ansible.builtin.copy:
@@ -260,15 +362,14 @@
       ARG EE_BASE_IMAGE
       ARG PYCMD=python3
       ARG PKGMGR=dnf
-      ARG ANSIBLE_GALAXY_CLI_COLLECTION_OPTS
-      ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS
       
-      COPY _build/scripts/ /output/scripts/
-      COPY _build/scripts/entrypoint /opt/builder/bin/entrypoint
-
       # Install Python requirements and collections
       COPY --chown=root:root ansible.cfg /etc/ansible/ansible.cfg
-      RUN /output/scripts/assemble
+  tags:
+    - scripts
+    - templates
+    - containerfile
+    - create
 
 # Copy pre-built hook script from scripts directory
 - name: Copy pre-build hook
@@ -276,6 +377,10 @@
     src: "{{ playbook_dir }}/roles/ee-builder/scripts/hooks/pre-build"
     dest: "{{ paths.hooks }}/pre-build"
     mode: "0755"
+  tags:
+    - scripts
+    - copy
+    - hooks
 
 ####################################
 # 6. FIX EXECUTION ENVIRONMENT YAML FILES
@@ -288,6 +393,10 @@
     patterns: "execution-environment.yml"
     recurse: yes
   register: ee_yml_files
+  tags:
+    - yaml
+    - find
+    - validation
 
 # FIRST run validation to capture which files have YAML errors
 - name: Verify execution-environment.yml files are properly formatted
@@ -297,6 +406,10 @@
   register: yaml_validation
   ignore_errors: true
   changed_when: false
+  tags:
+    - yaml
+    - validation
+    - verify
 
 # Then keep your existing tasks
 - name: Create backup directory for original files
@@ -304,13 +417,35 @@
     path: "/tmp/ee-containers/backups"
     state: directory
     mode: "0755"
+  tags:
+    - yaml
+    - backup
+    - directories
 
+# Find all execution-environment.yml files first
+- name: Find all execution-environment.yml files for backup
+  ansible.builtin.find:
+    paths: "/tmp/ee-containers"
+    patterns: "execution-environment.yml"
+    recurse: yes
+  register: ee_yml_files_to_backup
+  tags:
+    - yaml
+    - backup
+    - find
+
+# Then back up each file to the backup directory
 - name: Back up all execution-environment.yml files
-  ansible.builtin.shell: |
-    for file in $(find /tmp/ee-containers -name "execution-environment.yml"); do
-      cp "$file" "/tmp/ee-containers/backups/$(basename $(dirname $file))-execution-environment.yml"
-    done
-  changed_when: true
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "/tmp/ee-containers/backups/{{ item.path | dirname | basename }}-execution-environment.yml"
+    mode: preserve
+    remote_src: yes
+  loop: "{{ ee_yml_files_to_backup.files }}"
+  tags:
+    - yaml
+    - backup
+    - copy
 
 # THEN fix the broken files based on validation results
 - name: Force-fix all execution-environment.yml files
@@ -341,7 +476,10 @@
     - item.path.endswith('execution-environment.yml')
     - item.path in (yaml_validation.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | map(attribute='item.path') | list)
   ignore_errors: true
-    
+  tags:
+    - yaml
+    - fix
+    - create
 
 - name: Verify execution-environment.yml files are properly formatted
   ansible.builtin.command:
@@ -350,6 +488,10 @@
   register: yaml_validation
   ignore_errors: true
   changed_when: false
+  tags:
+    - yaml
+    - validation
+    - verify
 
 - name: Display validation results for execution-environment.yml files
   ansible.builtin.debug:
@@ -359,6 +501,10 @@
       {% if yaml_validation.results | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length > 0 %}
       Warning: Some files still have YAML errors. The build may fail.
       {% endif %}
+  tags:
+    - yaml
+    - validation
+    - debug
 
 ####################################
 # 7. GENERATE CUSTOM CONTAINERFILES
@@ -370,6 +516,11 @@
     src: "/tmp/ee-containers/custom-assemble.sh"
     mode: "0755"
   ignore_errors: true
+  tags:
+    - containerfiles
+    - copy
+    - scripts
+    - assemble
 
 # CONSOLIDATED: Generate custom Containerfile for each environment
 - name: Generate custom Containerfile for each environment
@@ -383,26 +534,173 @@
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
   register: containerfile_gen
+  tags:
+    - containerfiles
+    - templates
+    - generate
 
-- name: Verify environments before building
-  ansible.builtin.shell: |
-    echo "Checking if {{ item.item }} environment still exists..."
-    if [ -d "/tmp/ee-containers/environments/{{ item.item }}" ]; then
-      echo "Directory exists"
-      ls -la /tmp/ee-containers/environments/{{ item.item }}
-      if [ -f "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml" ]; then
-        echo "execution-environment.yml found"
-        cat /tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml
-      else
-        echo "execution-environment.yml NOT found"
-      fi
-    else
-      echo "Directory does NOT exist"
-    fi
+- name: Debug environment verification start
+  ansible.builtin.debug:
+    msg: "Checking if {{ item.item }} environment still exists..."
   loop: "{{ env_exists.results }}"
-  register: env_check_results
-  changed_when: false
   when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Check environment directory existence
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item.item }}"
+  register: env_dir_check_loop
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: List files in environment directory
+  ansible.builtin.find:
+    paths: "/tmp/ee-containers/environments/{{ item.item }}"
+    file_type: any
+    recurse: no
+  register: env_files
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Display environment directory contents (header)
+  ansible.builtin.debug:
+    msg: "Files in {{ item.item }} environment:"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: List directory files with shell command
+  ansible.builtin.shell: "ls -la /tmp/ee-containers/environments/{{ item.item }}"
+  register: dir_listing
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  changed_when: false
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Show directory listing
+  ansible.builtin.debug:
+    msg: "{{ dir_listing.results[index].stdout }}"
+  loop: "{{ env_exists.results }}"
+  loop_control:
+    index_var: index
+  when: item.stat.exists and item.stat.isdir and dir_listing.results[index] is defined
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Check execution-environment.yml existence
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
+  register: ee_yml_file
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Read execution-environment.yml content
+  ansible.builtin.slurp:
+    src: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
+  register: ee_yml_content
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir and ee_yml_file.stat.exists
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Display execution-environment.yml content
+  ansible.builtin.debug:
+    msg: |
+      execution-environment.yml found
+      Content:
+      {{ ee_yml_content['content'] | b64decode }}
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir and ee_yml_file.stat.exists
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Report missing execution-environment.yml
+  ansible.builtin.debug:
+    msg: "execution-environment.yml NOT found"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir and not ee_yml_file.stat.exists
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Report missing environment directory
+  ansible.builtin.debug:
+    msg: "Directory does NOT exist"
+  loop: "{{ env_exists.results }}"
+  when: not env_dir_check_loop.stat.exists
+  tags:
+    - containerfiles
+    - verification
+    - debug
+
+- name: Create required _build directory structure for each environment
+  ansible.builtin.file:
+    path: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts"
+    state: directory
+    mode: "0755"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - directories
+    - setup
+
+- name: Copy assemble script to each environment's build context
+  ansible.builtin.copy:
+    src: "/tmp/ee-containers/custom-assemble.sh"
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/assemble"
+    mode: "0755"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - copy
+    - scripts
+    - assemble
+
+# Add this task after copying the assemble script but before building
+- name: Create entrypoint script in each environment's build context
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/entrypoint"
+    content: |
+      #!/bin/bash
+      exec "$@"
+    mode: "0755"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - containerfiles
+    - copy
+    - scripts
+    - entrypoint
 
 ####################################
 # 8. BUILD IMAGES
@@ -414,50 +712,249 @@
     src: "{{ playbook_dir }}/roles/ee-builder/scripts/build/assemble"
     dest: "{{ paths.build }}"
     mode: "0755"
+  tags:
+    - build
+    - copy
+    - scripts
+    - assemble
 
-- name: Start image build process with custom hooks
-  ansible.builtin.shell: |
-    export REGISTRY_AUTH_FILE=/etc/containers/auth.json
-    cd /tmp/ee-containers/environments/{{ item.item }}
-    
-    # Print debug information
-    echo "Building from $(pwd)"
-    echo "Current auth file: $REGISTRY_AUTH_FILE"
-    echo "Files in current directory:"
-    ls -la
-    echo "Contents of execution-environment.yml:"
-    cat execution-environment.yml || echo "File not found!"
-    echo "Contents of Containerfile:"
-    cat Containerfile || echo "File not found!"
-    
-    if [ ! -f "Containerfile" ]; then
-      echo "ERROR: Containerfile missing, generating default"
-      echo "FROM registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest" > Containerfile
-    fi
-    
-    # Run with verbose output and custom containerfile
-    ansible-builder build --no-cache -v3 \
-      --tag {{ item.item }}:{{ timestamp }} \
-      --container-runtime podman \
-      --file ./Containerfile \
-      --context /tmp/ee-containers/context
-      
-    # Clean up processes that might be stuck
-    echo "Killing any stuck processes..."
-    pkill -9 fuse-overlayfs 2>/dev/null || true
-    pkill -9 systemd-udevd 2>/dev/null || true
-    sleep 1
-    
-    # Clean up dangling images after each build
-    echo "Cleaning up dangling images..."
-    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
-    echo "Cleanup complete."
+# Replace the synchronous build task with this async version
+- name: Start container builds asynchronously
+  ansible.builtin.command:
+    cmd: "ansible-builder build -v3 --prune --file execution-environment.yml --tag {{ item.item }}:{{ timestamp }}"
+    chdir: "/tmp/ee-containers/environments/{{ item.item }}"
+  become: true
   environment:
     REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
+  async: 3600  # Allow up to 1 hour for completion
+  poll: 0  # Don't wait for completion
+  register: build_jobs
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
-  register: build_results
-  ignore_errors: true
+  loop_control:
+    label: "{{ item.item }}"
+  tags:
+    - build
+    - images
+    - ansible_builder
+
+- name: Display background build status
+  ansible.builtin.debug:
+    msg: "Build jobs started in background: {{ environments_to_build | length }}"
+
+# Periodically check build status and write to log file
+- name: Add build monitoring task
+  ansible.builtin.shell: |
+    while true; do
+      echo "$(date) - Checking build status..." >> /tmp/ee-containers/build_monitor.log
+      podman ps -a >> /tmp/ee-containers/build_monitor.log
+      echo "Current images:" >> /tmp/ee-containers/build_monitor.log
+      podman images | grep {{ timestamp }} >> /tmp/ee-containers/build_monitor.log 2>&1
+      sleep 30
+    done &
+  args:
+    executable: /bin/bash
+  async: 3600
+  poll: 0
+
+# Create a status file that can be viewed with "watch cat"
+- name: Create build status file for monitoring
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/build_status.txt"
+    content: |
+      Build Status Monitor
+      ===================
+      Started: {{ lookup('pipe', 'date') }}
+      Environments: {{ environments_to_build | join(', ') }}
+      
+      Run this command to monitor builds:
+      watch -n 5 "cat /tmp/ee-containers/build_status.txt"
+      
+      Or check images with:
+      watch -n 5 "podman images | grep {{ timestamp }}"
+    mode: '0644'
+
+- name: Display monitoring instructions
+  ansible.builtin.debug:
+    msg: |
+      ✅ Builds started in the background!
+      
+      To monitor progress:
+        - Run: watch -n 5 "cat /tmp/ee-containers/build_status.txt"
+        - Or: watch -n 5 "podman images | grep {{ timestamp }}"
+        - Or: tail -f /tmp/ee-containers/build_monitor.log
+      
+      Builds will take several minutes to complete.
+
+- name: Set build log path for each environment
+  ansible.builtin.set_fact:
+    build_log: "/tmp/ee-containers/environments/{{ item.item }}/build-direct-{{ timestamp }}.log"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  register: build_logs
+  tags:
+    - build
+    - images
+    - ansible_builder
+
+- name: Create empty build log file
+  ansible.builtin.copy:
+    dest: "{{ build_log }}"
+    content: "Begin direct build for {{ item.item }} at {{ lookup('pipe', 'date') }}\n"
+    mode: '0644'
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  loop_control:
+    label: "{{ item.item }}"
+  tags:
+    - build
+    - images
+    - ansible_builder
+
+- name: Append build output to log files
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/environments/{{ item.item.item }}/build-direct-{{ timestamp }}.log"
+    content: "{{ item.stdout }}\n{{ item.stderr }}\n"
+    mode: '0644'
+    backup: no
+  loop: "{{ build_commands.results }}"
+  when: item is not skipped
+  loop_control:
+    label: "{{ item.item.item }}"
+  tags:
+    - build
+    - images
+    - ansible_builder
+
+- name: Verify image existence
+  ansible.builtin.command:
+    cmd: "podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}'"
+  register: image_list
+  changed_when: false
+  tags:
+    - build
+    - verification
+    - images
+
+- name: Set build results with verification
+  ansible.builtin.set_fact:
+    build_results:
+      results: >-
+        {% for result in build_commands.results %}
+        {% set build_rc = result.rc|default(1) %}
+        {% set image_name = result.item.item + ":" + timestamp %}
+        {% set image_exists = image_name in image_list.stdout_lines %}
+        [
+          {
+            "item": {"item": "{{ result.item.item }}"},
+            "rc": {{ build_rc }},
+            "skipped": {{ result.skipped|default(false) }},
+            "verified": {{ image_exists }}
+          }
+        ]{% if not loop.last %},{% endif %}
+        {% endfor %}
+  tags:
+    - build
+    - verification
+    - images
+
+# First, create a new file for the debug tasks
+- name: Create debug task file
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/roles/ee-builder/tasks/debug_build.yml"
+    content: |
+      ---
+      - name: Debug header
+        ansible.builtin.debug:
+          msg: "=== BUILD FAILURE DEBUGGING FOR {{ failed_build.item.item }} ==="
+
+      # 1. Check file permissions
+      - name: Check file permissions
+        ansible.builtin.command:
+          cmd: "ls -la"
+          chdir: "{{ debug_env_path }}"
+        register: file_permissions
+        ignore_errors: true
+        
+      - name: Display file permissions
+        ansible.builtin.debug:
+          msg: "1. File permissions:\n{{ file_permissions.stdout }}"
+
+      # Add all the rest of your debug tasks here...
+    mode: '0644'
+
+# Then replace your block with this include_tasks
+- name: Debug build failures
+  include_tasks: debug_build.yml
+  vars:
+    debug_env_path: "/tmp/ee-containers/environments/{{ item.item.item }}"
+    failed_build: "{{ item }}"
+  loop: "{{ build_results.results | selectattr('failed', 'defined') | selectattr('failed') | list }}"
+  loop_control:
+    label: "{{ item.item.item }}"
+  when: build_results.results | selectattr('failed', 'defined') | selectattr('failed') | list | length > 0
+  tags:
+    - debug
+    - build
+    - troubleshooting
+
+# Replace the shell-based verification with native Ansible tasks
+- name: Get complete list of container images
+  ansible.builtin.command:
+    cmd: "podman images --format '{% raw %}{{.Repository}}:{{.Tag}}{% endraw %}'"
+  register: all_podman_images
+  changed_when: false
+  tags:
+    - reporting
+    - verification
+    - images
+
+- name: Initialize verified and missing lists
+  ansible.builtin.set_fact:
+    verified_builds: []
+    missing_builds: []
+  tags:
+    - reporting
+    - verification
+    - variables
+
+- name: Check image existence for each environment
+  ansible.builtin.set_fact:
+    verified_builds: "{{ verified_builds + [item] }}"
+  when: >
+    'localhost/' + item + ':' + timestamp in all_podman_images.stdout_lines or
+    item + ':' + timestamp in all_podman_images.stdout_lines
+  loop: "{{ environments_to_build }}"
+  tags:
+    - reporting
+    - verification
+    - images
+
+- name: Identify missing images
+  ansible.builtin.set_fact:
+    missing_builds: "{{ environments_to_build | difference(verified_builds) }}"
+  tags:
+    - reporting
+    - verification
+    - variables
+
+- name: Display image verification results
+  ansible.builtin.debug:
+    msg: |
+      === IMAGE VERIFICATION RESULTS ===
+      Verified images ({{ verified_builds | length }}):
+      {% for build in verified_builds %}
+      - {{ build }}:{{ timestamp }}
+      {% endfor %}
+      
+      Missing images ({{ missing_builds | length }}):
+      {% for build in missing_builds %}
+      - {{ build }}:{{ timestamp }}
+      {% endfor %}
+  tags:
+    - reporting
+    - verification
+    - debug
 
 ####################################
 # 9. CLEANUP AND REPORTING
@@ -467,6 +964,10 @@
   ansible.builtin.set_fact:
     build_results: {"results": []}
   when: build_results is not defined or build_results.results | length == 0
+  tags:
+    - reporting
+    - variables
+    - initialize
 
 - name: Count build successes and failures
   ansible.builtin.set_fact:
@@ -474,11 +975,19 @@
     failed_builds: "{{ build_results.results | default([]) | selectattr('rc', 'defined') | rejectattr('rc', 'eq', 0) | list | length }}"
     skipped_builds: "{{ build_results.results | default([]) | selectattr('skipped', 'defined') | list | length }}"
     total_environments: "{{ environments_to_build | length }}"
+  tags:
+    - reporting
+    - variables
+    - summary
 
 - name: Remove all dangling images
   ansible.builtin.shell: |
     podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
   ignore_errors: true
+  tags:
+    - cleanup
+    - podman
+    - images
 
 - name: Show build summary
   ansible.builtin.debug:
@@ -507,7 +1016,217 @@
       {% if successful_builds != 0 %}
       Successfully built containers are available with 'podman images'
       {% endif %}
+  tags:
+    - reporting
+    - summary
+    - debug
+    - always
 
+- name: Show build summary with verified images
+  ansible.builtin.debug:
+    msg: |
+      
+      ********************************************************************
+      *                     BUILD SUMMARY REPORT                         *
+      ********************************************************************
+      
+      Total environments selected: {{ total_environments }}
+      Successfully built: {{ verified_builds | length }}
+      Failed builds: {{ failed_builds + missing_builds | length }}
+      Skipped builds: {{ skipped_builds }}
+      
+      DETAILED RESULTS:
+      {% for result in build_results.results %}
+      {% if result.skipped is defined %}
+      - SKIPPED: {{ result.item.item }} - Missing execution-environment.yml
+      {% elif result.item.item in verified_builds %}
+      - SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }} ✅ VERIFIED
+      {% elif result.rc is defined and result.rc == 0 and result.item.item in missing_builds %}
+      - PHANTOM SUCCESS: {{ result.item.item }} - Build reported success but image doesn't exist ❌
+      {% else %}
+      - FAILED: {{ result.item.item }} - Error code: {{ result.rc }}
+      {% endif %}
+      {% endfor %}
+      
+      {% if verified_builds | length > 0 %}
+      Successfully built containers: {{ verified_builds | join(", ") }}
+      Check them with: podman images
+      {% endif %}
+      
+      {% if missing_builds | length > 0 %}
+      WARNING: {{ missing_builds | length }} builds reported success but images weren't found!
+      Missing images: {{ missing_builds | join(", ") }}
+  tags:
+    - reporting
+    - summary
+    - debug
+    - always
+
+- name: Create tmux monitoring script
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/monitor.sh"
+    content: |
+      #!/bin/bash
+      export TERM=xterm-256color
+      SESSION="ee-builds"
+      
+      # Kill existing session if it exists
+      tmux kill-session -t $SESSION 2>/dev/null || true
+      
+      # Create new session
+      tmux new-session -d -s $SESSION -n "monitor"
+      
+      # Split the window
+      tmux split-window -h -t $SESSION:0
+      tmux split-window -v -t $SESSION:0.0
+      
+      # Send commands to each pane
+      tmux send-keys -t $SESSION:0.0 "watch -n 3 podman images | grep {{ timestamp }}" C-m
+      tmux send-keys -t $SESSION:0.1 "watch -n 3 podman ps -a" C-m
+      tmux send-keys -t $SESSION:0.2 "tail -f /tmp/ee-containers/build_monitor.log" C-m
+      
+      # Attach to the session
+      tmux attach -t $SESSION
+    mode: '0755'
+
+- name: Display tmux monitoring instructions
+  ansible.builtin.debug:
+    msg: |
+      For a detailed monitoring dashboard:
+      Run: /tmp/ee-containers/monitor.sh
+
+# Add this right after your "Prompt for RHEL environment selection" task
+- name: Launch TMux monitoring session immediately after environment selection
+  block:
+    - name: Check if tmux is installed
+      ansible.builtin.command: which tmux
+      register: tmux_install
+      failed_when: false
+      changed_when: false
+      
+    - name: Install tmux if missing
+      ansible.builtin.package:
+        name: tmux
+        state: present
+      when: tmux_install.rc != 0
+      become: true
+      ignore_errors: true
+      
+    - name: Check for existing tmux session
+      ansible.builtin.shell: tmux list-sessions | grep ee-monitor || echo "No session"
+      register: tmux_sessions
+      changed_when: false
+      failed_when: false
+      
+    - name: Kill existing tmux session if present
+      ansible.builtin.command: tmux kill-session -t ee-monitor
+      when: "'ee-monitor' in tmux_sessions.stdout"
+      ignore_errors: true
+      
+    - name: Create monitoring directory
+      ansible.builtin.file:
+        path: "/tmp/ee-containers/monitor"
+        state: directory
+        mode: "0755"
+      
+    - name: Create initial status file
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/monitor/status.txt"
+        content: |
+          ====================================================================
+          EXECUTION ENVIRONMENT BUILD MONITOR - Started {{ lookup('pipe', 'date') }}
+          ====================================================================
+          
+          Environments selected for build:
+          {% for env in environments_to_build %}
+          - {{ env }}
+          {% endfor %}
+          
+          Current stage: Preparing build environment
+          
+          Build status will appear here when builds start...
+        mode: "0644"
+      
+    - name: Create automatic tmux launcher
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/launch-monitor.sh"
+        content: |
+          #!/bin/bash
+          SESSION="ee-monitor"
+          
+          # Kill existing session if it exists
+          tmux kill-session -t $SESSION 2>/dev/null || true
+          
+          # Create new session
+          tmux new-session -d -s $SESSION -n "EE Monitor"
+          
+          # Split the window into three panes
+          tmux split-window -v -t $SESSION:0
+          tmux split-window -h -t $SESSION:0.0
+          tmux split-window -h -t $SESSION:0.1
+          
+          # Send commands to each pane
+          tmux send-keys -t $SESSION:0.0 "clear; echo 'Build Status Monitor'; watch -n 2 cat /tmp/ee-containers/monitor/status.txt" C-m
+          tmux send-keys -t $SESSION:0.1 "clear; echo 'Image List'; watch -n 3 'podman images | grep {{ timestamp }} || echo No images yet'" C-m
+          tmux send-keys -t $SESSION:0.2 "clear; echo 'Container Status'; watch -n 3 'podman ps -a | grep {{ timestamp }} || echo No containers yet'" C-m
+          tmux send-keys -t $SESSION:0.3 "clear; echo 'Build Logs'; tail -F /tmp/ee-containers/build_monitor.log 2>/dev/null || echo 'Waiting for logs...'" C-m
+          
+          # Select first pane
+          tmux select-pane -t $SESSION:0.0
+          
+          # Return session name for attaching
+          echo "$SESSION"
+        mode: "0755"
+      
+    - name: Launch tmux session in background
+      ansible.builtin.shell: |
+        nohup /tmp/ee-containers/launch-monitor.sh &>/dev/null &
+        echo "Monitor launched"
+      async: 10
+      poll: 0
+      
+    - name: Display tmux connection instructions
+      ansible.builtin.debug:
+        msg: |
+          🖥️ BUILD MONITOR IS READY!
+          
+          To connect to the monitoring session, run:
+          
+              tmux attach -t ee-monitor
+          
+          The monitor shows:
+            - Top left: Overall build status
+            - Top right: Current container images
+            - Bottom left: Running containers
+            - Bottom right: Build logs
+      
+    - name: Update status file periodically
+      ansible.builtin.shell: |
+        while true; do
+          echo "$(date '+%Y-%m-%d %H:%M:%S') - Updating status file..." >> /tmp/ee-containers/monitor/monitor.log
+          echo "====================================================================
+          EXECUTION ENVIRONMENT BUILD MONITOR - Updated $(date)
+          ====================================================================
+          
+          Environments selected: {{ environments_to_build | join(', ') }}
+          
+          CURRENT IMAGES:
+          $(podman images | grep {{ timestamp }} || echo 'No images yet')
+          
+          RUNNING CONTAINERS:
+          $(podman ps -a | grep {{ timestamp }} || echo 'No containers running')
+          
+          PROGRESS:
+          $(ls -l /tmp/ee-containers/environments/*/Containerfile 2>/dev/null | wc -l) Containerfiles generated
+          " > /tmp/ee-containers/monitor/status.txt
+          sleep 5
+        done &
+      async: 3600
+      poll: 0
+  tags:
+    - always
+    - monitor
+    - tmux
 
 
 

@@ -21,10 +21,19 @@
   ansible.builtin.import_tasks: fix_ee_files.yml
   tags: ['init', 'fix']
 
+# Include variables and setup common settings
+- name: Include role variables
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/vars/main.yml"
+
 # Include variables
 - name: Include configuration variables
   ansible.builtin.include_vars:
     file: "common-ee-vars.yml"
+
+# First present the environment selection menu
+- name: Select environments to build
+  ansible.builtin.import_tasks: "{{ role_path }}/tasks/environment_menu.yml"
 
 # Display environment menu and get selection
 - name: Get environment selection from user
@@ -40,6 +49,10 @@
 - name: Launch tmux monitoring session
   ansible.builtin.include_tasks: tmux_session2.yml
   tags: ['menu', 'build']
+
+# Then build the selected environments
+- name: Build selected environments
+  ansible.builtin.import_tasks: "{{ role_path }}/tasks/build_environment.yml"
 
 # Build selected environments
 - name: Build selected environments
