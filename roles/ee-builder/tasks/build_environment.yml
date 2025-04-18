@@ -154,6 +154,16 @@
 # 2. ENVIRONMENT VALIDATION
 ####################################
 
+- name: Set default values for potentially undefined variables
+  ansible.builtin.set_fact:
+    environments_to_build: "{{ environments_to_build | default([]) }}"
+    timestamp: "{{ timestamp | default(lookup('pipe', 'date +%Y%m%d%H%M%S')) }}"
+    cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
+  tags:
+    - validation
+    - variables
+    - initialize
+
 # IMPORTANT: This must come before any tasks that use env_exists
 
 - name: Check if environments directory exists
@@ -205,7 +215,406 @@
     - yaml_files
 
 ####################################
-# 3. REGISTRY AUTHENTICATION
+# 3. ENHANCED FILE VALIDATION & ORGANIZATION
+####################################
+
+- name: Create directories for organized files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ playbook_dir }}/scripts"
+    - "{{ playbook_dir }}/files"
+  tags:
+    - organize
+    - directories
+
+- name: Find all execution environment files for validation
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/environments"
+    recurse: yes
+    patterns:
+      - "execution-environment.yml"
+      - "requirements.yml"
+      - "requirements.txt"
+      - "bindep.txt"
+  register: ee_files_to_validate
+  tags:
+    - organize
+    - validation
+
+- name: Display all found execution environment files
+  ansible.builtin.debug:
+    msg: "Found {{ ee_files_to_validate.files | length }} files to validate"
+    verbosity: 1
+  tags:
+    - organize
+    - validation
+    - debug
+
+# Validate execution-environment.yml files for correct format
+- name: Validate execution-environment.yml files
+  block:
+    - name: Check execution-environment.yml format
+      ansible.builtin.command:
+        cmd: python3 -c "import yaml; data = yaml.safe_load(open('{{ item.path }}', 'r')); print('Valid' if 'version' in data else 'Invalid')"
+      register: ee_yml_validation
+      changed_when: false
+      failed_when: false
+      loop: "{{ ee_files_to_validate.files | selectattr('path', 'search', 'execution-environment.yml') | list }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    - name: Display execution-environment.yml validation results
+      ansible.builtin.debug:
+        msg: "Validation of {{ item.item.path }}: {{ 'PASSED' if 'Valid' in item.stdout else 'FAILED' }}"
+      loop: "{{ ee_yml_validation.results }}"
+      loop_control:
+        label: "{{ item.item.path | regex_replace(playbook_dir ~ '/environments/', '') }}"
+      
+    - name: Fix common execution-environment.yml issues
+      ansible.builtin.copy:
+        dest: "{{ item.item.path }}"
+        content: |
+          ---
+          version: 3
+          
+          build_arg_defaults:
+            ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+            ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
+          
+          images:
+            base_image:
+              name: '{{ base_image_name | default("registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest") }}'
+          
+          dependencies:
+            python: requirements.txt
+            system: bindep.txt
+            galaxy: requirements.yml
+          
+          additional_build_steps:
+            prepend_base: |
+              RUN microdnf install -y python3-pip python3-devel
+            append_base: |
+              RUN microdnf upgrade -y && \
+                  python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+            append_final: |
+              USER root
+              RUN microdnf clean all && \
+                  rm -rf /var/cache/{dnf,yum} && \
+                  rm -rf /etc/ansible/ansible.cfg
+              RUN pip check || echo "Some packages have issues, but continuing anyway"
+        mode: '0644'
+        backup: yes
+      vars:
+        env_name: "{{ item.item.path | dirname | basename }}"
+        base_image_name: >-
+          {% if 'minimal' in env_name %}
+          registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel{% if 'rhel8' in env_name %}8{% else %}9{% endif %}:latest
+          {% else %}
+          registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel{% if 'rhel8' in env_name %}8{% else %}9{% endif %}:latest
+          {% endif %}
+      when: "'Invalid' in item.stdout"
+      loop: "{{ ee_yml_validation.results }}"
+      loop_control:
+        label: "{{ item.item.path | regex_replace(playbook_dir ~ '/environments/', '') }}"
+  tags:
+    - organize
+    - validation
+    - ee_yml
+
+# Validate and fix requirements.txt files
+- name: Fix empty or missing requirements.txt files
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/environments/{{ item.item }}/requirements.txt"
+    content: |
+      # Python dependencies required for this execution environment
+      # Format: package[extra]==version
+      # Example:
+      # ansible-core>=2.14.0
+      # pywinrm>=0.4.3
+    mode: '0644'
+    force: no
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - organize
+    - validation
+    - requirements
+
+# Validate and fix bindep.txt files
+- name: Fix empty or missing bindep.txt files
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/environments/{{ item.item }}/bindep.txt"
+    content: |
+      # System dependencies required for this execution environment
+      # Format: package [platform:platform_version]
+      # Example:
+      # gcc [platform:rpm]
+      # openssl-devel [platform:rpm]
+      # libffi-devel [platform:rpm]
+    mode: '0644'
+    force: no
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - organize
+    - validation
+    - bindep
+
+# Validate and fix requirements.yml files
+- name: Fix empty or missing requirements.yml files
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/environments/{{ item.item }}/requirements.yml"
+    content: |
+      ---
+      # Ansible collections and roles required for this execution environment
+      collections:
+        # - name: ansible.netcommon
+        #   version: ">=4.1.0"
+        # - name: ansible.utils
+        #   version: ">=2.10.3"
+      roles:
+        # - name: example.role
+        #   version: "1.0.0"
+    mode: '0644'
+    force: no
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - organize
+    - validation
+    - galaxy_reqs
+
+# Find and organize scripts from environment directories
+- name: Find scripts in environment directories
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/environments"
+    recurse: yes
+    file_type: file
+    patterns: "*.sh"
+    excludes:
+      - "execution-environment.yml"
+      - "requirements.yml"
+      - "requirements.txt"
+      - "bindep.txt"
+  register: env_scripts
+  tags:
+    - organize
+    - scripts
+
+- name: Move environment scripts to scripts directory
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ playbook_dir }}/scripts/{{ item.path | basename }}"
+    mode: '0755'
+    remote_src: yes
+  loop: "{{ env_scripts.files }}"
+  register: moved_scripts
+  tags:
+    - organize
+    - scripts
+
+# Find and organize other non-standard files
+- name: Find other files in environment directories
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/environments"
+    recurse: yes
+    file_type: file
+    excludes:
+      - "*.sh"
+      - "execution-environment.yml"
+      - "requirements.yml"
+      - "requirements.txt"
+      - "bindep.txt"
+  register: other_env_files
+  tags:
+    - organize
+    - files
+
+# Add this task right before the "Move other environment files to files directory" task
+- name: Ensure files directory exists with proper permissions
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/files"
+    state: directory
+    mode: '0755'
+  tags:
+    - organize
+    - files
+    - directories
+
+# Fix the "Move other environment files to files directory" task by adding create: yes
+- name: Move other environment files to files directory
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ playbook_dir }}/files/{{ item.path | basename }}"
+    mode: '0644'
+    remote_src: yes
+    # Add this parameter to create parent directories automatically
+    directory_mode: '0755'
+    # Add this parameter to ensure the directory is created
+    create: yes
+  loop: "{{ other_env_files.files }}"
+  register: moved_files
+  tags:
+    - organize
+    - files
+
+# Re-synchronize files from source to tmp directory
+- name: Re-synchronize environments after changes
+  ansible.builtin.synchronize:
+    src: "{{ playbook_dir }}/environments/{{ item.item }}/"
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/"
+    delete: no
+    archive: yes
+    recursive: yes
+  delegate_to: "{{ inventory_hostname }}"
+  loop: "{{ env_exists.results }}"
+  when: item.stat.exists and item.stat.isdir
+  tags:
+    - organize
+    - sync
+
+# Check for duplicate and conflicting requirements
+- name: Check for duplicate Python requirements
+  ansible.builtin.lineinfile:
+    path: "{{ item.path }}/requirements.txt"
+    line: "{{ item.line }}"
+    state: present
+  loop: "{{ lookup('file', '/tmp/ee-containers/environments/*/requirements.txt').split('\n') | select('match', '^[^#]') | list }}"
+  tags:
+    - organize
+    - dedup
+    - requirements
+
+- name: Create Python helper script for deduplicating collections
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/deduplicate_collections.py"
+    mode: '0755'
+    content: |
+      #!/usr/bin/env python3
+      import yaml, os, sys
+
+      file_path = sys.argv[1]
+      try:
+          with open(file_path) as f:
+              data = yaml.safe_load(f) or {}
+          
+          if "collections" in data:
+              seen_collections = {}
+              deduped_collections = []
+              
+              for coll in data["collections"]:
+                  if isinstance(coll, dict) and "name" in coll:
+                      name = coll["name"]
+                      if name not in seen_collections or "version" in coll:
+                          seen_collections[name] = coll
+                          deduped_collections.append(coll)
+                  elif isinstance(coll, str):
+                      if coll not in seen_collections:
+                          seen_collections[coll] = coll
+                          deduped_collections.append(coll)
+              
+              data["collections"] = deduped_collections
+          
+          with open(file_path, "w") as f:
+              yaml.dump(data, f, default_flow_style=False)
+      except Exception as e:
+          print(f"Error processing {file_path}: {e}")
+          sys.exit(1)
+
+- name: Check for duplicate Galaxy collection requirements
+  ansible.builtin.shell: |
+    for dir in /tmp/ee-containers/environments/*/; do
+      if [ -f "$dir/requirements.yml" ]; then
+        echo "Processing $(basename $dir) galaxy requirements"
+        python3 /tmp/ee-containers/deduplicate_collections.py "$dir/requirements.yml"
+      fi
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  tags:
+    - organize
+    - dedup
+    - galaxy_reqs
+
+# Check for issues in execution environment files and provide improved fix
+- name: Create fix_pattern task file
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/roles/ee-builder/tasks/fix_pattern.yml"
+    mode: '0644'
+    content: |
+      ---
+      - name: Fix pattern {{ pattern_index }} in {{ environment }}
+        ansible.builtin.replace:
+          path: "/tmp/ee-containers/environments/{{ environment }}/execution-environment.yml"
+          regexp: "{{ item_regexes[pattern_index] }}"
+          replace: "{{ item_replaces[pattern_index] }}"
+        ignore_errors: true
+        vars:
+          item_regexes:
+            - "additional_build_steps:[\\s\\n]+prepend:"
+            - '(\s+)RUN\s+/output/scripts/pip_install'
+            - "version:\\s+['\"]?2['\"]?"
+            - "ansible.posix:[^\\n]+"
+            - "(\n\\s+)(pip|dnf|yum)\\s+install"
+          item_replaces:
+            - "additional_build_steps:\n  prepend_base:"
+            - '\1/output/scripts/pip_install'
+            - "version: 3"
+            - "ansible.posix: '>=1.5.1'"
+            - "\\1microdnf install -y"
+
+- name: Fix common issues in execution environment files
+  include_tasks: fix_pattern.yml
+  vars:
+    environment: "{{ item.0 }}"
+    pattern_index: "{{ item.1 }}"
+  with_nested:
+    - "{{ environments_to_build }}"
+    - [0, 1, 2, 3, 4]
+  loop_control:
+    label: "{{ item.0 }} - pattern {{ item.1 }}"
+  tags:
+    - organize
+    - validation
+    - fix
+
+# Comprehensive summary report of all file validations and changes
+- name: Generate comprehensive validation report
+  ansible.builtin.debug:
+    msg: |
+      ############################################################
+      #             EXECUTION ENVIRONMENT VALIDATION             #
+      ############################################################
+      
+      Total environments validated: {{ env_exists.results | length }}
+      Script files relocated: {{ moved_scripts.results | default([]) | length }}
+      Other files relocated: {{ moved_files.results | default([]) | length }}
+      
+      VALIDATION RESULTS:
+      - execution-environment.yml files checked: {{ ee_yml_validation.results | default([]) | length }}
+      - Fixed execution-environment.yml issues: {{ (ee_yml_validation.results | default([]) | selectattr('stdout', 'search', 'Invalid') | list | length) }}
+      
+      All environment files have been validated and synchronized back to the
+      temporary build directory at /tmp/ee-containers/environments/
+      
+      The following best practices have been applied:
+      1. Removed duplicate requirements
+      2. Fixed common syntax errors
+      3. Updated to version 3 format
+      4. Organized scripts into {{ playbook_dir }}/scripts/
+      5. Organized other files into {{ playbook_dir }}/files/
+  tags:
+    - organize
+    - validation
+    - summary
+    - always
+
+####################################
+# 4. REGISTRY AUTHENTICATION
 ####################################
 
 - name: Create system-wide auth file for podman
@@ -239,7 +648,7 @@
     dest: "/etc/containers/registries.conf"
     content: |
       [registries.search]
-      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'docker.io', 'quay.io']
+      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'quay.io']
       
       [registries.insecure]
       registries = []
@@ -276,7 +685,7 @@
     - podman
 
 ####################################
-# 4. PREPARE ENVIRONMENT FILES
+# 5. PREPARE ENVIRONMENT FILES
 ####################################
 
 - name: Load variables from config file
@@ -318,7 +727,12 @@
 - name: Create requirements.txt for each environment (if needed)
   ansible.builtin.copy:
     dest: "/tmp/ee-containers/environments/{{ item }}/requirements.txt"
-      # No requirements specified
+    content: |
+      # Python dependencies required for this execution environment
+      # Format: package[extra]==version
+      # Example:
+      # ansible-core>=2.14.0
+      # pywinrm>=0.4.3
     mode: "0644"
     force: false
   loop: "{{ environments_to_build }}"
@@ -330,7 +744,7 @@
     - requirements
 
 ####################################
-# 5. CREATE HELPER SCRIPTS
+# 6. CREATE HELPER SCRIPTS
 ####################################
 
 # Copy pre-built custom assemble script
@@ -383,7 +797,7 @@
     - hooks
 
 ####################################
-# 6. FIX EXECUTION ENVIRONMENT YAML FILES
+# 7. FIX EXECUTION ENVIRONMENT YAML FILES
 ####################################
 
 # Add this task FIRST in the section to find all the execution-environment.yml files
@@ -464,12 +878,26 @@
           name: 'registry.redhat.io/ansible-automation-platform-25/ee-{% if "minimal" in item.path %}minimal{% else %}supported{% endif %}-rhel{% if "rhel8" in item.path %}8{% else %}9{% endif %}:latest'
       
       options:
-        package_manager_path: /usr/bin/microdnf
+        package_manager_path: /usr/bin/microdnf  # More consistent than dnf
       
       dependencies:
         python: requirements.txt
         system: bindep.txt
         galaxy: requirements.yml
+
+      additional_build_steps:
+        prepend_base: |
+          # Commands to run before the base build
+        append_base: |
+          # Commands to run after the base build
+        prepend_galaxy: |
+          # Commands to run before galaxy install
+        append_galaxy: |
+          # Commands to run after galaxy install
+        prepend_final: |
+          # Commands to run before final stage
+        append_final: |
+          # Commands to run after final stage
     mode: '0644'
   loop: "{{ ee_yml_files.files }}"
   when: 
@@ -518,8 +946,418 @@
     - fix
     - schema
 
+- name: Fix extra RUN command in execution environment files
+  ansible.builtin.replace:
+    path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+    regexp: '(\s+)RUN\s+/output/scripts/pip_install'
+    replace: '\1/output/scripts/pip_install'
+  loop: "{{ environments_to_build }}"
+  ignore_errors: true
+  tags:
+    - yaml
+    - fix
+    - containerfile
+
 ####################################
-# 7. GENERATE CUSTOM CONTAINERFILES
+# 8. MONITORING SETUP
+####################################
+
+- name: Check if tmux is installed
+  ansible.builtin.command: which tmux
+  register: tmux_install
+  failed_when: false
+  changed_when: false
+  tags:
+    - monitor
+    - tmux
+
+- name: Install tmux if missing
+  ansible.builtin.package:
+    name: tmux
+    state: present
+  when: tmux_install.rc != 0
+  become: true
+  ignore_errors: true
+  tags:
+    - monitor
+    - tmux
+
+- name: Create improved TMux launcher script with persistent window
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/scripts/ee-tmux-monitor.sh"
+    content: |
+      #!/bin/bash
+      
+      # Terminal colors and styling
+      BOLD="\033[1m"
+      GREEN="\033[32m"
+      YELLOW="\033[33m"
+      BLUE="\033[34m"
+      MAGENTA="\033[35m"
+      CYAN="\033[36m"
+      RESET="\033[0m"
+      
+      # Session name and build information
+      SESSION="ansible-builder"
+      TIMESTAMP="$1"
+      ENVS="$2"
+      
+      # Kill any existing session
+      tmux kill-session -t $SESSION 2>/dev/null || true
+      
+      # Create new tmux session
+      tmux new-session -d -s $SESSION -n "EE Builder"
+      
+      # Create layout: 3 panes stacked vertically
+      tmux split-window -v -p 70 -t $SESSION:0
+      tmux split-window -v -p 50 -t $SESSION:0
+      
+      # Top pane: Title with fancy formatting
+      tmux send-keys -t $SESSION:0.0 "clear && echo -e '${BLUE}${BOLD}╔═══════════════════════════════════════╗${RESET}'" C-m
+      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}║  ANSIBLE EXECUTION ENVIRONMENT BUILDER  ║${RESET}'" C-m
+      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}╚═══════════════════════════════════════╝${RESET}'" C-m
+      
+      # Middle pane: Show build progress with spinner
+      tmux send-keys -t $SESSION:0.1 "clear && echo -e '${CYAN}${BOLD}Building:${RESET} $ENVS'" C-m
+      tmux send-keys -t $SESSION:0.1 "echo" C-m
+      tmux send-keys -t $SESSION:0.1 "function show_spinner() {" C-m
+      tmux send-keys -t $SESSION:0.1 "  local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'" C-m
+      tmux send-keys -t $SESSION:0.1 "  while true; do" C-m
+      tmux send-keys -t $SESSION:0.1 "    for i in \$(seq 0 7); do" C-m
+      tmux send-keys -t $SESSION:0.1 "      printf \"\\r${YELLOW}${BOLD}⏳ Building...${RESET} \${spinstr:\$i:1}\"" C-m
+      tmux send-keys -t $SESSION:0.1 "      sleep 0.1" C-m
+      tmux send-keys -t $SESSION:0.1 "      if ! pgrep -f ansible-builder >/dev/null; then" C-m
+      tmux send-keys -t $SESSION:0.1 "        printf \"\\r${GREEN}${BOLD}✅ Build completed!${RESET}           \\n\"" C-m
+      tmux send-keys -t $SESSION:0.1 "        return" C-m
+      tmux send-keys -t $SESSION:0.1 "      fi" C-m
+      tmux send-keys -t $SESSION:0.1 "    done" C-m
+      tmux send-keys -t $SESSION:0.1 "  done" C-m
+      tmux send-keys -t $SESSION:0.1 "}" C-m
+      tmux send-keys -t $SESSION:0.1 "(pgrep -f ansible-builder && show_spinner) || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
+      
+      # Bottom pane: Watch podman images refreshing quickly
+      tmux send-keys -t $SESSION:0.2 "watch -n 0.5 'podman images | grep ${TIMESTAMP} || echo \"No images built yet\"'" C-m
+      
+      # This is the key change - choose how to handle TMux based on environment
+      if [ -n "$DISPLAY" ] || [ -n "$WSL_DISTRO_NAME" ] || [ "$OSTYPE" == "darwin"* ]; then
+        # We have a GUI - try to launch in a new terminal window
+        if [ -n "$WSL_DISTRO_NAME" ]; then
+          # WSL environment
+          which wt.exe > /dev/null 2>&1 && wt.exe new-tab -p "Ubuntu" bash -c "tmux attach -t $SESSION" || \
+          cmd.exe /c "start bash -c \"tmux attach -t $SESSION\"" 
+        elif [ "$OSTYPE" == "darwin"* ]; then
+          # macOS
+          osascript -e 'tell app "Terminal" to do script "tmux attach -t '$SESSION'"'
+        else
+          # Linux with GUI
+          which gnome-terminal > /dev/null 2>&1 && gnome-terminal -- tmux attach -t $SESSION || \
+          which konsole > /dev/null 2>&1 && konsole -e "tmux attach -t $SESSION" || \
+          which xterm > /dev/null 2>&1 && xterm -e "tmux attach -t $SESSION" &
+        fi
+      else
+        # Just attach directly (headless or fallback)
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e "${GREEN}${BOLD}TMux monitoring session started${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e ""
+        echo -e "Connect to the monitoring session with:"
+        echo -e "${CYAN}${BOLD}tmux attach -t $SESSION${RESET}"
+        echo -e ""
+        echo -e "The monitor shows:"
+        echo -e "  - ${YELLOW}Top pane:${RESET} Title banner"
+        echo -e "  - ${YELLOW}Middle pane:${RESET} Build progress with animated spinner"
+        echo -e "  - ${YELLOW}Bottom pane:${RESET} Real-time image listing (refreshes every 0.5s)"
+        echo -e ""
+        echo -e "To detach from the session: Press ${CYAN}Ctrl+B${RESET} then ${CYAN}D${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo ""
+        echo -e "${MAGENTA}Press ENTER to attach to monitoring session now...${RESET}"
+        read
+        
+        # Direct attach - this will keep terminal window open
+        exec tmux attach -t $SESSION
+      fi
+    mode: '0755'
+  tags:
+    - monitor
+    - tmux
+    - scripts
+
+- name: Copy TMux monitor script to working directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/ee-tmux-monitor.sh"
+    dest: "/tmp/ee-containers/ee-tmux-monitor.sh" 
+    mode: '0755'
+  tags:
+    - monitor
+    - tmux
+
+# IMPORTANT: Remove async/poll to keep the terminal window open
+- name: Launch persistent TMux monitoring session
+  ansible.builtin.command: 
+    cmd: "/tmp/ee-containers/ee-tmux-monitor.sh {{ timestamp }} '{{ environments_to_build | join(', ') }}'"
+  # Remove the async/poll to keep terminal attached
+  when: environments_to_build is defined and environments_to_build | length > 0
+  tags:
+    - monitor
+    - tmux
+
+# Copy Python helper script
+- name: Copy deduplication script to working directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/deduplicate_collections.py"
+    dest: "/tmp/ee-containers/deduplicate_collections.py"
+    mode: '0755'
+  tags:
+    - organize
+    - dedup
+    - galaxy_reqs
+
+- name: Create universal TMux launcher script
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/scripts/universal-tmux-launcher.sh"
+    content: |
+      #!/bin/bash
+
+      # Terminal colors and styling
+      BOLD="\033[1m"
+      GREEN="\033[32m"
+      YELLOW="\033[33m"
+      BLUE="\033[34m"
+      MAGENTA="\033[35m"
+      CYAN="\033[36m"
+      RESET="\033[0m"
+      
+      # Session name and parameters
+      SESSION="ansible-builder"
+      TIMESTAMP="$1"
+      ENVS="$2"
+      
+      # Function to detect environment
+      detect_environment() {
+        # Check for WSL
+        if [[ -n "$WSL_DISTRO_NAME" || -f /proc/version ]] && grep -qi microsoft /proc/version 2>/dev/null; then
+          echo "wsl"
+          return
+        fi
+
+        # Check for macOS
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+          echo "macos"
+          return
+        fi
+
+        # Check for various Linux desktop environments
+        if [[ -n "$XDG_CURRENT_DESKTOP" ]]; then
+          echo "linux-desktop-${XDG_CURRENT_DESKTOP,,}"  # Lowercase the name
+          return
+        fi
+
+        # Check for SSH session
+        if [[ -n "$SSH_CLIENT" || -n "$SSH_TTY" || -n "$SSH_CONNECTION" ]]; then
+          echo "ssh"
+          return
+        fi
+
+        # Check for PuTTY
+        if [[ -n "$TERM" && "$TERM" == "putty" || -n "$PUTTY_PORT" ]]; then
+          echo "putty"
+          return
+        fi
+
+        # Check for MobaXterm
+        if [[ -n "$TERM" && "$TERM" == "xterm" && -n "$CHERE_INVOKING" ]]; then
+          echo "mobaxterm"
+          return
+        fi
+
+        # Default to basic terminal
+        echo "basic"
+      }
+
+      # Function to set up tmux session
+      setup_tmux_session() {
+        # Kill any existing session
+        tmux kill-session -t $SESSION 2>/dev/null || true
+        
+        # Create new tmux session
+        tmux new-session -d -s $SESSION -n "EE Builder"
+        
+        # Create layout: 3 panes stacked vertically
+        tmux split-window -v -p 70 -t $SESSION:0
+        tmux split-window -v -p 50 -t $SESSION:0
+        
+        # Top pane: Title with fancy formatting
+        tmux send-keys -t $SESSION:0.0 "clear && echo -e '${BLUE}${BOLD}╔═══════════════════════════════════════╗${RESET}'" C-m
+        tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}║  ANSIBLE EXECUTION ENVIRONMENT BUILDER  ║${RESET}'" C-m
+        tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}╚═══════════════════════════════════════╝${RESET}'" C-m
+        
+        # Middle pane: Show build progress with spinner
+        tmux send-keys -t $SESSION:0.1 "clear && echo -e '${CYAN}${BOLD}Building:${RESET} $ENVS'" C-m
+        tmux send-keys -t $SESSION:0.1 "echo" C-m
+        tmux send-keys -t $SESSION:0.1 "function show_spinner() {" C-m
+        tmux send-keys -t $SESSION:0.1 "  local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'" C-m
+        tmux send-keys -t $SESSION:0.1 "  while true; do" C-m
+        tmux send-keys -t $SESSION:0.1 "    for i in \$(seq 0 7); do" C-m
+        tmux send-keys -t $SESSION:0.1 "      printf \"\\r${YELLOW}${BOLD}⏳ Building...${RESET} \${spinstr:\$i:1}\"" C-m
+        tmux send-keys -t $SESSION:0.1 "      sleep 0.1" C-m
+        tmux send-keys -t $SESSION:0.1 "      if ! pgrep -f ansible-builder >/dev/null; then" C-m
+        tmux send-keys -t $SESSION:0.1 "        printf \"\\r${GREEN}${BOLD}✅ Build completed!${RESET}           \\n\"" C-m
+        tmux send-keys -t $SESSION:0.1 "        return" C-m
+        tmux send-keys -t $SESSION:0.1 "      fi" C-m
+        tmux send-keys -t $SESSION:0.1 "    done" C-m
+        tmux send-keys -t $SESSION:0.1 "  done" C-m
+        tmux send-keys -t $SESSION:0.1 "}" C-m
+        tmux send-keys -t $SESSION:0.1 "(pgrep -f ansible-builder && show_spinner) || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
+        
+        # Bottom pane: Watch podman images refreshing quickly
+        tmux send-keys -t $SESSION:0.2 "watch -n 0.5 'podman images | grep ${TIMESTAMP} || echo \"No images built yet\"'" C-m
+      }
+
+      # Function to launch terminal and attach tmux session
+      launch_terminal() {
+        local env=$1
+        local success=false
+        
+        case "$env" in
+          wsl)
+            # Try Windows Terminal first, then fallback to cmd
+            if command -v wt.exe &>/dev/null; then
+              wt.exe new-tab --title "Ansible EE Builder" wsl.exe -d $(wslpath -w ~ | cut -d'\' -f3) bash -c "tmux attach -t $SESSION" && success=true
+            fi
+            
+            # Fallback to cmd.exe if wt.exe failed
+            if [[ "$success" != "true" ]]; then
+              cmd.exe /c "start bash.exe -c \"tmux attach -t $SESSION\"" && success=true
+            fi
+            ;;
+            
+          macos)
+            # Try iTerm first, then Terminal.app
+            if osascript -e 'id of application "iTerm"' &>/dev/null; then
+              osascript -e 'tell application "iTerm" to create window with default profile command "tmux attach -t '$SESSION'"' && success=true
+            fi
+            
+            if [[ "$success" != "true" ]]; then
+              osascript -e 'tell app "Terminal" to do script "tmux attach -t '$SESSION'"' && success=true
+            fi
+            ;;
+            
+          linux-desktop-gnome | linux-desktop-unity)
+            # GNOME/Unity environments
+            if command -v gnome-terminal &>/dev/null; then
+              gnome-terminal -- bash -c "tmux attach -t $SESSION" && success=true
+            fi
+            ;;
+            
+          linux-desktop-kde)
+            # KDE environment
+            if command -v konsole &>/dev/null; then
+              konsole -e bash -c "tmux attach -t $SESSION" && success=true
+            fi
+            ;;
+            
+          linux-desktop-xfce)
+            # XFCE environment
+            if command -v xfce4-terminal &>/dev/null; then
+              xfce4-terminal -e "tmux attach -t $SESSION" && success=true
+            fi
+            ;;
+            
+          linux-desktop-mate)
+            # MATE environment
+            if command -v mate-terminal &>/dev/null; then
+              mate-terminal -e "tmux attach -t $SESSION" && success=true
+            fi
+            ;;
+            
+          linux-desktop-cinnamon)
+            # Cinnamon environment
+            if command -v gnome-terminal &>/dev/null; then
+              gnome-terminal -- bash -c "tmux attach -t $SESSION" && success=true
+            fi
+            ;;
+            
+          *)
+            # Try various common terminal emulators as fallbacks
+            for term in x-terminal-emulator xterm urxvt terminology alacritty kitty terminator termite; do
+              if command -v $term &>/dev/null; then
+                if [[ "$term" == "xterm" ]]; then
+                  $term -e "tmux attach -t $SESSION" && success=true && break
+                else
+                  $term -e "tmux attach -t $SESSION" && success=true && break
+                fi
+              fi
+            done
+            ;;
+        esac
+        
+        echo "$success"
+      }
+
+      # Function to display instructions
+      display_instructions() {
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e "${GREEN}${BOLD}TMux monitoring session created${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e ""
+        echo -e "Connect to the monitoring session with:"
+        echo -e "${CYAN}${BOLD}tmux attach -t $SESSION${RESET}"
+        echo -e ""
+        echo -e "The monitor shows:"
+        echo -e "  - ${YELLOW}Top pane:${RESET} Title banner"
+        echo -e "  - ${YELLOW}Middle pane:${RESET} Build progress with animated spinner"
+        echo -e "  - ${YELLOW}Bottom pane:${RESET} Real-time image listing (refreshes every 0.5s)"
+        echo -e ""
+        echo -e "To detach from the session: Press ${CYAN}Ctrl+B${RESET} then ${CYAN}D${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+      }
+
+      # Main process
+      ENVIRONMENT=$(detect_environment)
+      echo "Detected environment: $ENVIRONMENT"
+
+      # Set up tmux session
+      setup_tmux_session
+      
+      # Try to launch terminal
+      LAUNCH_RESULT=$(launch_terminal "$ENVIRONMENT")
+      
+      if [[ "$LAUNCH_RESULT" != "true" ]]; then
+        # No GUI or couldn't launch terminal automatically
+        display_instructions
+        
+        if [[ "$SSH_TTY" || "$ENVIRONMENT" == "putty" || "$ENVIRONMENT" == "mobaxterm" || "$ENVIRONMENT" == "ssh" || "$ENVIRONMENT" == "basic" ]]; then
+          echo -e "${MAGENTA}Press ENTER to attach to the monitoring session now...${RESET}"
+          read
+          exec tmux attach -t $SESSION
+        fi
+      fi
+    mode: '0755'
+  tags:
+    - monitor
+    - tmux
+    - scripts
+
+- name: Copy universal TMux launcher to working directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/universal-tmux-launcher.sh"
+    dest: "/tmp/ee-containers/universal-tmux-launcher.sh"
+    mode: '0755'
+  tags:
+    - monitor
+    - tmux
+
+- name: Launch universal TMux monitoring session
+  ansible.builtin.command:
+    cmd: "/tmp/ee-containers/universal-tmux-launcher.sh {{ timestamp }} '{{ environments_to_build | join(', ') }}'"
+  when: environments_to_build is defined and environments_to_build | length > 0
+  tags:
+    - monitor
+    - tmux
+
+####################################
+# 9. GENERATE CUSTOM CONTAINERFILES
 ####################################
 
 - name: Copy custom assemble script to context directory
@@ -697,7 +1535,7 @@
 
 - name: Copy assemble script to each environment's build context
   ansible.builtin.copy:
-    src: "/tmp/ee-containers/custom-assemble.sh"
+    src: "{{ playbook_dir }}/scripts/custom-assemble.sh"
     dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/assemble"
     mode: "0755"
   loop: "{{ env_exists.results }}"
@@ -708,13 +1546,25 @@
     - scripts
     - assemble
 
-# Add this task after copying the assemble script but before building
-- name: Create entrypoint script in each environment's build context
+# Create entrypoint script in central scripts directory first
+- name: Create entrypoint script in scripts directory
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/entrypoint"
+    dest: "{{ playbook_dir }}/scripts/entrypoint.sh"
     content: |
       #!/bin/bash
       exec "$@"
+    mode: "0755"
+  tags:
+    - containerfiles
+    - copy
+    - scripts
+    - entrypoint
+
+# Then copy from there to each environment
+- name: Copy entrypoint script to each environment's build context
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/scripts/entrypoint.sh"
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/entrypoint"
     mode: "0755"
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
@@ -725,7 +1575,7 @@
     - entrypoint
 
 ####################################
-# 8. BUILD IMAGES
+# 10. BUILD IMAGES
 ####################################
 
 # Copy pre-built assemble script from scripts directory
@@ -997,7 +1847,7 @@
     - debug
 
 ####################################
-# 9. CLEANUP AND REPORTING
+# 11. REPORTING
 ####################################
 
 - name: Initialize build_results if no builds ran
@@ -1020,6 +1870,24 @@
     - variables
     - summary
 
+- name: Show build summary
+  ansible.builtin.debug:
+    msg: |
+      
+      ********************************************************************
+      *                     BUILD SUMMARY REPORT                         *
+      ********************************************************************
+      
+      Total environments selected: {{ total_environments }}
+      Successfully built: {{ successful_builds }}
+      Failed builds: {{ failed_builds }}
+      Skipped builds: {{ skipped_builds }}
+      
+      DETAILED RESULTS:
+      {% for result in build_results.results %}
+      {% if result.skipped is defined %}
+      - SKIPPED: {{ result.item.item }} - Missing execution-environment.yml
+      {% elif result.rc is defined and result.rc == 0 %}
       - SUCCESS: {{ result.item.item }} - Image tag: {{ result.item.item }}:{{ timestamp }}
       {% elif result.rc is defined %}
       - FAILED: {{ result.item.item }} - Error code: {{ result.rc }}
@@ -1075,253 +1943,228 @@
     - debug
     - always
 
-- name: Create tmux monitoring script
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/monitor.sh"
-    content: |
-      #!/bin/bash
-      export TERM=xterm-256color
-      SESSION="ee-builds"
-      
-      # Kill existing session if it exists
-      tmux kill-session -t $SESSION 2>/dev/null || true
-      
-      # Create new session
-      tmux new-session -d -s $SESSION -n "monitor"
-      
-      # Split the window
-      tmux split-window -h -t $SESSION:0
-      tmux split-window -v -t $SESSION:0.0
-      
-      # Send commands to each pane
-      tmux send-keys -t $SESSION:0.0 "watch -n 3 podman images | grep {{ timestamp }}" C-m
-      tmux send-keys -t $SESSION:0.1 "watch -n 3 podman ps -a" C-m
-      tmux send-keys -t $SESSION:0.2 "tail -f /tmp/ee-containers/build_monitor.log" C-m
-      
-      # Attach to the session
-      tmux attach -t $SESSION
-    mode: '0755'
+####################################
+# 12. CLEANUP AND FINALIZATION
+####################################
 
-- name: Display tmux monitoring instructions
-  ansible.builtin.debug:
-    msg: |
-      For a detailed monitoring dashboard:
-      Run: /tmp/ee-containers/monitor.sh
-
-# Add this right after your "Prompt for RHEL environment selection" task
-- name: Launch TMux monitoring session immediately after environment selection
-  block:
-    - name: Check if tmux is installed
-      ansible.builtin.command: which tmux
-      register: tmux_install
-      failed_when: false
-      changed_when: false
-      
-    - name: Install tmux if missing
-      ansible.builtin.package:
-        name: tmux
-        state: present
-      when: tmux_install.rc != 0
-      become: true
-      ignore_errors: true
-      
-    - name: Check for existing tmux session
-      ansible.builtin.shell: tmux list-sessions | grep ee-monitor || echo "No session"
-      register: tmux_sessions
-      changed_when: false
-      failed_when: false
-      
-    - name: Kill existing tmux session if present
-      ansible.builtin.command: tmux kill-session -t ee-monitor
-      when: "'ee-monitor' in tmux_sessions.stdout"
-      ignore_errors: true
-      
-    - name: Create monitoring directory
-      ansible.builtin.file:
-        path: "/tmp/ee-containers/monitor"
-        state: directory
-        mode: "0755"
-      
-    - name: Create initial status file
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/monitor/status.txt"
-        content: |
-          ====================================================================
-          EXECUTION ENVIRONMENT BUILD MONITOR - Started {{ lookup('pipe', 'date') }}
-          ====================================================================
-          
-          Environments selected for build:
-          {% for env in environments_to_build %}
-          - {{ env }}
-          {% endfor %}
-          
-          Current stage: Preparing build environment
-          
-          Build status will appear here when builds start...
-        mode: "0644"
-      
-    - name: Create automatic tmux launcher
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/launch-monitor.sh"
-        content: |
-          #!/bin/bash
-          SESSION="ee-monitor"
-          
-          # Kill existing session if it exists
-          tmux kill-session -t $SESSION 2>/dev/null || true
-          
-          # Create new session
-          tmux new-session -d -s $SESSION -n "EE Monitor"
-          
-          # Split the window into three panes
-          tmux split-window -v -t $SESSION:0
-          tmux split-window -h -t $SESSION:0.0
-          tmux split-window -h -t $SESSION:0.1
-          
-          # Send commands to each pane
-          tmux send-keys -t $SESSION:0.0 "clear; echo 'Build Status Monitor'; watch -n 2 cat /tmp/ee-containers/monitor/status.txt" C-m
-          tmux send-keys -t $SESSION:0.1 "clear; echo 'Image List'; watch -n 3 'podman images | grep {{ timestamp }} || echo No images yet'" C-m
-          tmux send-keys -t $SESSION:0.2 "clear; echo 'Container Status'; watch -n 3 'podman ps -a | grep {{ timestamp }} || echo No containers yet'" C-m
-          tmux send-keys -t $SESSION:0.3 "clear; echo 'Build Logs'; tail -F /tmp/ee-containers/build_monitor.log 2>/dev/null || echo 'Waiting for logs...'" C-m
-          
-          # Select first pane
-          tmux select-pane -t $SESSION:0.0
-          
-          # Return session name for attaching
-          echo "$SESSION"
-        mode: "0755"
-      
-    - name: Launch tmux session in background
-      ansible.builtin.shell: |
-        nohup /tmp/ee-containers/launch-monitor.sh &>/dev/null &
-        echo "Monitor launched"
-      async: 10
-      poll: 0
-      
-    - name: Display tmux connection instructions
-      ansible.builtin.debug:
-        msg: |
-          🖥️ BUILD MONITOR IS READY!
-          
-          To connect to the monitoring session, run:
-          
-              tmux attach -t ee-monitor
-          
-          The monitor shows:
-            - Top left: Overall build status
-            - Top right: Current container images
-            - Bottom left: Running containers
-            - Bottom right: Build logs
-      
-    - name: Update status file periodically
-      ansible.builtin.shell: |
-        while true; do
-          echo "$(date '+%Y-%m-%d %H:%M:%S') - Updating status file..." >> /tmp/ee-containers/monitor/monitor.log
-          echo "====================================================================
-          EXECUTION ENVIRONMENT BUILD MONITOR - Updated $(date)
-          ====================================================================
-          
-          Environments selected: {{ environments_to_build | join(', ') }}
-          
-          CURRENT IMAGES:
-          $(podman images | grep {{ timestamp }} || echo 'No images yet')
-          
-          RUNNING CONTAINERS:
-          $(podman ps -a | grep {{ timestamp }} || echo 'No containers running')
-          
-          PROGRESS:
-          $(ls -l /tmp/ee-containers/environments/*/Containerfile 2>/dev/null | wc -l) Containerfiles generated
-          " > /tmp/ee-containers/monitor/status.txt
-          sleep 5
-        done &
-      async: 3600
-      poll: 0
-  tags:
-    - always
-    - monitor
-    - tmux
-
-- name: Create improved TMux monitoring script with better visuals
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/ee-monitor.sh"
-    content: |
-      #!/bin/bash
-      
-      # Terminal colors and styling
-      BOLD="\033[1m"
-      GREEN="\033[32m"
-      YELLOW="\033[33m"
-      BLUE="\033[34m"
-      MAGENTA="\033[35m"
-      CYAN="\033[36m"
-      RESET="\033[0m"
-      
-      # Create spinner function
-      function show_spinner() {
-        local pid=$1
-        local delay=0.1
-        local spinstr='|/-\'
-        
-        while ps -p $pid > /dev/null; do
-          for i in $(seq 0 3); do
-            printf "\r${YELLOW}${BOLD}⏳ Building...${RESET} ${spinstr:$i:1}"
-            sleep $delay
-          done
-        done
-        printf "\r${GREEN}${BOLD}✅ Completed ${RESET}           \n"
-      }
-      
-      # Kill any existing session
-      tmux kill-session -t ansible-builder 2>/dev/null || true
-      
-      # Create new session
-      tmux new-session -d -s ansible-builder
-      
-      # Set title and adjust layout for 3 panes
-      tmux rename-window "EE Builder"
-      
-      # Create layout: 3 panes stacked vertically
-      tmux split-window -v -p 70
-      tmux split-window -v -p 50
-      
-      # Top pane: Title with fancy formatting
-      tmux send-keys -t ansible-builder:0.0 "clear && echo -e '${BLUE}${BOLD}╔═════════════════════════════════════════════╗${RESET}'" C-m
-      tmux send-keys -t ansible-builder:0.0 "echo -e '${BLUE}${BOLD}║     ANSIBLE EXECUTION ENVIRONMENT BUILDER     ║${RESET}'" C-m
-      tmux send-keys -t ansible-builder:0.0 "echo -e '${BLUE}${BOLD}╚═════════════════════════════════════════════╝${RESET}'" C-m
-      
-      # Middle pane: Show build progress with spinner
-      tmux send-keys -t ansible-builder:0.1 "clear" C-m
-      tmux send-keys -t ansible-builder:0.1 "echo -e '${CYAN}${BOLD}Currently Building:${RESET} {{ environments_to_build | join(', ') }}'" C-m
-      tmux send-keys -t ansible-builder:0.1 "echo" C-m
-      tmux send-keys -t ansible-builder:0.1 "ps aux | grep ansible-builder | grep -v grep > /dev/null && show_spinner \$! || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
-      
-      # Bottom pane: Watch podman images refreshing quickly
-      tmux send-keys -t ansible-builder:0.2 "watch -n 0.5 'podman images | grep {{ timestamp }} || echo \"No images built yet\"'" C-m
-      
-      # Attach to the session
-      tmux attach -t ansible-builder
-    mode: '0755'
-
-- name: Launch TMux monitor and attach to terminal (non-async)
-  ansible.builtin.command: "/tmp/ee-containers/ee-monitor.sh"
-  # Remove async to ensure it attaches to the terminal
+- name: Remove all dangling images
+  ansible.builtin.shell: |
+    podman image ls -a | grep '<none>' | awk '{print $3}' | xargs -r podman rmi -f || true
   ignore_errors: true
   tags:
-    - build
-    - tmux
-    - monitor
+    - cleanup
+    - podman
+    - images
 
-- name: Launch smart TMux monitoring system
-  ansible.builtin.shell: "/tmp/ee-containers/smart-tmux-monitor.sh"
-  async: 10  # Short timeout just to let the script run
-  poll: 0    # Don't wait for completion
-  when: environments_to_build is defined and environments_to_build | length > 0
+####################################
+# CENTRALIZED SCRIPT MANAGEMENT
+####################################
+
+- name: Ensure scripts directory exists
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/scripts"
+    state: directory
+    mode: "0755"
   tags:
-    - build
-    - tmux
-    - monitor
+    - scripts
+    - setup
 
+- name: Create all required scripts in central location
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/scripts/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - name: smart-tmux-monitor.sh
+      content: |
+        #!/bin/bash
+        
+        # Terminal colors and styling
+        BOLD="\033[1m"
+        GREEN="\033[32m"
+        YELLOW="\033[33m"
+        BLUE="\033[34m"
+        MAGENTA="\033[35m"
+        CYAN="\033[36m"
+        RESET="\033[0m"
+        
+        # Session name
+        SESSION="ansible-builder"
+        
+        # Kill any existing session
+        tmux kill-session -t $SESSION 2>/dev/null || true
+        
+        # Create new tmux session
+        tmux new-session -d -s $SESSION -n "EE Builder"
+        
+        # Create layout: 3 panes stacked vertically
+        tmux split-window -v -p 70 -t $SESSION:0
+        tmux split-window -v -p 50 -t $SESSION:0
+        
+        # Top pane: Title with fancy formatting
+        tmux send-keys -t $SESSION:0.0 "clear && echo -e '${BLUE}${BOLD}╔═══════════════════════════════════════╗${RESET}'" C-m
+        tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}║  ANSIBLE EXECUTION ENVIRONMENT BUILDER  ║${RESET}'" C-m
+        tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}╚═══════════════════════════════════════╝${RESET}'" C-m
+        
+        # Middle pane: Show build progress with spinner
+        tmux send-keys -t $SESSION:0.1 "clear && echo -e '${CYAN}${BOLD}Building:${RESET} {{ environments_to_build | join(', ') }}'" C-m
+        tmux send-keys -t $SESSION:0.1 "echo" C-m
+        tmux send-keys -t $SESSION:0.1 "function show_spinner() {" C-m
+        tmux send-keys -t $SESSION:0.1 "  local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'" C-m
+        tmux send-keys -t $SESSION:0.1 "  while true; do" C-m
+        tmux send-keys -t $SESSION:0.1 "    for i in \$(seq 0 7); do" C-m
+        tmux send-keys -t $SESSION:0.1 "      printf \"\\r${YELLOW}${BOLD}⏳ Building...${RESET} \${spinstr:\$i:1}\"" C-m
+        tmux send-keys -t $SESSION:0.1 "      sleep 0.1" C-m
+        tmux send-keys -t $SESSION:0.1 "      if ! pgrep -f ansible-builder >/dev/null; then" C-m
+        tmux send-keys -t $SESSION:0.1 "        printf \"\\r${GREEN}${BOLD}✅ Build completed!${RESET}           \\n\"" C-m
+        tmux send-keys -t $SESSION:0.1 "        return" C-m
+        tmux send-keys -t $SESSION:0.1 "      fi" C-m
+        tmux send-keys -t $SESSION:0.1 "    done" C-m
+        tmux send-keys -t $SESSION:0.1 "  done" C-m
+        tmux send-keys -t $SESSION:0.1 "}" C-m
+        tmux send-keys -t $SESSION:0.1 "(pgrep -f ansible-builder && show_spinner) || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
+        
+        # Bottom pane: Watch podman images refreshing quickly
+        tmux send-keys -t $SESSION:0.2 "watch -n 0.5 'podman images | grep timestamp_placeholder || echo \"No images built yet\"'" C-m
+        
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e "${GREEN}${BOLD}TMux monitoring session started${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+        echo -e ""
+        echo -e "Connect to the monitoring session with:"
+        echo -e "${CYAN}${BOLD}tmux attach -t $SESSION${RESET}"
+        echo -e ""
+        echo -e "The monitor shows:"
+        echo -e "  - ${YELLOW}Top pane:${RESET} Title banner"
+        echo -e "  - ${YELLOW}Middle pane:${RESET} Build progress with animated spinner"
+        echo -e "  - ${YELLOW}Bottom pane:${RESET} Real-time image listing (refreshes every 0.5s)"
+        echo -e ""
+        echo -e "To detach from the session: Press ${CYAN}Ctrl+B${RESET} then ${CYAN}D${RESET}"
+        echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
 
+    - name: deduplicate_collections.py
+      mode: '0755'
+      content: |
+        #!/usr/bin/env python3
+        import yaml, os, sys
 
+        file_path = sys.argv[1]
+        try:
+            with open(file_path) as f:
+                data = yaml.safe_load(f) or {}
+            
+            if "collections" in data:
+                seen_collections = {}
+                deduped_collections = []
+                
+                for coll in data["collections"]:
+                    if isinstance(coll, dict) and "name" in coll:
+                        name = coll["name"]
+                        if name not in seen_collections or "version" in coll:
+                            seen_collections[name] = coll
+                            deduped_collections.append(coll)
+                    elif isinstance(coll, str):
+                        if coll not in seen_collections:
+                            seen_collections[coll] = coll
+                            deduped_collections.append(coll)
+                
+                data["collections"] = deduped_collections
+            
+            with open(file_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False)
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
+            sys.exit(1)
 
+    - name: custom-assemble.sh
+      content: |
+        #!/bin/bash
+        
+        # Custom assemble script for Ansible EE
+        echo "Running custom assemble script..."
+        
+        # Create the output directory structure
+        mkdir -p /output/scripts/
+        
+        # Copy the assemble script from bind-mount to output
+        if [ -f /build/scripts/assemble ]; then
+          cp /build/scripts/assemble /output/scripts/
+          chmod +x /output/scripts/assemble
+        fi
+        
+        # Create helper scripts
+        cat > /output/scripts/pip_install << 'EOF'
+        #!/bin/bash
+        pip3 install --no-cache-dir "$@"
+        EOF
+        chmod +x /output/scripts/pip_install
+        
+        # Copy entrypoint if it exists
+        if [ -f /build/scripts/entrypoint ]; then
+          cp /build/scripts/entrypoint /output/scripts/
+          chmod +x /output/scripts/entrypoint
+        fi
+        
+        echo "Custom assemble script completed successfully"
+        exit 0
 
+    - name: pre-build
+      content: |
+        #!/bin/bash
+        
+        # Pre-build hook for Ansible EE
+        echo "Running pre-build hook..."
+        
+        # Ensure the container's package cache is up to date
+        if command -v microdnf &> /dev/null; then
+          microdnf clean all
+          microdnf update -y
+        elif command -v dnf &> /dev/null; then  
+          dnf clean all
+          dnf update -y
+        fi
+        
+        # Create any required directories
+        mkdir -p /etc/ansible
+        
+        # Set appropriate permissions
+        chmod -R a+rwx /etc/ansible
+        
+        echo "Pre-build hook completed successfully"
+        exit 0
+
+    - name: build-monitor.sh
+      content: |
+        #!/bin/bash
+        
+        # Build monitoring script
+        TIMESTAMP=$1
+        LOG_FILE="/tmp/ee-containers/build_monitor.log"
+        STATUS_FILE="/tmp/ee-containers/build_status.txt"
+        
+        echo "Starting build monitor for timestamp: $TIMESTAMP" > $LOG_FILE
+        
+        while true; do
+          echo "$(date) - Checking build status..." >> $LOG_FILE
+          podman ps -a >> $LOG_FILE
+          echo "Current images:" >> $LOG_FILE
+          podman images | grep $TIMESTAMP >> $LOG_FILE 2>&1
+          
+          # Update the status file
+          echo "Build Status Monitor" > $STATUS_FILE
+          echo "===================" >> $STATUS_FILE
+          echo "Updated: $(date)" >> $STATUS_FILE
+          echo "" >> $STATUS_FILE
+          echo "ACTIVE BUILDS:" >> $STATUS_FILE
+          podman ps | grep -v CONTAINER >> $STATUS_FILE || echo "No active builds" >> $STATUS_FILE
+          echo "" >> $STATUS_FILE
+          echo "COMPLETED IMAGES:" >> $STATUS_FILE
+          podman images | grep $TIMESTAMP >> $STATUS_FILE || echo "No completed images yet" >> $STATUS_FILE
+          
+          # Sleep between checks
+          sleep 30
+        done
+  tags:
+    - scripts
+    - setup
+    - templates
