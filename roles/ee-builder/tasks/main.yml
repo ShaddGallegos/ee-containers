@@ -1,65 +1,60 @@
 ---
-# Tasks for ee-builder role
+# EE Builder Role Main Tasks File
 
-# Handle credentials
+# === INITIALIZATION PHASE ===
 - name: Handle credentials
   ansible.builtin.import_tasks: credentials.yml
   tags: ['init', 'creds']
 
-# Set up the build environment
 - name: Set up build environment
   ansible.builtin.import_tasks: setup.yml
   tags: ['init', 'setup']
 
-# Fix Red Hat registry authentication
 - name: Fix Red Hat registry authentication
   ansible.builtin.import_tasks: registry_auth.yml
   tags: ['init', 'auth']
 
-# Fix execution environment files
 - name: Fix execution environment files
   ansible.builtin.import_tasks: fix_ee_files.yml
   tags: ['init', 'fix']
 
-# Include variables and setup common settings
+# === VARIABLES AND CONFIGURATION ===
 - name: Include role variables
   ansible.builtin.include_vars:
     file: "{{ role_path }}/vars/main.yml"
 
-# Include variables
 - name: Include configuration variables
   ansible.builtin.include_vars:
     file: "common-ee-vars.yml"
 
-# First present the environment selection menu
-- name: Select environments to build
-  ansible.builtin.import_tasks: "{{ role_path }}/tasks/environment_menu.yml"
-
-# Display environment menu and get selection
-- name: Get environment selection from user
-  ansible.builtin.include_tasks: environment_menu.yml
-  tags: ['menu', 'build']
-
-# Set role facts
 - name: Set role facts
   ansible.builtin.include_tasks: set_facts.yml
   tags: ['build']
 
-# Launch tmux monitoring session
-- name: Launch tmux monitoring session
-  ansible.builtin.include_tasks: tmux_session2.yml
+# === ENVIRONMENT SELECTION ===
+- name: Get environment selection from user
+  ansible.builtin.include_tasks: environment_menu.yml
   tags: ['menu', 'build']
 
-# Then build the selected environments
-- name: Build selected environments
-  ansible.builtin.import_tasks: "{{ role_path }}/tasks/build_environment.yml"
+# === MONITORING SETUP ===
+- name: Launch smart TMux monitoring system
+  ansible.builtin.include_tasks: tmux_monitor.yml
+  tags: ['monitor', 'build']
+  when: environments_to_build is defined and environments_to_build | length > 0
 
-# Build selected environments
+# === BUILD PROCESS ===
 - name: Build selected environments
   ansible.builtin.include_tasks: build_environment.yml
-  tags: ['menu', 'build']
+  tags: ['build']
+  when: environments_to_build is defined and environments_to_build | length > 0
 
-# Cleanup temporary files
+# === REPORTING AND NOTIFICATION ===
+- name: Generate build reports
+  ansible.builtin.include_tasks: reporting.yml
+  tags: ['report', 'build']
+  when: environments_to_build is defined and environments_to_build | length > 0
+
+# === CLEANUP PHASE ===
 - name: Clean up temporary files
   ansible.builtin.include_tasks: cleanup.yml
   tags: ['cleanup']

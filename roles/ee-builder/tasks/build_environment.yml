@@ -506,6 +506,18 @@
     - validation
     - debug
 
+- name: Fix invalid 'prepend' property in execution-environment.yml files
+  ansible.builtin.replace:
+    path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+    regexp: "additional_build_steps:[\\s\\n]+prepend:"
+    replace: "additional_build_steps:\n  prepend_base:"
+  loop: "{{ environments_to_build }}"
+  ignore_errors: true
+  tags:
+    - yaml
+    - fix
+    - schema
+
 ####################################
 # 7. GENERATE CUSTOM CONTAINERFILES
 ####################################
@@ -619,33 +631,41 @@
 
 - name: Read execution-environment.yml content
   ansible.builtin.slurp:
-    src: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
+    src: "/tmp/ee-containers/environments/{{ item.0.item }}/execution-environment.yml"
   register: ee_yml_content
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir and ee_yml_file.stat.exists
+  loop: "{{ env_exists.results | zip(ee_yml_file.results) | list }}"
+  when: item.0.stat.exists and item.0.stat.isdir and item.1.stat.exists
+  loop_control:
+    label: "{{ item.0.item }}"
   tags:
     - containerfiles
     - verification
     - debug
 
+# First, fix the display task
 - name: Display execution-environment.yml content
   ansible.builtin.debug:
     msg: |
       execution-environment.yml found
       Content:
-      {{ ee_yml_content['content'] | b64decode }}
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir and ee_yml_file.stat.exists
+      {{ item.1.content | b64decode }}
+  loop: "{{ env_exists.results | zip(ee_yml_content.results) | list }}"
+  when: item.0.stat.exists and item.0.stat.isdir and item.1 is defined and not item.1.skipped | default(false)
+  loop_control:
+    label: "{{ item.0.item }}"
   tags:
     - containerfiles
     - verification
     - debug
 
+# Also fix the "Report missing" task which has the same issue
 - name: Report missing execution-environment.yml
   ansible.builtin.debug:
     msg: "execution-environment.yml NOT found"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir and not ee_yml_file.stat.exists
+  loop: "{{ env_exists.results | zip(ee_yml_file.results) | list }}"
+  when: item.0.stat.exists and item.0.stat.isdir and not item.1.stat.exists
+  loop_control:
+    label: "{{ item.0.item }}"
   tags:
     - containerfiles
     - verification
@@ -653,9 +673,11 @@
 
 - name: Report missing environment directory
   ansible.builtin.debug:
-    msg: "Directory does NOT exist"
-  loop: "{{ env_exists.results }}"
-  when: not env_dir_check_loop.stat.exists
+    msg: "Directory for {{ item.0.item }} does NOT exist"
+  loop: "{{ env_exists.results | zip(env_dir_check_loop.results) | list }}"
+  when: not item.1.stat.exists
+  loop_control:
+    label: "{{ item.0.item }}"
   tags:
     - containerfiles
     - verification
@@ -811,14 +833,32 @@
     - images
     - ansible_builder
 
+# First, add this task to wait for the async builds to complete
+- name: Wait for builds to complete
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: build_commands
+  until: build_commands.finished
+  retries: 36  # Retry for up to an hour (36 * 100s = 3600s = 1h)
+  delay: 100  # Check every 100 seconds
+  loop: "{{ build_jobs.results | selectattr('ansible_job_id', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: build_jobs is defined and build_jobs.results is defined
+  tags:
+    - build
+    - images
+    - async_status
+
+# Then fix your append task
 - name: Append build output to log files
   ansible.builtin.copy:
     dest: "/tmp/ee-containers/environments/{{ item.item.item }}/build-direct-{{ timestamp }}.log"
-    content: "{{ item.stdout }}\n{{ item.stderr }}\n"
+    content: "{{ item.stdout | default('') }}\n{{ item.stderr | default('') }}\n"
     mode: '0644'
     backup: no
   loop: "{{ build_commands.results }}"
-  when: item is not skipped
+  when: not item.skipped | default(false)  # Proper way to check if skipped
   loop_control:
     label: "{{ item.item.item }}"
   tags:
@@ -1227,6 +1267,240 @@
     - always
     - monitor
     - tmux
+
+- name: Create improved TMux monitoring script with better visuals
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/ee-monitor.sh"
+    content: |
+      #!/bin/bash
+      
+      # Terminal colors and styling
+      BOLD="\033[1m"
+      GREEN="\033[32m"
+      YELLOW="\033[33m"
+      BLUE="\033[34m"
+      MAGENTA="\033[35m"
+      CYAN="\033[36m"
+      RESET="\033[0m"
+      
+      # Create spinner function
+      function show_spinner() {
+        local pid=$1
+        local delay=0.1
+        local spinstr='|/-\'
+        
+        while ps -p $pid > /dev/null; do
+          for i in $(seq 0 3); do
+            printf "\r${YELLOW}${BOLD}⏳ Building...${RESET} ${spinstr:$i:1}"
+            sleep $delay
+          done
+        done
+        printf "\r${GREEN}${BOLD}✅ Completed ${RESET}           \n"
+      }
+      
+      # Kill any existing session
+      tmux kill-session -t ansible-builder 2>/dev/null || true
+      
+      # Create new session
+      tmux new-session -d -s ansible-builder
+      
+      # Set title and adjust layout for 3 panes
+      tmux rename-window "EE Builder"
+      
+      # Create layout: 3 panes stacked vertically
+      tmux split-window -v -p 70
+      tmux split-window -v -p 50
+      
+      # Top pane: Title with fancy formatting
+      tmux send-keys -t ansible-builder:0.0 "clear && echo -e '${BLUE}${BOLD}╔═════════════════════════════════════════════╗${RESET}'" C-m
+      tmux send-keys -t ansible-builder:0.0 "echo -e '${BLUE}${BOLD}║     ANSIBLE EXECUTION ENVIRONMENT BUILDER     ║${RESET}'" C-m
+      tmux send-keys -t ansible-builder:0.0 "echo -e '${BLUE}${BOLD}╚═════════════════════════════════════════════╝${RESET}'" C-m
+      
+      # Middle pane: Show build progress with spinner
+      tmux send-keys -t ansible-builder:0.1 "clear" C-m
+      tmux send-keys -t ansible-builder:0.1 "echo -e '${CYAN}${BOLD}Currently Building:${RESET} {{ environments_to_build | join(', ') }}'" C-m
+      tmux send-keys -t ansible-builder:0.1 "echo" C-m
+      tmux send-keys -t ansible-builder:0.1 "ps aux | grep ansible-builder | grep -v grep > /dev/null && show_spinner \$! || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
+      
+      # Bottom pane: Watch podman images refreshing quickly
+      tmux send-keys -t ansible-builder:0.2 "watch -n 0.5 'podman images | grep {{ timestamp }} || echo \"No images built yet\"'" C-m
+      
+      # Attach to the session
+      tmux attach -t ansible-builder
+    mode: '0755'
+
+- name: Launch TMux monitor and attach to terminal (non-async)
+  ansible.builtin.command: "/tmp/ee-containers/ee-monitor.sh"
+  # Remove async to ensure it attaches to the terminal
+  ignore_errors: true
+  when: environments_to_build is defined and environments_to_build | length > 0
+
+- name: Create smart TMux launcher for both GUI and headless environments
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/smart-tmux-monitor.sh"
+    content: |
+      #!/bin/bash
+      
+      # Terminal colors and styling
+      BOLD="\033[1m"
+      GREEN="\033[32m"
+      YELLOW="\033[33m"
+      BLUE="\033[34m"
+      MAGENTA="\033[35m"
+      CYAN="\033[36m"
+      RESET="\033[0m"
+      
+      # Session name
+      SESSION="ansible-builder"
+      MONITOR_SCRIPT="/tmp/ee-containers/tmux_monitor_script.sh"
+      
+      # Function to detect OS type
+      detect_os() {
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+              echo "macos"
+          elif [[ -f /proc/version ]] && grep -qi microsoft /proc/version; then
+              echo "wsl"
+          elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+              echo "linux"
+          else
+              echo "unknown"
+          fi
+      }
+      
+      # Function to check if we're running in a GUI environment
+      is_gui_available() {
+          local os_type=$(detect_os)
+          
+          if [[ "$os_type" == "macos" ]]; then
+              # On macOS, GUI is almost always available
+              return 0
+          elif [[ "$os_type" == "wsl" ]]; then
+              # In WSL, we can use Windows GUI apps
+              return 0
+          else
+              # For Linux, check if DISPLAY is set
+              if [ -n "$DISPLAY" ]; then
+                  return 0  # GUI available
+              else
+                  return 1  # GUI not available
+              fi
+          fi
+      }
+      
+      # Function to try launching a new terminal window with the tmux session
+      launch_gui_terminal() {
+          local os_type=$(detect_os)
+          
+          if [[ "$os_type" == "macos" ]]; then
+              # macOS approach
+              osascript -e 'tell application "Terminal" to do script "tmux attach -t '"$SESSION"' || tmux new-session -s '"$SESSION"'"'
+              return $?
+          elif [[ "$os_type" == "wsl" ]]; then
+              # WSL approach - use wt (Windows Terminal) if available
+              if command -v wt.exe &>/dev/null; then
+                  wt.exe new-tab --title "EE Builder" wsl.exe bash -c "tmux attach -t $SESSION || tmux new-session -s $SESSION"
+                  return $?
+              else
+                  # Fallback to cmd.exe
+                  cmd.exe /c "start bash -c \"tmux attach -t $SESSION || tmux new-session -s $SESSION\""
+                  return $?
+              fi
+          else
+              # Linux approach - try different terminal emulators
+              if command -v gnome-terminal &>/dev/null; then
+                  gnome-terminal -- bash -c "tmux attach -t $SESSION || tmux new-session -s $SESSION"
+                  return $?
+              elif command -v xterm &>/dev/null; then
+                  xterm -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
+                  return $?
+              elif command -v konsole &>/dev/null; then
+                  konsole --new-tab -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
+                  return $?
+              elif command -v terminator &>/dev/null; then
+                  terminator -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
+                  return $?
+              else
+                  return 1  # No known terminal emulator found
+              fi
+          fi
+      }
+      
+      # Kill any existing session
+      tmux kill-session -t $SESSION 2>/dev/null || true
+      
+      # Create new tmux session
+      tmux new-session -d -s $SESSION -n "EE Builder"
+      
+      # Create layout: 3 panes stacked vertically
+      tmux split-window -v -p 70 -t $SESSION:0
+      tmux split-window -v -p 50 -t $SESSION:0
+      
+      # Top pane: Title with fancy formatting
+      tmux send-keys -t $SESSION:0.0 "clear && echo -e '${BLUE}${BOLD}╔═════════════════════════════════════════════╗${RESET}'" C-m
+      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}║     ANSIBLE EXECUTION ENVIRONMENT BUILDER     ║${RESET}'" C-m
+      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}╚═════════════════════════════════════════════╝${RESET}'" C-m
+      
+      # Middle pane: Show build progress with spinner
+      tmux send-keys -t $SESSION:0.1 "clear && echo -e '${CYAN}${BOLD}Currently Building:${RESET} {{ environments_to_build | join(', ') }}'" C-m
+      tmux send-keys -t $SESSION:0.1 "echo" C-m
+      tmux send-keys -t $SESSION:0.1 "function show_spinner() {" C-m
+      tmux send-keys -t $SESSION:0.1 "  local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'" C-m
+      tmux send-keys -t $SESSION:0.1 "  while true; do" C-m
+      tmux send-keys -t $SESSION:0.1 "    for i in \$(seq 0 7); do" C-m
+      tmux send-keys -t $SESSION:0.1 "      printf \"\\r${YELLOW}${BOLD}⏳ Building...${RESET} \${spinstr:\$i:1}\"" C-m
+      tmux send-keys -t $SESSION:0.1 "      sleep 0.1" C-m
+      tmux send-keys -t $SESSION:0.1 "      if ! pgrep -f ansible-builder >/dev/null; then" C-m
+      tmux send-keys -t $SESSION:0.1 "        printf \"\\r${GREEN}${BOLD}✅ Build completed!${RESET}           \\n\"" C-m
+      tmux send-keys -t $SESSION:0.1 "        return" C-m
+      tmux send-keys -t $SESSION:0.1 "      fi" C-m
+      tmux send-keys -t $SESSION:0.1 "    done" C-m
+      tmux send-keys -t $SESSION:0.1 "  done" C-m
+      tmux send-keys -t $SESSION:0.1 "}" C-m
+      tmux send-keys -t $SESSION:0.1 "(pgrep -f ansible-builder && show_spinner) || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
+      
+      # Bottom pane: Watch podman images refreshing quickly
+      tmux send-keys -t $SESSION:0.2 "watch -n 0.5 'podman images | grep {{ timestamp }} || echo \"No images built yet\"'" C-m
+      
+      # Try to launch in a new terminal window if GUI is available
+      if is_gui_available; then
+          if launch_gui_terminal; then
+              echo -e "${GREEN}${BOLD}TMux monitor launched in a new terminal window.${RESET}"
+          else
+              echo -e "${YELLOW}${BOLD}Could not launch a new terminal window. Connect manually.${RESET}"
+              echo -e "Connect with: ${CYAN}tmux attach -t $SESSION${RESET}"
+          fi
+      else
+          # Headless mode - just provide instructions
+          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+          echo -e "${GREEN}${BOLD}TMux monitoring session started in background (HEADLESS MODE)${RESET}"
+          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+          echo -e ""
+          echo -e "Connect to the monitoring session with:"
+          echo -e "${CYAN}${BOLD}tmux attach -t $SESSION${RESET}"
+          echo -e ""
+          echo -e "The monitor shows:"
+          echo -e "  - ${YELLOW}Top pane:${RESET} Title banner"
+          echo -e "  - ${YELLOW}Middle pane:${RESET} Build progress with animated spinner"
+          echo -e "  - ${YELLOW}Bottom pane:${RESET} Real-time image listing (refreshes every 0.5s)"
+          echo -e ""
+          echo -e "To detach from the session: Press ${CYAN}Ctrl+B${RESET} then ${CYAN}D${RESET}"
+          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
+      fi
+    mode: '0755'
+  tags:
+    - build
+    - tmux
+    - monitor
+
+- name: Launch smart TMux monitoring system
+  ansible.builtin.shell: "/tmp/ee-containers/smart-tmux-monitor.sh"
+  async: 10  # Short timeout just to let the script run
+  poll: 0    # Don't wait for completion
+  when: environments_to_build is defined and environments_to_build | length > 0
+  tags:
+    - build
+    - tmux
+    - monitor
 
 
 
