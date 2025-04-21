@@ -1077,7 +1077,6 @@
         # Direct attach - this will keep terminal window open
         exec tmux attach -t $SESSION
       fi
-    mode: '0755'
   tags:
     - monitor
     - tmux
