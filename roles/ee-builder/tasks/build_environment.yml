@@ -99,6 +99,27 @@
     - always
     - initialize
 
+# Add this task before "Ensure build directory exists"
+- name: Check if build path exists as a file
+  ansible.builtin.stat:
+    path: "{{ paths.build }}"
+  register: build_path_stat
+  tags:
+    - build
+    - directories
+    - assemble
+
+- name: Remove build file if it exists as a file
+  ansible.builtin.file:
+    path: "{{ paths.build }}"
+    state: absent
+  when: build_path_stat.stat.exists and not build_path_stat.stat.isdir
+  become: true
+  tags:
+    - build
+    - directories
+    - assemble
+
 - name: Create all required directories
   ansible.builtin.file:
     path: "{{ item }}"
@@ -108,10 +129,11 @@
     # Playbook directories
     - "{{ playbook_dir }}/files"
     - "{{ playbook_dir }}/scripts"
+    - "{{ role_path }}/templates"
     - "~/.ansible/vars"
     # Temporary build directories
     - "/tmp/ee-containers"
-    - "/tmp/ee-containers/build/assemble"
+    - "/tmp/ee-containers/build"
     - "/tmp/ee-containers/environments"
     - "/tmp/ee-containers/files"
     - "/tmp/ee-containers/scripts"
@@ -316,16 +338,47 @@
     - config
     - podman
 
+- name: Fix container storage permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: file
+    mode: "0644"
+    owner: root
+    group: root
+  become: true
+  loop:
+    - "/etc/containers/storage.conf"
+    - "/usr/share/containers/storage.conf"
+  ignore_errors: true
+  tags:
+    - auth
+    - registry
+    - podman
+    - permissions
+
 - name: Test registry authentication
   ansible.builtin.command:
     cmd: "podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
   register: auth_test
   changed_when: false
   ignore_errors: true
+  async: 300  # 5 minute timeout
+  poll: 10    # Check every 10 seconds
   tags:
     - auth
     - registry
     - test
+    - podman
+
+- name: Warn about authentication issues
+  ansible.builtin.debug:
+    msg: "WARNING: Registry authentication failed. Your builds may not be able to access Red Hat images."
+  when: auth_test.rc != 0
+  tags:
+    - auth
+    - registry
+    - debug
+    - warnings
     - podman
 
 - name: Display auth test results
@@ -1755,10 +1808,10 @@
       Environments: {{ environments_to_build | join(', ') }}
       
       Run this command to monitor builds:
-      watch -n 5 "cat /tmp/ee-containers/build_status.txt"
+      watch -n 5 cat /tmp/ee-containers/build_status.txt
       
       Or check images with:
-      watch -n 5 "podman images | grep {{ timestamp }}"
+      watch -n 5 podman images | grep {{ timestamp }}
     mode: '0644'
 
 - name: Display monitoring instructions
