@@ -70,7 +70,6 @@
     - config
     - variables
 
----
 - name: Initialize all script variables
   ansible.builtin.set_fact:
     playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
@@ -109,8 +108,6 @@
     # Playbook directories
     - "{{ playbook_dir }}/files"
     - "{{ playbook_dir }}/scripts"
-    - "{{ role_path }}/templates"
-    - "{{ role_path }}/templates"
     - "~/.ansible/vars"
     # Temporary build directories
     - "/tmp/ee-containers"
@@ -1569,16 +1566,6 @@
     - directories
     - setup
 
-# REMOVED: Create assemble script in each environment's build context - Duplicate
-# - name: Create assemble script in each environment's build context
-#   ansible.builtin.copy:
-#     dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/assemble"
-#     mode: "0755"
-#     content: |
-#       #!/bin/bash
-#       ...
-
-# Create entrypoint script in central scripts directory first
 - name: Create entrypoint script in scripts directory
   ansible.builtin.copy:
     dest: "{{ playbook_dir }}/scripts/entrypoint.sh"
