@@ -73,10 +73,6 @@
     - setup
     - files
 
-####################################
-# 1. INITIALIZATION AND SETUP
-####################################
-
 - name: Install required Python packages for filters
   ansible.builtin.pip:
     name: jmespath
@@ -85,25 +81,6 @@
   tags:
     - setup
     - dependencies
-    - python_packages
-
-# Add this task near the beginning of your playbook (after the pip install task)
-- name: Install required Ansible collections for filters
-  ansible.builtin.command: ansible-galaxy collection install community.general
-  changed_when: false
-  ignore_errors: true
-  tags:
-    - setup
-    - dependencies
-    - ansible_collections
-
-- name: Generate timestamp for image tag
-  ansible.builtin.set_fact:
-    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
-  tags:
-    - setup
-    - timestamp
-    - always
 
 - name: Initialize environment_configs if not defined
   ansible.builtin.set_fact:
@@ -122,10 +99,6 @@
     - initialize
     - variables
     - os_type
-
-####################################
-# 2. ANSIBLE ENVIRONMENT SETUP
-####################################
 
 - name: Create Ansible configuration files
   ansible.builtin.copy:
@@ -174,9 +147,6 @@
     - debug
     - paths
 
-####################################
-# 3. REGISTRY AUTHENTICATION
-####################################
 
 - name: Create system-wide auth file for podman
   ansible.builtin.copy:
@@ -285,21 +255,14 @@
     - debug
     - environments
 
-####################################
-# 5. ENVIRONMENT VALIDATION
-####################################
-
 - name: Set default values for potentially undefined variables
   ansible.builtin.set_fact:
     environments_to_build: "{{ environments_to_build | default([]) }}"
     timestamp: "{{ timestamp | default(lookup('pipe', 'date +%Y%m%d%H%M%S')) }}"
     cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
   tags:
-    - validation
     - variables
     - initialize
-
-# IMPORTANT: This must come before any tasks that use env_exists
 
 - name: Check if environments directory exists
   ansible.builtin.stat:
@@ -783,7 +746,6 @@
     src: "{{ role_path }}/templates/ansible.cfg.j2"
     dest: "/tmp/ee-containers/ansible.cfg"
     mode: '0644'
-    force: no
   vars:
     ansible_vars: "{{ config_vars | default({}) }}"
   tags:
@@ -1303,7 +1265,6 @@
 # 11. BUILD IMAGES
 ####################################
 
-# Copy pre-built assemble script from scripts directory
 - name: Copy modified assemble script
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/roles/ee-builder/scripts/build/assemble"
@@ -1333,16 +1294,12 @@
     chdir: "/tmp/ee-containers/environments/{{ item.item }}"
   become: true
   environment:
-    REGISTRY_AUTH_FILE: "/etc/containers/auth.json"
     ANSIBLE_BUILDER_CACHE_DIR: "/tmp/ee-containers/build_cache"
-    ANSIBLE_VERBOSITY: "2"
   async: 3600  # Allow up to 1 hour for completion
   poll: 0  # Don't wait for completion
   register: build_jobs
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
-  loop_control:
-    label: "{{ item.item }}"
   tags:
     - build
     - images
