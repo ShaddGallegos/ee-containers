@@ -1,17 +1,48 @@
 ---
-####################################
-# CRITICAL FIX - PLACE AT BEGINNING
-####################################
+- name: Initialize all script variables
+  ansible.builtin.set_fact:
+    playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    role_path: "{{ playbook_dir }}/roles/ee-builder"
+    templates_dir: "{{ playbook_dir }}/roles/ee-builder/templates"
+    paths:
+      base: "/tmp/ee-containers"
+      environments: "/tmp/ee-containers/environments"
+      build: "/tmp/ee-containers/build" 
+      context: "/tmp/ee-containers/context"
+      hooks: "/tmp/ee-containers/hooks"
+      containerfiles: "/tmp/ee-containers/containerfiles"
+      templates: "{{ playbook_dir }}/roles/ee-builder/templates"
+    registry:
+      redhat:
+        url: "registry.redhat.io"
+        auth_file: "/etc/containers/auth.json"
+      container:
+        url: "{{ container_registry | default('localhost') }}"
+        auth_file: "/run/containers/0/auth.json"
+    environment_configs: "{{ environment_configs | default({}) }}"
+    environments_to_build: "{{ environments_to_build | default([]) }}"
+    os_type: "{{ 'rhel8' if (environments_to_build | default([]) | select('search', 'rhel8') | list | length > 0) else 'rhel9' }}"
+    cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
+  tags:
+    - always
+    - initialize
 
-- name: Create required directories FIRST
+- name: Create all required directories
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
     mode: "0755"
   loop:
+    # Playbook directories
     - "{{ playbook_dir }}/files"
     - "{{ playbook_dir }}/scripts"
+    - "{{ role_path }}/templates"
+    - "{{ role_path }}/templates"
+    - "~/.ansible/vars"
+    # Temporary build directories
     - "/tmp/ee-containers"
+    - "/tmp/ee-containers/build/assemble"
     - "/tmp/ee-containers/environments"
     - "/tmp/ee-containers/files"
     - "/tmp/ee-containers/scripts"
@@ -20,54 +51,73 @@
     - "/tmp/ee-containers/context/_build/scripts"
     - "/tmp/ee-containers/backups"
     - "/tmp/ee-containers/build_cache"
+    # Environment directories
+    - "/tmp/ansible_safe"
+    - "/etc/ansible"
   become: true
   tags:
     - always
     - setup
     - directories
 
-- name: Create essential script files in playbook files directory FIRST
-  ansible.builtin.copy:
-    dest: "{{ playbook_dir }}/files/{{ item.name }}"
-    content: "{{ item.content }}"
+- name: Ensure configuration directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
     mode: "0755"
   loop:
-    - name: pip_install
+    - "{{ role_path }}/templates"
+    - "~/.ansible/vars"
+  tags:
+    - always
+    - setup
+    - directories
+
+- name: Ensure build directory exists
+  ansible.builtin.file:
+    path: "{{ paths.build }}"
+    state: directory
+    mode: "0755"
+  become: true
+  tags:
+    - build
+    - directories
+    - assemble
+
+- name: Create all essential script files
+  ansible.builtin.copy:
+    dest: "{{ item.path }}/{{ item.name }}"
+    content: "{{ item.content }}"
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    # Script files
+    - path: "{{ playbook_dir }}/files"
+      name: "pip_install"
       content: |
         #!/bin/bash
         pip3 install --no-cache-dir "$@"
-    - name: check_ansible
+    - path: "{{ playbook_dir }}/files"
+      name: "check_ansible"
       content: |
         #!/bin/bash
         ansible --version
-    - name: check_galaxy
+    # Add all the other script files...
+    # Configuration files
+    - path: "/tmp/ansible_safe"
+      name: "ansible.cfg"
+      mode: "0644"
       content: |
-        #!/bin/bash
-        ansible-galaxy collection list
-    - name: install-from-bindep
+        [defaults]
+        ansible_log_path = /tmp/ee-containers/ansible.log
+        host_key_checking = False
+        deprecation_warnings = False
+        # Rest of ansible.cfg content...
+    - path: "/tmp/ansible_safe"
+      name: "inventory"
+      mode: "0644"
       content: |
-        #!/bin/bash
-        if command -v dnf >/dev/null; then
-          dnf install -y "$@"
-        elif command -v microdnf >/dev/null; then
-          microdnf install -y "$@"
-        fi
-    - name: assemble
-      content: |
-        #!/bin/bash
-        cp -r /build/* /output/ || true
-    - name: entrypoint
-      content: |
-        #!/bin/bash
-        exec "$@"
-    - name: Containerfile
-      content: |
-        FROM registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest
-        USER root
-        COPY . /build/
-        RUN /build/assemble
-        USER 1000
-        CMD ["bash"]
+        [local]
+        localhost ansible_connection=local
   tags:
     - always
     - setup
@@ -75,7 +125,10 @@
 
 - name: Install required Python packages for filters
   ansible.builtin.pip:
-    name: jmespath
+    name:
+      - jmespath
+      - pyyaml
+      - netaddr 
     state: present
   become: true
   tags:
@@ -215,9 +268,63 @@
     - debug
     - podman
 
-####################################
-# 4. ENVIRONMENT SYNCHRONIZATION
-####################################
+- name: Create automation hub authentication file
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.ansible/automation_hub.yml"
+    mode: "0600"
+    content: |
+      ---
+      server_url: 'https://console.redhat.com/api/automation-hub/'
+      auth_url: 'https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token'
+      token: '{{ automation_hub_token }}'
+      org_id: '{{ automation_hub_org_id | default("") }}'
+  when: automation_hub_token is defined
+  no_log: true
+  tags:
+    - auth
+    - automation_hub
+    - collections
+
+# Add Ansible Galaxy token for private content
+- name: Create Ansible Galaxy authentication file
+  ansible.builtin.copy:
+    dest: "{{ ansible_env.HOME }}/.ansible/galaxy_token"
+    mode: "0600"
+    content: "{{ galaxy_token }}"
+  when: galaxy_token is defined
+  no_log: true
+  tags:
+    - auth
+    - galaxy
+    - collections
+
+- name: Update ansible.cfg with authentication for content sources
+  ansible.builtin.blockinfile:
+    path: "/tmp/ansible_safe/ansible.cfg"
+    block: |
+      [galaxy]
+      server_list = automation_hub, release_galaxy, community_galaxy
+
+      [galaxy_server.automation_hub]
+      url = https://console.redhat.com/api/automation-hub/
+      auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+      token = {{ automation_hub_token | default("") }}
+
+      [galaxy_server.release_galaxy]
+      url = https://galaxy.ansible.com/
+      token = {{ galaxy_token | default("") }}
+
+      [galaxy_server.community_galaxy]
+      url = https://galaxy.ansible.com/
+      token = {{ galaxy_token | default("") }}
+    marker: "# {mark} ANSIBLE MANAGED BLOCK - GALAXY AUTHENTICATION"
+  no_log: true
+  when: automation_hub_token is defined or galaxy_token is defined
+  tags:
+    - auth
+    - galaxy
+    - automation_hub
+    - config
 
 - name: Synchronize environments from playbook directory to working directory
   ansible.builtin.synchronize:
@@ -731,6 +838,38 @@
 # 7. PREPARE ENVIRONMENT FILES
 ####################################
 
+- name: Check if config file exists
+  ansible.builtin.stat:
+    path: "~/.ansible/vars/config"
+  register: config_file
+  tags:
+    - prepare
+    - config
+    - variables
+
+- name: Load variables from config file
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  when: config_file.stat.exists
+  tags:
+    - prepare
+    - config
+    - variables
+
+- name: Create empty config vars if file doesn't exist
+  ansible.builtin.set_fact:
+    config_vars:
+      defaults: {}
+      credentials:
+        rh_username: "{{ rh_username | default('') }}"
+        rh_password: "{{ rh_password | default('') }}"
+  when: not config_file.stat.exists
+  tags:
+    - prepare
+    - config
+    - variables
+
 - name: Load variables from config file
   ansible.builtin.include_vars:
     file: "~/.ansible/vars/config"
@@ -741,6 +880,15 @@
     - config
     - variables
 
+- name: Check if ansible.cfg exists
+  ansible.builtin.stat:
+    path: "/tmp/ee-containers/ansible.cfg"
+  register: ansible_cfg_exists
+  tags:
+    - prepare
+    - config
+    - check
+
 - name: Create ansible.cfg file from template if not exists
   ansible.builtin.template:
     src: "{{ role_path }}/templates/ansible.cfg.j2"
@@ -748,6 +896,7 @@
     mode: '0644'
   vars:
     ansible_vars: "{{ config_vars | default({}) }}"
+  when: not ansible_cfg_exists.stat.exists
   tags:
     - prepare
     - config
@@ -785,6 +934,64 @@
     - python
     - requirements
 
+- name: Create ansible.cfg.j2 template
+  ansible.builtin.copy:
+    dest: "{{ role_path }}/templates/ansible.cfg.j2"
+    mode: '0644'
+    content: |
+      [defaults]
+      host_key_checking = False
+      retry_files_enabled = False
+      inventory = ./inventory
+      stdout_callback = yaml
+      bin_ansible_callbacks = True
+      interpreter_python = auto_silent
+      callback_whitelist = timer, profile_tasks
+      display_skipped_hosts = False
+      ansible_managed = Ansible managed: {file} modified on %Y-%m-%d %H:%M:%S by {uid} on {host}
+      command_warnings = False
+      deprecation_warnings = False
+      system_warnings = False
+
+      {% if ansible_vars.defaults is defined %}
+      # Custom settings from config file
+      {% for key, value in ansible_vars.defaults.items() %}
+      {{ key }} = {{ value }}
+      {% endfor %}
+      {% endif %}
+
+      [inventory]
+      # Ignore host patterns during parsing
+      unparsed_is_failed = False
+
+      [privilege_escalation]
+      become = True
+      become_method = sudo
+      become_user = root
+
+      [ssh_connection]
+      pipelining = True
+      ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
+
+      [colors]
+      highlight = white
+      verbose = blue
+      warn = bright purple
+      error = red
+      debug = dark gray
+      deprecate = purple
+      skip = cyan
+      unreachable = red
+      ok = green
+      changed = yellow
+      diff_add = green
+      diff_remove = red
+      diff_lines = cyan
+  tags:
+    - templates
+    - config
+    - always
+
 ####################################
 # 8. CREATE HELPER SCRIPTS
 ####################################
@@ -800,12 +1007,51 @@
     - copy
     - assemble
 
+- name: Create custom-assemble.sh script
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/roles/ee-builder/scripts/custom-assemble.sh"
+    content: |
+      #!/bin/bash
+      
+      # Custom assemble script for Ansible EE
+      echo "Running custom assemble script..."
+      
+      # Create the output directory structure
+      mkdir -p /output/scripts/
+      
+      # Copy the assemble script from bind-mount to output
+      if [ -f /build/scripts/assemble ]; then
+        cp /build/scripts/assemble /output/scripts/
+        chmod +x /output/scripts/assemble
+      fi
+      
+      # Create helper scripts
+      cat > /output/scripts/pip_install << 'EOF'
+      #!/bin/bash
+      pip3 install --no-cache-dir "$@"
+      EOF
+      chmod +x /output/scripts/pip_install
+      
+      # Copy entrypoint if it exists
+      if [ -f /build/scripts/entrypoint ]; then
+        cp /build/scripts/entrypoint /output/scripts/
+        chmod +x /output/scripts/entrypoint
+      fi
+      
+      echo "Custom assemble script completed successfully"
+      exit 0
+    mode: "0755"
+  tags:
+    - scripts
+    - copy
+    - assemble
+
 - name: Create Containerfile template with version 3 compatibility
   ansible.builtin.copy:
     dest: "/tmp/ee-containers/containerfiles/Containerfile.j2"
     mode: "0644"
     content: |
-      FROM {{ '{{' }} base_image {{ '}}' }} AS base
+      FROM {{ '{{' }} base_image {{ '}}' }} AS base_stage
       USER root
       ENV PIP_BREAK_SYSTEM_PACKAGES=1
       
@@ -821,6 +1067,61 @@
       
       # Install Python requirements and collections
       COPY --chown=root:root ansible.cfg /etc/ansible/ansible.cfg
+      
+      FROM base_stage AS galaxy
+      ARG EE_BASE_IMAGE
+      ARG PYCMD
+      ARG PKGMGR_PRESERVE_CACHE
+      ARG ANSIBLE_GALAXY_CLI_COLLECTION_OPTS
+      ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS
+      ARG PKGMGR
+      
+      # Copy collection requirements
+      COPY _build /build
+      WORKDIR /build
+      
+      RUN mkdir -p /usr/share/ansible
+      RUN ansible-galaxy role install $ANSIBLE_GALAXY_CLI_ROLE_OPTS -r requirements.yml --roles-path "/usr/share/ansible/roles"
+      RUN ANSIBLE_GALAXY_DISABLE_GPG_VERIFY=1 ansible-galaxy collection install $ANSIBLE_GALAXY_CLI_COLLECTION_OPTS -r requirements.yml --collections-path "/usr/share/ansible/collections"
+      
+      FROM base_stage AS builder
+      ENV PIP_BREAK_SYSTEM_PACKAGES=1
+      WORKDIR /build
+      
+      ARG EE_BASE_IMAGE
+      ARG PYCMD
+      ARG PKGMGR_PRESERVE_CACHE
+      ARG ANSIBLE_GALAXY_CLI_COLLECTION_OPTS
+      ARG ANSIBLE_GALAXY_CLI_ROLE_OPTS
+      ARG PKGMGR
+      
+      # Install bindep for dependency resolution
+      RUN $PYCMD -m pip install --no-cache-dir bindep pyyaml packaging
+      
+      # Copy collections from galaxy stage
+      COPY --from=galaxy /usr/share/ansible /usr/share/ansible
+      
+      # Copy requirements files
+      COPY _build/requirements.txt requirements.txt
+      COPY _build/bindep.txt bindep.txt
+      
+      # Run introspection and install dependencies
+      RUN $PYCMD /output/scripts/introspect.py introspect --user-pip=requirements.txt --user-bindep=bindep.txt --write-bindep=/tmp/src/bindep.txt --write-pip=/tmp/src/requirements.txt
+      RUN /output/scripts/assemble
+      
+      # Final image
+      FROM base_stage AS final
+      USER root
+      
+      # Copy output from builder stage
+      COPY --from=builder /output /output
+      
+      # Copy scripts to final image
+      COPY --from=builder /usr/share/ansible /usr/share/ansible
+      
+      # Set default command
+      USER 1000
+      CMD ["bash"]
   tags:
     - scripts
     - templates
@@ -1018,9 +1319,28 @@
 
 # CONSOLIDATED: Generate custom Containerfile for each environment
 - name: Generate custom Containerfile for each environment
-  ansible.builtin.template:
-    src: "Containerfile.j2"
+  ansible.builtin.copy:  # Change template to copy
     dest: "{{ paths.environments }}/{{ item.item }}/Containerfile"
+    content: |
+      FROM {{ base_image }} AS base_stage
+      USER root
+      ENV PIP_BREAK_SYSTEM_PACKAGES=1
+      
+      # Fix missing package managers
+      RUN if [ ! -f /usr/bin/dnf ] && [ -f /usr/bin/microdnf ]; then \
+            ln -s /usr/bin/microdnf /usr/bin/dnf || true; \
+          fi
+      
+      # Copy collection requirements
+      COPY . /build/
+      WORKDIR /build
+      
+      # Run custom assemble script
+      RUN bash /build/_build/scripts/assemble
+      
+      # Set default command
+      USER 1000
+      CMD ["bash"]
     mode: "0644"
   vars:
     ee_file_path: "{{ paths.environments }}/{{ item.item }}/execution-environment.yml"
@@ -1177,18 +1497,14 @@
     - directories
     - setup
 
-- name: Copy assemble script to each environment's build context
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/scripts/custom-assemble.sh"
-    dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/assemble"
-    mode: "0755"
-  loop: "{{ env_exists.results }}"
-  when: item.stat.exists and item.stat.isdir
-  tags:
-    - containerfiles
-    - copy
-    - scripts
-    - assemble
+# REMOVED: Create assemble script in each environment's build context - Duplicate
+# - name: Create assemble script in each environment's build context
+#   ansible.builtin.copy:
+#     dest: "/tmp/ee-containers/environments/{{ item.item }}/_build/scripts/assemble"
+#     mode: "0755"
+#     content: |
+#       #!/bin/bash
+#       ...
 
 # Create entrypoint script in central scripts directory first
 - name: Create entrypoint script in scripts directory
@@ -1261,14 +1577,52 @@
     - scripts
     - assemble
 
-####################################
-# 11. BUILD IMAGES
-####################################
+- name: Create assemble script in build directory
+  ansible.builtin.copy:
+    dest: "{{ paths.build }}/assemble"
+    content: |
+      #!/bin/bash
+      
+      # Copy contents from build to output
+      mkdir -p /output
+      cp -r /build/* /output/
+      
+      # Create any required directories
+      mkdir -p /output/scripts
+      
+      echo "Build complete!"
+    mode: "0755"
+  tags:
+    - build
+    - copy
+    - scripts
+    - assemble
+
+- name: Create build assemble script
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/roles/ee-builder/scripts/build/assemble"
+    mode: "0755"
+    content: |
+      #!/bin/bash
+      
+      # Copy contents from build to output
+      mkdir -p /output
+      cp -r /build/* /output/
+      
+      # Create any required directories
+      mkdir -p /output/scripts
+      
+      echo "Build complete!"
+  tags:
+    - build
+    - copy
+    - scripts
+    - assemble
 
 - name: Copy modified assemble script
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/roles/ee-builder/scripts/build/assemble"
-    dest: "{{ paths.build }}"
+    dest: "/tmp/ee-containers/build/assemble"  # Direct path instead of paths.build
     mode: "0755"
   tags:
     - build
@@ -1287,10 +1641,17 @@
     - auth
     - registry
 
+- name: Check disk space before building
+  ansible.builtin.shell: df -h /tmp
+  register: disk_space
+  tags:
+    - build
+    - preparation
+
 # Replace the synchronous build task with this async version
 - name: Start container builds asynchronously
   ansible.builtin.command:
-    cmd: "ansible-builder build -v3 --prune --file execution-environment.yml --tag {{ item.item }}:{{ timestamp }}"
+    cmd: "ansible-builder build -v3 --container-runtime podman --no-cache --prune --tag {{ item.item }}:{{ timestamp }}"
     chdir: "/tmp/ee-containers/environments/{{ item.item }}"
   become: true
   environment:
@@ -1355,7 +1716,7 @@
 
 - name: Set build log path for each environment
   ansible.builtin.set_fact:
-    build_log: "/tmp/ee-containers/environments/{{ item.item }}/build-direct-{{ timestamp }}.log"
+    build_log: "/tmp/ee-containers/environments/{{ item.item.item }}/build-direct-{{ timestamp }}.log"
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
   register: build_logs
@@ -1728,3 +2089,45 @@
     - organize
     - dedup
     - requirements
+
+####################################
+# CONFIG - CONSOLIDATED
+####################################
+
+- name: Load configuration from files
+  block:
+    - name: Check if config file exists
+      ansible.builtin.stat:
+        path: "~/.ansible/vars/config"
+      register: config_file
+
+    - name: Load variables from config file
+      ansible.builtin.include_vars:
+        file: "~/.ansible/vars/config"
+        name: config_vars
+      when: config_file.stat.exists
+
+    - name: Create empty config vars if file doesn't exist
+      ansible.builtin.set_fact:
+        config_vars:
+          defaults: {}
+          credentials:
+            rh_username: "{{ rh_username | default('') }}"
+            rh_password: "{{ rh_password | default('') }}"
+      when: not config_file.stat.exists
+  tags:
+    - prepare
+    - config
+    - variables
+
+- name: Ensure critical directories exist first
+  ansible.builtin.file:
+    path: "{{ playbook_dir }}/roles/ee-builder/scripts/build"
+    state: directory
+    mode: "0755"
+  become: true
+  tags:
+    - build
+    - directories
+    - assemble
+
