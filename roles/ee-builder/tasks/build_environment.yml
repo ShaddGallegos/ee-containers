@@ -1,3 +1,75 @@
+- name: Initialize critical variables
+  ansible.builtin.set_fact:
+    playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    role_path: "{{ playbook_dir }}/roles/ee-builder"
+    templates_dir: "{{ playbook_dir }}/roles/ee-builder/templates"
+    paths:
+      base: "/tmp/ee-containers"
+      environments: "/tmp/ee-containers/environments"
+      build: "/tmp/ee-containers/build"
+      context: "/tmp/ee-containers/context"
+      hooks: "/tmp/ee-containers/hooks"
+      containerfiles: "/tmp/ee-containers/containerfiles"
+      templates: "{{ playbook_dir }}/roles/ee-builder/templates"
+    registry:
+      redhat:
+        url: "registry.redhat.io"
+        auth_file: "/etc/containers/auth.json"
+      container:
+        url: "{{ container_registry | default('localhost') }}"
+        auth_file: "/run/containers/0/auth.json"
+    environment_configs: "{{ environment_configs | default({}) }}"
+    environments_to_build: "{{ environments_to_build | default([]) }}"
+    os_type: "{{ 'rhel8' if (environments_to_build | default([]) | select('search', 'rhel8') | list | length > 0) else 'rhel9' }}"
+    cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
+    ansible_environment:
+      ANSIBLE_CONFIG: "/tmp/ansible_safe/ansible.cfg"
+      ANSIBLE_INVENTORY: "/tmp/ansible_safe/inventory"
+      ANSIBLE_HOST_KEY_CHECKING: "False"
+      ANSIBLE_DEPRECATION_WARNINGS: "False"
+      ANSIBLE_COMMAND_WARNINGS: "False"
+      ANSIBLE_SYSTEM_WARNINGS: "False"
+  tags:
+    - always
+    - initialize
+    - variables
+
+# Load configuration early to ensure credentials are available
+- name: Check if config file exists
+  ansible.builtin.stat:
+    path: "~/.ansible/vars/config"
+  register: config_file
+  tags:
+    - prepare
+    - config
+    - variables
+
+- name: Load variables from config file
+  ansible.builtin.include_vars:
+    file: "~/.ansible/vars/config"
+    name: config_vars
+  when: config_file.stat.exists
+  tags:
+    - prepare
+    - config
+    - variables
+
+- name: Create empty config vars if file doesn't exist
+  ansible.builtin.set_fact:
+    config_vars:
+      defaults: {}
+      credentials:
+        rh_username: "{{ rh_username | default('') }}"
+        rh_password: "{{ rh_password | default('') }}"
+        automation_hub_token: "{{ automation_hub_token | default('') }}"
+        galaxy_token: "{{ galaxy_token | default('') }}"
+  when: not config_file.stat.exists
+  tags:
+    - prepare
+    - config
+    - variables
+
 ---
 - name: Initialize all script variables
   ansible.builtin.set_fact:
