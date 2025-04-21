@@ -24,7 +24,7 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 
 1. Clone the repository:
 
-   ```
+   ```bash
    git clone https://github.com/your-org/ee-containers.git
    cd ee-containers
    ```
@@ -44,7 +44,7 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 
 3. Run the playbook:
 
-   ```
+   ```bash
    sudo ansible-playbook ee_builder.yml -K
    ```
 
@@ -96,7 +96,7 @@ Definitions Consist oF:
 
 * Project folder structure:
 
-  ```
+  ```text
   project folder
   ├── bindep.txt
   ├── execution-environment.yml

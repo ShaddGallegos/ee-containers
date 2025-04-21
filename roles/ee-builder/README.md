@@ -27,14 +27,14 @@ Before running the playbook, you'll need to set up the project structure:
 
 1. Clone the repository:
 
-   ```
+   ```bash
    git clone https://github.com/your-org/ee-containers.git
    cd ee-containers
    ```
 
 2. Configure your Red Hat registry credentials:
 
-   ```
+   ```yaml
    cp templates/config.j2 ~/.ansible/vars/config
       ---
       rh_username: "Red Hat CDN username"
@@ -47,7 +47,7 @@ Before running the playbook, you'll need to set up the project structure:
 
 3. Run the playbook:
 
-   ```
+   ```bash
    sudo ansible-playbook ee_builder.yml -K
    ```
 
@@ -55,7 +55,7 @@ Before running the playbook, you'll need to set up the project structure:
 
 5. Access the built containers:
 
-   ```
+   ```bash
    podman images
    ```
 
@@ -99,7 +99,7 @@ Definitions Consist oF:
 
 * Project folder structure:
 
-  ```
+  ```text
   project folder
   ├── bindep.txt
   ├── execution-environment.yml
