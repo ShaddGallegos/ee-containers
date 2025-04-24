@@ -3,6 +3,7 @@
     playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
     timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
     role_path: "{{ playbook_dir }}/roles/ee-builder"
+    
     templates_dir: "{{ playbook_dir }}/roles/ee-builder/templates"
     paths:
       base: "/tmp/ee-containers"
@@ -1828,7 +1829,7 @@
 
 - name: Set build log path for each environment
   ansible.builtin.set_fact:
-    build_log: "/tmp/ee-containers/environments/{{ item.item.item }}/build-direct-{{ timestamp }}.log"
+    build_log: "/tmp/ee-containers/environments/{{ item.item }}/build-direct-{{ timestamp }}.log"
   loop: "{{ env_exists.results }}"
   when: item.stat.exists and item.stat.isdir
   register: build_logs
@@ -1851,7 +1852,6 @@
     - images
     - ansible_builder
 
-# First, add this task to wait for the async builds to complete
 - name: Wait for builds to complete
   ansible.builtin.async_status:
     jid: "{{ item.ansible_job_id }}"
@@ -1868,10 +1868,9 @@
     - images
     - async_status
 
-# Then fix your append task
 - name: Append build output to log files
   ansible.builtin.copy:
-    dest: "/tmp/ee-containers/environments/{{ item.item.item }}/build-direct-{{ timestamp }}.log"
+    dest: "/tmp/ee-containers/environments/{{ item.item }}/build-direct-{{ timestamp }}.log"
     content: "{{ item.stdout | default('') }}\n{{ item.stderr | default('') }}\n"
     mode: '0644'
     backup: no
@@ -1945,7 +1944,7 @@
 - name: Debug build failures
   include_tasks: debug_build.yml
   vars:
-    debug_env_path: "/tmp/ee-containers/environments/{{ item.item.item }}"
+    debug_env_path: "/tmp/ee-containers/environments/{{ item.item }}"
     failed_build: "{{ item }}"
   loop: "{{ build_results.results | selectattr('failed', 'defined') | selectattr('failed') | list }}"
   loop_control:

@@ -7,8 +7,6 @@ registry:
   search_paths:
     - "registry.access.redhat.com"
     - "registry.redhat.io"
-    - "docker.io"
-    - "quay.io"
 
 images:
   base:

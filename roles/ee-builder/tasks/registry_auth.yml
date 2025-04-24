@@ -59,7 +59,7 @@
       # For more information on registries configuration, see containers-registries.conf(5).
       
       # Registries to search for images that are not fully-qualified.
-      unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
+      unqualified-search-registries = ["registry.access.redhat.com"]
       
       # Container registry credentials configuration - Red Hat registries
       [[registry]]

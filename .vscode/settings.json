@@ -1,0 +1,7 @@
+{
+    "remote.WSL.fileWatcher.polling": true,
+    "remote.WSL.debug": false,
+    "ansible.validation.lint.path": "",
+    "ansible.executionEnvironment.pull.arguments": "--tls-verify=false",
+    "ansible.validation.enabled": false
+}
