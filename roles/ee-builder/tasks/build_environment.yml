@@ -1,3 +1,355 @@
+---
+# Optimized Setup tasks for the ee-builder role
+
+# 0. PROMPT FOR CREDENTIALS
+- name: Prompt for Red Hat username
+  ansible.builtin.vars_prompt:
+    name: rh_username
+    prompt: "Enter your Red Hat username"
+    private: no
+
+- name: Prompt for Red Hat password
+  ansible.builtin.vars_prompt:
+    name: rh_password
+    prompt: "Enter your Red Hat password"
+    private: yes
+
+- name: Prompt for console.redhat.com AutomationHub URL
+  ansible.builtin.vars_prompt:
+    name: redhat_automationhub_url
+    prompt: "Enter the URL for console.redhat.com AutomationHub"
+    private: no
+    default: "https://console.redhat.com/api/automation-hub/"
+
+- name: Prompt for LOCAL Private AutomationHub URL
+  ansible.builtin.vars_prompt:
+    name: local_automationhub_url
+    prompt: "Enter the URL for your LOCAL Private AutomationHub"
+    private: no
+
+- name: Prompt for LOCAL Private AutomationHub Token
+  ansible.builtin.vars_prompt:
+    name: local_automationhub_token
+    prompt: "Enter the token for your LOCAL Private AutomationHub"
+    private: no
+
+# 1. STORE CREDENTIALS IN CONFIG FILE
+
+- name: Build Execution Environment
+  hosts: localhost
+  gather_facts: true
+  become: true
+  become_user: root
+  block:
+    - name: Ensure ~/.ansible/vars directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
+        state: directory
+        mode: "0755"
+
+# 2. CREATE REQUIRED DIRECTORIES
+- name: Create required directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: "/tmp/ee-containers" }
+    - { path: "/tmp/ee-containers/_build" }
+    - { path: "/tmp/ee-containers/context" }
+    - { path: "/tmp/ee-containers/environments" }
+    - { path: "/tmp/ee-containers/collections/ansible_collections", recurse: true }
+    - { path: "~/.ansible/vars", mode: "0755" }
+    - { path: "~/.config/containers", mode: "0700" }
+    - { path: "/etc/containers", mode: "0755", become: true }
+
+# 3. INSTALL REQUIREMENTS
+- name: Install Galaxy collections from requirements.yml
+  ansible.builtin.command:
+    cmd: "ansible-galaxy collection install -r ../{{ playbook_dir }}/requirements.yml --force"
+  register: galaxy_requirements_install
+  retries: 3
+  delay: 5
+  failed_when: galaxy_requirements_install.rc != 0
+
+- name: Install Python packages from requirements.txt
+  ansible.builtin.pip:
+    requirements: "../{{ playbook_dir }}/requirements.txt"
+  become: true
+
+# 4. CONFIGURATION FILES
+- name: Create ansible.cfg
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/ansible.cfg.j2"
+    dest: "/tmp/ee-containers/ansible.cfg"
+    mode: "0644"
+
+- name: Create configuration files
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/{{ item.template }}"
+    dest: "{{ item.dest }}"
+    mode: "{{ item.mode | default('0644') }}"
+    backup: "{{ item.backup | default(false) }}"
+  loop:
+    - { template: "ansible.cfg.j2", dest: "/tmp/ee-containers/ansible.cfg" }
+    - { template: "ansible.cfg.j2", dest: "../{{ playbook_dir }}/ansible.cfg" }
+    - { template: "registries.conf.j2", dest: "/etc/containers/registries.conf", backup: true, become: true }
+  become: "{{ item.become | default(false) }}"
+  ignore_errors: true
+
+# 5. CLEANUP
+- name: Remove dangling images after build
+  ansible.builtin.shell: |
+    podman image prune -f
+  register: dangling_removal
+  changed_when: dangling_removal.stdout != ""
+  failed_when: false
+  become: true
+
+- name: Fix permissions on working directory
+  ansible.builtin.file:
+    path: "../{{ playbook_dir }}"
+    mode: '0755'
+  become: true
+  ignore_errors: true
+
+# 6. VARIABLE VALIDATION
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - work_dir is defined
+      - required_system_packages is defined
+      - required_pip_packages is defined
+    fail_msg: "Required variables are missing. Please ensure work_dir, required_system_packages, and required_pip_packages are defined."
+
+- name: Validate required tokens
+  ansible.builtin.assert:
+    that:
+      - local_automationhub_token is defined and local_automationhub_token | length > 0
+    fail_msg: "Required tokens (local_automationhub_token) are missing or invalid."
+
+# 7. DIRECTORY STRUCTURE SETUP
+- name: Create required directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode | default('0755') }}"
+    recurse: "{{ item.recurse | default(false) }}"
+  loop:
+    - { path: "{{ work_dir }}/_build/configs" }
+    - { path: "../{{ playbook_dir }}/scripts" }
+    - { path: "/tmp/ansible_safe" }
+    - { path: "/tmp/ee-containers" }
+    - { path: "/tmp/ee-containers/_build" }
+    - { path: "/tmp/ee-containers/context" }
+    - { path: "/tmp/ee-containers/environments" }
+    - { path: "/tmp/ee-containers/collections/ansible_collections", recurse: true }
+    - { path: "~/.docker", mode: "0700" }
+    - { path: "~/.ansible/vars", mode: "0755" }
+    - { path: "~/.config/containers", mode: "0700" }
+    - { path: "/etc/containers", become: true }
+    - { path: "/tmp/ee-containers/_build/rpms", mode: "0755" }
+  become: "{{ item.become | default(false) }}"
+
+# 8. SYSTEM PACKAGE MANAGEMENT
+- name: Install required system packages
+  ansible.builtin.package:
+    name: "{{ required_system_packages | difference(ansible_facts.packages.keys() | list) }}"
+    state: present
+  when: (required_system_packages | difference(ansible_facts.packages.keys() | list)) | length > 0
+  become: true
+
+# 9. PYTHON ENVIRONMENT SETUP
+- name: Update pip and install required Python packages
+  ansible.builtin.pip:
+    name: "{{ item }}"
+    state: "{{ 'latest' if item == 'pip' else 'present' }}"
+    extra_args: "--upgrade"
+  loop: 
+    - pip
+    - "{{ required_pip_packages }}"
+  become: true
+  retries: 3
+  delay: 5
+
+# 10. GALAXY COLLECTION INSTALLATION
+- name: Install Galaxy collections
+  ansible.builtin.command: 
+    cmd: "ansible-galaxy collection install -r /tmp/ansible_safe/requirements.yml --force -p /tmp/ee-containers/collections"
+  environment:
+    ANSIBLE_CONFIG: "/tmp/ee-containers/ansible.cfg"
+  register: galaxy_install
+  retries: 2
+  delay: 3
+  until: galaxy_install is succeeded
+
+- name: Show Galaxy installation results
+  ansible.builtin.debug:
+    msg: "{{ 'Galaxy installation succeeded' if galaxy_install.rc == 0 else 'Galaxy installation failed' }}"
+
+# 11. ENVIRONMENT PREPARATION
+- name: Ensure community.general collection is installed
+  ansible.builtin.command:
+    cmd: "ansible-galaxy collection install community.general --force"
+  register: community_general_install
+  changed_when: community_general_install.rc == 0
+  failed_when: community_general_install.rc != 0
+
+- name: Copy environments to working directory
+  community.general.synchronize:
+    src: "../{{ playbook_dir }}/environments"
+    dest: "{{ working_directory }}"
+    recursive: true
+
+- name: Create requirements.yml with proper format
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/environments/{{ item.item.path | basename }}/requirements.yml"
+    content: |
+      ---
+      collections:
+        - name: ansible.utils
+        - name: ansible.posix
+        - name: community.general
+    mode: "0644"
+  loop: "{{ req_yml_exists.results }}"
+  when: 
+    - not item.stat.exists or item.stat.size == 0
+
+- name: Copy ansible.cfg to each environment
+  ansible.builtin.copy:
+    src: "/tmp/ee-containers/ansible.cfg"
+    dest: "/tmp/ee-containers/environments/{{ item }}/ansible.cfg"
+    mode: '0644'
+  loop: "{{ environments_to_build }}"
+
+# 12. NETWORK VALIDATION
+- name: Verify critical DNS resolution
+  ansible.builtin.command:
+    cmd: "nslookup {{ item }}"
+  loop:
+    - github.com
+    - registry.redhat.io
+    - galaxy.ansible.com
+  register: dns_checks
+  changed_when: false
+  failed_when: false
+
+- name: Display DNS validation results
+  ansible.builtin.debug:
+    msg: |
+      DNS Resolution Status:
+      {% for result in dns_checks.results %}
+      - {{ result.item }}: {{ 'OK' if result.rc == 0 else 'FAILED' }}
+      {% endfor %}
+# Credential management tasks
+
+# 1. Get the home directory path explicitly
+- name: Get user home directory
+  ansible.builtin.set_fact:
+    user_home: "{{ lookup('env', 'HOME') }}"
+  tags:
+    - credentials
+    - setup
+
+# 2. Ensure ansible vars directory exists
+- name: Ensure ansible vars directory exists
+  ansible.builtin.file:
+    path: "{{ user_home }}/.ansible/vars"
+    state: directory
+    mode: '0700'
+  tags:
+    - credentials
+    - setup
+
+# 3. Load existing credentials if present
+- block:
+    - name: Check if credentials file exists
+      ansible.builtin.stat:
+        path: "{{ user_home }}/.ansible/vars/config"
+      register: config_file
+
+    - name: Load existing credentials
+      ansible.builtin.include_vars:
+        file: "{{ user_home }}/.ansible/vars/config"
+      when: config_file.stat.exists
+      no_log: true
+  tags:
+    - credentials
+    - setup
+
+# 4. Prompt for missing credentials
+- name: Prompt for Red Hat username
+  ansible.builtin.prompt:
+    name: rh_username
+    prompt: "Enter your Red Hat username"
+    private: no
+
+- name: Prompt for Red Hat password
+  ansible.builtin.prompt:
+    name: rh_password
+    prompt: "Enter your Red Hat password"
+    private: yes
+
+- name: Prompt for Red Hat email
+  ansible.builtin.vars_prompt:
+    name: rh_email
+    prompt: "Enter your Red Hat email address"
+    private: no
+  when: rh_email is not defined or rh_email == ""
+  tags:
+    - credentials
+    - setup
+
+- name: Prompt for Automation Hub token
+  ansible.builtin.vars_prompt:
+    name: automation_hub_token
+    prompt: "Enter your Automation Hub token (for console.redhat.com)"
+    private: yes
+  when: automation_hub_token is not defined or automation_hub_token == ""
+  tags:
+    - credentials
+    - setup
+
+- name: Prompt for Galaxy token
+  ansible.builtin.vars_prompt:
+    name: galaxy_token
+    prompt: "Enter your Ansible Galaxy token (for galaxy.ansible.com)"
+    private: yes
+  when: galaxy_token is not defined or galaxy_token == ""
+  tags:
+    - credentials
+    - setup
+
+# 5. Validate credentials
+- name: Validate required credentials
+  ansible.builtin.assert:
+    that:
+      - rh_username is defined and rh_username | length > 0
+      - rh_password is defined and rh_password | length > 0
+      - rh_email is defined and rh_email | length > 0
+      - automation_hub_token is defined and automation_hub_token | length > 0
+      - galaxy_token is defined and galaxy_token | length > 0
+    fail_msg: "One or more required credentials are missing or invalid."
+  tags:
+    - credentials
+    - validation
+
+# 6. Save credentials to config file
+- name: Save credentials to config file
+  ansible.builtin.copy:
+    content: |
+      ---
+      rh_username: "{{ rh_username }}"
+      rh_password: "{{ rh_password }}"
+      rh_email: "{{ rh_email }}"
+      automation_hub_token: "{{ automation_hub_token }}"
+      galaxy_token: "{{ galaxy_token }}"
+    dest: "{{ user_home }}/.ansible/vars/config"
+    mode: '0600'
+  tags:
+    - credentials
+    - setup
+
 - name: Initialize critical variables
   ansible.builtin.set_fact:
     playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
@@ -70,6 +422,171 @@
     - prepare
     - config
     - variables
+
+- name: Login to container registries
+  block:
+    # 1. Validate credentials
+    - name: Validate Red Hat credentials
+      ansible.builtin.assert:
+        that:
+          - rh_username is defined and rh_username != ""
+          - rh_password is defined and rh_password != ""
+        fail_msg: "Red Hat credentials (rh_username and rh_password) are missing or invalid."
+      tags:
+        - login
+        - registry
+        - validation
+
+    # 2. Login to container registries
+    - name: Login to container registry
+      ansible.builtin.command:
+        cmd: >
+          podman login {{ item }}
+          -u {{ rh_username }}
+          -p {{ rh_password }}
+          --authfile {{ authfile }}
+      loop: "{{ container_registries }}"
+      register: registry_login
+      retries: 3
+      delay: 5
+      no_log: true
+      failed_when: registry_login.rc != 0
+      tags:
+        - login
+        - registry
+
+    # 3. Check login results
+    - name: Check login results
+      ansible.builtin.debug:
+        msg: >
+          "Login to {{ item.item }} {{ 'succeeded' if item.rc == 0 else 'failed with error: ' + item.stderr }}"
+      loop: "{{ registry_login.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      tags:
+        - login
+        - registry
+        - debug
+
+
+# 1. Ensure community.general collection is installed
+- name: Ensure community.general collection is installed
+  ansible.builtin.command:
+    cmd: "ansible-galaxy collection install community.general --force"
+  register: galaxy_install
+  changed_when: galaxy_install.rc == 0
+  failed_when: galaxy_install.rc != 0
+  tags: [setup, dependencies]
+
+# 2. Synchronize environments from playbook directory to working directory
+- name: Synchronize environments from playbook directory to working directory
+  community.general.synchronize:
+    src: "{{ playbook_dir }}/environments"
+    dest: "{{ working_directory }}"
+    recursive: true
+  retries: 3
+  delay: 5
+  register: sync_result
+  failed_when: sync_result.rc != 0
+  tags: [environment, sync]
+
+- name: Verify synchronization success
+  ansible.builtin.debug:
+    msg: "Synchronization completed successfully from {{ playbook_dir }}/environments to {{ working_directory }}"
+  when: sync_result.rc == 0
+  tags: [environment, sync]
+
+# 3. Ensure environments directory exists
+- name: Ensure environments directory exists
+  ansible.builtin.file:
+    path: "{{ environments_dir | default('environments') }}"
+    state: directory
+    mode: '0755'
+  tags: [setup, directories]
+
+# 4. Find environment directories
+- name: Find environment directories
+  ansible.builtin.find:
+    paths: "{{ environments_dir | default('environments') }}"
+    file_type: directory
+  register: found_environments
+  tags: [environment, discovery]
+
+# 5. Extract environment basenames
+- name: Extract environment basenames
+  ansible.builtin.set_fact:
+    all_environment_names: "{{ found_environments.files | map(attribute='path') | map('basename') | list }}"
+  tags: [environment, discovery]
+
+# 6. Filter environments based on distribution
+- name: Filter environments for RHEL 8
+  ansible.builtin.set_fact:
+    rhel8_environments: "{{ all_environment_names | select('search', 'rhel8') | list }}"
+  when: build_rhel8 | default(false) | bool
+  tags: [environment, filters]
+
+- name: Filter environments for RHEL 9
+  ansible.builtin.set_fact:
+    rhel9_environments: "{{ all_environment_names | select('search', 'rhel9') | list }}"
+  when: build_rhel9 | default(false) | bool
+  tags: [environment, filters]
+
+- name: Set final environment list based on filters
+  ansible.builtin.set_fact:
+    environment_names: >-
+      {% if build_rhel8 and build_rhel9 %}
+      {{ all_environment_names }}
+      {% elif build_rhel8 %}
+      {{ rhel8_environments | default([]) }}
+      {% elif build_rhel9 %}
+      {{ rhel9_environments | default([]) }}
+      {% else %}
+      {{ all_environment_names }}
+      {% endif %}
+  tags: [environment, filters]
+
+# 7. Validate environment selection
+- name: Fail if no environments match the filters
+  ansible.builtin.fail:
+    msg: >
+      No environment directories matching your selection were found.
+      Available environments: {{ all_environment_names }}
+  when: environment_names | length == 0
+  tags: [environment, validation]
+
+# 8. Display environment selection menu
+- name: Display available environments
+  ansible.builtin.debug:
+    msg: |
+      Available environments:
+      {% for env in environment_names %}
+      - {{ env }}
+      {% endfor %}
+  tags: [display, selection]
+
+# 9. Process user input for environment selection
+- name: Parse user input for environment selection
+  ansible.builtin.set_fact:
+    selected_environments: "{{ environment_names }}"
+  tags: [environment, selection]
+
+# 10. Show selected environments
+- name: Show selected environments
+  ansible.builtin.debug:
+    msg: |
+      Selected environments for building:
+      {% for env in selected_environments %}
+      - {{ env }}
+      {% endfor %}
+  when: selected_environments | length > 0
+  tags: [display, selection]
+
+- name: Report no environments selected
+  ansible.builtin.debug:
+    msg: "No environments selected for building."
+  when: selected_environments | length == 0
+  tags: [display, selection]
+
 
 - name: Initialize all script variables
   ansible.builtin.set_fact:
@@ -151,6 +668,20 @@
     - always
     - setup
     - directories
+
+  # Set essential facts for the ee-builder role
+
+- name: Generate timestamp for image tag
+  ansible.builtin.set_fact:
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+
+- name: Set default values if not provided
+  ansible.builtin.set_fact:
+    environments_to_build: "{{ environments_to_build | default(['rhel9-ee-minimal-general']) }}"
+    registry_username: "{{ registry_username | default('') }}"
+    registry_password: "{{ registry_password | default('') }}"
+    ee_version: "{{ ee_version | default('3') }}"
+    authfile: "{{ user_home }}/.docker/config.json"
 
 - name: Ensure configuration directories exist
   ansible.builtin.file:
@@ -245,26 +776,6 @@
     - variables
     - os_type
 
-- name: Create Ansible configuration files
-  ansible.builtin.copy:
-    dest: "{{ item.path }}"
-    content: "{{ item.content }}"
-    mode: "{{ item.mode | default('0644') }}"
-  loop:
-    - path: "/tmp/ansible_safe/ansible.cfg"
-      content: |
-        [defaults]
-        ansible_log_path = /tmp/ee-containers/ansible.log
-        # rest of the ansible.cfg content...
-    - path: "/tmp/ansible_safe/inventory"
-      content: |
-        [local]
-        localhost ansible_connection=local
-  become: true
-  tags:
-    - setup
-    - config
-    - ansible_config
 
 - name: Define Ansible environment variables
   ansible.builtin.set_fact:
@@ -324,7 +835,7 @@
     dest: "/etc/containers/registries.conf"
     content: |
       [registries.search]
-      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'quay.io']
+      registries = ['registry.access.redhat.com', 'registry.redhat.io', 'registry.connect.redhat.com']
       
       [registries.insecure]
       registries = []
@@ -391,7 +902,7 @@
     - debug
     - podman
 
-- name: Create automation hub authentication file
+- name: Create console.redhat.com authentication file
   ansible.builtin.copy:
     dest: "{{ ansible_env.HOME }}/.ansible/automation_hub.yml"
     mode: "0600"
@@ -399,55 +910,14 @@
       ---
       server_url: 'https://console.redhat.com/api/automation-hub/'
       auth_url: 'https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token'
-      token: '{{ automation_hub_token }}'
+      token: '{{ console.redhat.com_token }}'
       org_id: '{{ automation_hub_org_id | default("") }}'
-  when: automation_hub_token is defined
+  when: console.redhat.com_token is defined
   no_log: true
   tags:
     - auth
     - automation_hub
     - collections
-
-# Add Ansible Galaxy token for private content
-- name: Create Ansible Galaxy authentication file
-  ansible.builtin.copy:
-    dest: "{{ ansible_env.HOME }}/.ansible/galaxy_token"
-    mode: "0600"
-    content: "{{ galaxy_token }}"
-  when: galaxy_token is defined
-  no_log: true
-  tags:
-    - auth
-    - galaxy
-    - collections
-
-- name: Update ansible.cfg with authentication for content sources
-  ansible.builtin.blockinfile:
-    path: "/tmp/ansible_safe/ansible.cfg"
-    block: |
-      [galaxy]
-      server_list = automation_hub, release_galaxy, community_galaxy
-
-      [galaxy_server.automation_hub]
-      url = https://console.redhat.com/api/automation-hub/
-      auth_url = https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
-      token = {{ automation_hub_token | default("") }}
-
-      [galaxy_server.release_galaxy]
-      url = https://galaxy.ansible.com/
-      token = {{ galaxy_token | default("") }}
-
-      [galaxy_server.community_galaxy]
-      url = https://galaxy.ansible.com/
-      token = {{ galaxy_token | default("") }}
-    marker: "# {mark} ANSIBLE MANAGED BLOCK - GALAXY AUTHENTICATION"
-  no_log: true
-  when: automation_hub_token is defined or galaxy_token is defined
-  tags:
-    - auth
-    - galaxy
-    - automation_hub
-    - config
 
 - name: Synchronize environments from playbook directory to working directory
   ansible.builtin.synchronize:
@@ -519,7 +989,7 @@
 - name: Check if execution-environment.yml exists for each environment
   ansible.builtin.stat:
     path: "/tmp/ee-containers/environments/{{ item.item }}/execution-environment.yml"
-  loop: "{{ env_exists.results }}"
+  loop: "{{ env_exists.results | default([]) | list }}"
   when: item.stat.exists and item.stat.isdir
   register: ee_yml_exists
   tags:
@@ -902,7 +1372,7 @@
     mode: '0644'
     content: |
       ---
-      - name: Fix pattern {% raw %}{{ pattern_index }}{% endraw %} in {% raw %}{{ environment }}{% endraw %}
+      - name: Fix pattern {% raw %}{{ pattern_index }}{% endraw %} in {% raw %}{{ environment }}{% endraw %} 
         ansible.builtin.replace:
           path: "/tmp/ee-containers/environments/{% raw %}{{ environment }}{% endraw %}/execution-environment.yml"
           regexp: "{% raw %}{{ item_regexes[pattern_index] }}{% endraw %}"
@@ -1558,7 +2028,7 @@
   ansible.builtin.slurp:
     src: "/tmp/ee-containers/environments/{{ item.0.item }}/execution-environment.yml"
   register: ee_yml_content
-  loop: "{{ env_exists.results | zip(ee_yml_file.results) | list }}"
+  loop: "{{ [env_exists.results | zip(ee_yml_file.results) | list] }}"
   when: item.0.stat.exists and item.0.stat.isdir and item.1.stat.exists
   loop_control:
     label: "{{ item.0.item }}"
@@ -2201,10 +2671,6 @@
     - dedup
     - requirements
 
-####################################
-# CONFIG - CONSOLIDATED
-####################################
-
 - name: Load configuration from files
   block:
     - name: Check if config file exists
@@ -2225,6 +2691,8 @@
           credentials:
             rh_username: "{{ rh_username | default('') }}"
             rh_password: "{{ rh_password | default('') }}"
+            automation_hub_token: "{{ automation_hub_token | default('') }}"
+            galaxy_token: "{{ galaxy_token | default('') }}"
       when: not config_file.stat.exists
   tags:
     - prepare
@@ -2241,4 +2709,134 @@
     - build
     - directories
     - assemble
+
+- name: Initialize critical variables
+  ansible.builtin.set_fact:
+    playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    role_path: "{{ playbook_dir }}/roles/ee-builder"
+    paths:
+      base: "/tmp/ee-containers"
+      environments: "/tmp/ee-containers/environments"
+      build: "/tmp/ee-containers/build"
+      context: "/tmp/ee-containers/context"
+      hooks: "/tmp/ee-containers/hooks"
+      containerfiles: "/tmp/ee-containers/containerfiles"
+    registry:
+      redhat:
+        url: "registry.redhat.io"
+        auth_file: "/etc/containers/auth.json"
+    cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
+  tags:
+    - always
+    - initialize
+    - variables
+
+- name: Create required directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode | default('0755') }}"
+  loop:
+    - { path: "{{ paths.base }}" }
+    - { path: "{{ paths.environments }}" }
+    - { path: "{{ paths.build }}" }
+    - { path: "{{ paths.context }}" }
+    - { path: "{{ paths.hooks }}" }
+    - { path: "{{ paths.containerfiles }}" }
+    - { path: "~/.ansible/vars", mode: "0755" }
+    - { path: "/etc/containers", mode: "0755", become: true }
+  tags:
+    - always
+    - setup
+    - directories
+
+- name: Create ansible.cfg
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/ansible.cfg.j2"
+    dest: "{{ paths.base }}/ansible.cfg"
+    mode: "0644"
+  tags:
+    - setup
+    - config
+
+- name: Create registries.conf
+  ansible.builtin.template:
+    src: "{{ role_path }}/templates/registries.conf.j2"
+    dest: "/etc/containers/registries.conf"
+    mode: "0644"
+    backup: true
+  become: true
+  tags:
+    - setup
+    - config
+
+- name: Verify critical DNS resolution
+  ansible.builtin.command:
+    cmd: "nslookup {{ item }}"
+  loop:
+    - github.com
+    - registry.redhat.io
+    - galaxy.ansible.com
+  register: dns_checks
+  changed_when: false
+  failed_when: false
+  tags:
+    - validation
+    - network
+
+- name: Display DNS validation results
+  ansible.builtin.debug:
+    msg: |
+      DNS Resolution Status:
+      {% for result in dns_checks.results %}
+      - {{ result.item }}: {{ 'OK' if result.rc == 0 else 'FAILED' }}
+      {% endfor %}
+  tags:
+    - validation
+    - network
+
+- name: Build execution environments asynchronously
+  ansible.builtin.command:
+    cmd: "ansible-builder build -v3 --container-runtime podman --no-cache --prune --tag {{ item.name }}:{{ timestamp }}"
+    chdir: "{{ item.path }}"
+  async: 3600
+  poll: 0
+  loop: "{{ environments_to_build }}"
+  register: build_jobs
+  tags:
+    - build
+    - images
+
+- name: Monitor build status
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: build_status
+  until: build_status.finished
+  retries: 36
+  delay: 100
+  loop: "{{ build_jobs.results }}"
+  tags:
+    - build
+    - images
+
+- name: Remove dangling images
+  ansible.builtin.shell: |
+    podman image prune -f
+  ignore_errors: true
+  tags:
+    - cleanup
+    - images
+
+- name: Remove temporary files and directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ paths.base }}"
+    - "{{ paths.environments }}"
+  ignore_errors: true
+  tags:
+    - cleanup
+
 

@@ -1,0 +1,13 @@
+{
+  "auths": {
+    "registry.redhat.io": {
+      "auth": "{{ (config_vars.rh_username ~ ':' ~ config_vars.rh_password) | b64encode }}"
+    },
+    "registry.access.redhat.com": {
+      "auth": "{{ (config_vars.rh_username ~ ':' ~ config_vars.rh_password) | b64encode }}"
+    },
+    "registry.connect.redhat.com": {
+      "auth": "{{ (config_vars.rh_username ~ ':' ~ config_vars.rh_password) | b64encode }}"
+    }
+  }
+}

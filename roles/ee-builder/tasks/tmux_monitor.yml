@@ -1,9 +1,16 @@
 ---
+# TMux Monitoring System for Build Process
+
+# 1. Check if tmux is installed
 - name: Check if tmux is installed
   ansible.builtin.command: which tmux
   register: tmux_install
   failed_when: false
   changed_when: false
+  tags:
+    - tmux
+    - monitor
+    - setup
 
 - name: Install tmux if missing
   ansible.builtin.package:
@@ -11,155 +18,51 @@
     state: present
   when: tmux_install.rc != 0
   become: true
-  ignore_errors: true
+  tags:
+    - tmux
+    - monitor
+    - setup
 
-- name: Create smart TMux launcher for both GUI and headless environments
-  ansible.builtin.copy:
-    dest: "/tmp/ee-containers/smart-tmux-monitor.sh"
-    content: |
-      #!/bin/bash
-      
-      # Terminal colors and styling
-      BOLD="\033[1m"
-      GREEN="\033[32m"
-      YELLOW="\033[33m"
-      BLUE="\033[34m"
-      MAGENTA="\033[35m"
-      CYAN="\033[36m"
-      RESET="\033[0m"
-      
-      # Session name
-      SESSION="ansible-builder"
-      
-      # Function to detect OS type
-      detect_os() {
-          if [[ "$OSTYPE" == "darwin"* ]]; then
-              echo "macos"
-          elif [[ -f /proc/version ]] && grep -qi microsoft /proc/version; then
-              echo "wsl"
-          elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-              echo "linux"
-          else
-              echo "unknown"
-          fi
-      }
-      
-      # Function to check if we're running in a GUI environment
-      is_gui_available() {
-          local os_type=$(detect_os)
-          
-          if [[ "$os_type" == "macos" ]]; then
-              return 0
-          elif [[ "$os_type" == "wsl" ]]; then
-              return 0
-          else
-              if [ -n "$DISPLAY" ]; then
-                  return 0  # GUI available
-              else
-                  return 1  # GUI not available
-              fi
-          fi
-      }
-      
-      # Function to try launching a new terminal window with the tmux session
-      launch_gui_terminal() {
-          local os_type=$(detect_os)
-          
-          if [[ "$os_type" == "macos" ]]; then
-              osascript -e 'tell application "Terminal" to do script "tmux attach -t '"$SESSION"' || tmux new-session -s '"$SESSION"'"'
-              return $?
-          elif [[ "$os_type" == "wsl" ]]; then
-              if command -v wt.exe &>/dev/null; then
-                  wt.exe new-tab --title "EE Builder" wsl.exe bash -c "tmux attach -t $SESSION || tmux new-session -s $SESSION"
-                  return $?
-              else
-                  cmd.exe /c "start bash -c \"tmux attach -t $SESSION || tmux new-session -s $SESSION\""
-                  return $?
-              fi
-          else
-              if command -v gnome-terminal &>/dev/null; then
-                  gnome-terminal -- bash -c "tmux attach -t $SESSION || tmux new-session -s $SESSION"
-                  return $?
-              elif command -v xterm &>/dev/null; then
-                  xterm -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
-                  return $?
-              elif command -v konsole &>/dev/null; then
-                  konsole --new-tab -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
-                  return $?
-              elif command -v terminator &>/dev/null; then
-                  terminator -e "tmux attach -t $SESSION || tmux new-session -s $SESSION" &
-                  return $?
-              else
-                  return 1
-              fi
-          fi
-      }
-      
-      # Kill any existing session
-      tmux kill-session -t $SESSION 2>/dev/null || true
-      
-      # Create new tmux session
-      tmux new-session -d -s $SESSION -n "EE Builder"
-      
-      # Create layout: 3 panes stacked vertically
-      tmux split-window -v -p 70 -t $SESSION:0
-      tmux split-window -v -p 50 -t $SESSION:0
-      
-      # Top pane: Title with fancy formatting
-      tmux send-keys -t $SESSION:0.0 "clear && echo -e '${BLUE}${BOLD}╔═════════════════════════════════════════════╗${RESET}'" C-m
-      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}║     ANSIBLE EXECUTION ENVIRONMENT BUILDER     ║${RESET}'" C-m
-      tmux send-keys -t $SESSION:0.0 "echo -e '${BLUE}${BOLD}╚═════════════════════════════════════════════╝${RESET}'" C-m
-      
-      # Middle pane: Show build progress with spinner
-      tmux send-keys -t $SESSION:0.1 "clear && echo -e '${CYAN}${BOLD}Currently Building:${RESET} {{ environments_to_build | join(', ') }}'" C-m
-      tmux send-keys -t $SESSION:0.1 "echo" C-m
-      tmux send-keys -t $SESSION:0.1 "function show_spinner() {" C-m
-      tmux send-keys -t $SESSION:0.1 "  local spinstr='⣾⣽⣻⢿⡿⣟⣯⣷'" C-m
-      tmux send-keys -t $SESSION:0.1 "  while true; do" C-m
-      tmux send-keys -t $SESSION:0.1 "    for i in \$(seq 0 7); do" C-m
-      tmux send-keys -t $SESSION:0.1 "      printf \"\\r${YELLOW}${BOLD}⏳ Building...${RESET} \${spinstr:\$i:1}\"" C-m
-      tmux send-keys -t $SESSION:0.1 "      sleep 0.1" C-m
-      tmux send-keys -t $SESSION:0.1 "      if ! pgrep -f ansible-builder >/dev/null; then" C-m
-      tmux send-keys -t $SESSION:0.1 "        printf \"\\r${GREEN}${BOLD}✅ Build completed!${RESET}           \\n\"" C-m
-      tmux send-keys -t $SESSION:0.1 "        return" C-m
-      tmux send-keys -t $SESSION:0.1 "      fi" C-m
-      tmux send-keys -t $SESSION:0.1 "    done" C-m
-      tmux send-keys -t $SESSION:0.1 "  done" C-m
-      tmux send-keys -t $SESSION:0.1 "}" C-m
-      tmux send-keys -t $SESSION:0.1 "(pgrep -f ansible-builder && show_spinner) || echo -e '${MAGENTA}Waiting for build to start...${RESET}'" C-m
-      
-      # Bottom pane: Watch podman images refreshing quickly
-      tmux send-keys -t $SESSION:0.2 "watch -n 0.5 'podman images | grep {{ timestamp }} || echo \"No images built yet\"'" C-m
-      
-      # Try to launch in a new terminal window if GUI is available
-      if is_gui_available; then
-          if launch_gui_terminal; then
-              echo -e "${GREEN}${BOLD}TMux monitor launched in a new terminal window.${RESET}"
-          else
-              echo -e "${YELLOW}${BOLD}Could not launch a new terminal window. Connect manually.${RESET}"
-              echo -e "Connect with: ${CYAN}tmux attach -t $SESSION${RESET}"
-          fi
-      else
-          # Headless mode - just provide instructions
-          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
-          echo -e "${GREEN}${BOLD}TMux monitoring session started in background (HEADLESS MODE)${RESET}"
-          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
-          echo -e ""
-          echo -e "Connect to the monitoring session with:"
-          echo -e "${CYAN}${BOLD}tmux attach -t $SESSION${RESET}"
-          echo -e ""
-          echo -e "The monitor shows:"
-          echo -e "  - ${YELLOW}Top pane:${RESET} Title banner"
-          echo -e "  - ${YELLOW}Middle pane:${RESET} Build progress with animated spinner"
-          echo -e "  - ${YELLOW}Bottom pane:${RESET} Real-time image listing (refreshes every 0.5s)"
-          echo -e ""
-          echo -e "To detach from the session: Press ${CYAN}Ctrl+B${RESET} then ${CYAN}D${RESET}"
-          echo -e "${BLUE}${BOLD}=====================================================================${RESET}"
-      fi
-    mode: '0755'
+# 2. Create TMux monitor script
+- name: Create TMux monitor script
+  ansible.builtin.template:
+    src: "templates/tmux_monitor.sh.j2"
+    dest: "{{ paths.scripts }}/tmux_monitor.sh"
+    mode: "0755"
+  tags:
+    - tmux
+    - monitor
+    - setup
 
-- name: Launch smart TMux monitoring system
-  ansible.builtin.shell: "/tmp/ee-containers/smart-tmux-monitor.sh"
-  async: 10  # Short timeout just to let the script run
-  poll: 0    # Don't wait for completion
+# 3. Launch TMux monitoring system
+- name: Launch TMux monitoring system
+  ansible.builtin.shell: "{{ paths.scripts }}/tmux_monitor.sh"
+  async: 10
+  poll: 0
   when: environments_to_build is defined and environments_to_build | length > 0
+  tags:
+    - tmux
+    - monitor
+
+# 4. Display instructions for accessing TMux session
+- name: Show instructions for accessing TMux session
+  ansible.builtin.debug:
+    msg: |
+      🔍 TMux monitoring session created for {{ environments_to_build | join(', ') }}
+      
+      To view the monitoring session:
+      1. Run in any terminal: tmux attach -t ansible-builder
+      
+      Session Layout:
+      - Top pane: Title banner
+      - Middle pane: Build progress with spinner
+      - Bottom pane: Real-time image listing (refreshes every 0.5s)
+      
+      Tmux basic commands:
+      - Detach from session: Ctrl+B, then D
+      - Switch panes: Ctrl+B, then arrow keys
+      - Scroll: Ctrl+B, then [ (use arrow keys to scroll, q to exit scroll mode)
+  tags:
+    - tmux
+    - monitor
+    - debug

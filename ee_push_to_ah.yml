@@ -1,1 +1,41 @@
 ---
+- name: Push to Automation Hub
+  hosts: localhost
+  gather_facts: false
+
+  vars_prompt:
+    - name: "local_automationhub_user"
+      prompt: "Enter your LOCAL Private AutomationHub username"
+      private: no
+      default: "admin"
+    - name: "local_automationhub_password"
+      prompt: "Enter your LOCAL Private AutomationHub password"
+      private: yes
+    - name: "local_automationhub_url"
+      prompt: "Enter the URL for your LOCAL Private AutomationHub"
+      private: no
+    - name: "local_automationhub_token"
+      prompt: "Enter the token for your LOCAL Private AutomationHub"
+      private: yes
+
+  tasks:
+    - name: Ensure ~/.ansible/vars directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
+        state: directory
+        mode: "0755"
+
+    - name: Write credentials to config file
+      ansible.builtin.copy:
+        dest: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+        content: |
+          ---
+          local_automationhub_user: "{{ local_automationhub_user }}"
+          local_automationhub_password: "{{ local_automationhub_password }}"
+          local_automationhub_url: "{{ local_automationhub_url }}"
+          local_automationhub_token: "{{ local_automationhub_token }}"
+        mode: "0600"
+
+    - name: Include the ee-builder role
+      ansible.builtin.include_role:
+        name: ee_push_to_ah.yml

@@ -1,8 +1,36 @@
 ---
-- name: Build Execution Environments for Ansible Automation Platform
+- name: Build Execution Environment
   hosts: localhost
-  become: true
-  gather_facts: true
+  gather_facts: false
 
-  roles:
-    - role: ee-builder
+  vars_prompt:
+    - name: "rh_username"
+      prompt: "Enter your Red Hat username"
+      private: no
+    - name: "rh_password"
+      prompt: "Enter your Red Hat password"
+      private: yes
+    - name: "console_redhat_com_automationhub_token"
+      prompt: "Enter your console.redhat.com Automation Hub token"
+      private: yes
+
+  tasks:
+    - name: Ensure ~/.ansible/vars directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
+        state: directory
+        mode: "0755"
+
+    - name: Write credentials to config file
+      ansible.builtin.copy:
+        dest: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+        content: |
+          ---
+          rh_username: "{{ rh_username }}"
+          rh_password: "{{ rh_password }}"
+          console_redhat_com_automationhub_token: "{{ console_redhat_com_automationhub_token }}"
+        mode: "0600"
+
+    - name: Include the ee-builder role
+      ansible.builtin.include_role:
+        name: ee-builder

@@ -1,0 +1,35 @@
+#!/bin/bash
+
+for file in $(find {{ environments_dir }} -name "execution-environment.yml"); do
+  echo "Fixing schema for $file"
+  {% if backup_enabled %}
+  cp $file ${file}.bak
+  {% endif %}
+
+  # Extract version and base image
+  version=$(grep "^version:" $file | awk '{print $2}' || echo "1")
+  base_img=$(grep -A 5 'base_image:' $file | grep 'name:' | head -1 | awk '{print $2}' | tr -d '"' || echo "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest")
+
+  # Create file line by line
+  printf "---\n" > ${file}
+  printf "version: %s\n\n" "$version" >> ${file}
+
+  printf "build_arg_defaults:\n" >> ${file}
+  printf "  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors --force'\n" >> ${file}
+  printf "  ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'\n" >> ${file}
+  printf "  PKGMGR_PRESERVE_CACHE: 'false'\n\n" >> ${file}
+
+  printf "images:\n" >> ${file}
+  printf "  base_image:\n" >> ${file}
+  printf "    name: %s\n\n" "$base_img" >> ${file}
+
+  printf "dependencies:\n" >> ${file}
+  printf "  python: requirements.txt\n" >> ${file}
+  printf "  galaxy: requirements.yml\n" >> ${file}
+  printf "  system:\n" >> ${file}
+  printf "    - zlib-devel\n" >> ${file}
+  printf "    - gcc\n" >> ${file}
+  printf "    - openssl-devel\n" >> ${file}
+
+  echo "✅ Fixed schema format for $file"
+done

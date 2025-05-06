@@ -1,30 +1,16 @@
-# Contents of the file: ee-containers/roles/ee-builder/templates/registries.conf.j2
-
-# Podman registries configuration file
-# This file is generated dynamically based on the provided variables.
-
-# Registry configuration for containers
 unqualified-search-registries = ["registry.access.redhat.com"]
 
-[registries.search]
-registries = ["registry.access.redhat.com", "registry.redhat.io"]
-
-[registries.insecure]
-registries = []
-
-[registries.block]
-registries = []
-
-{% if rh_username is defined and rh_username | length > 0 %}
-# Red Hat registry credentials
 [[registry]]
 prefix = "registry.redhat.io"
 location = "registry.redhat.io"
 insecure = false
 
-[registry.auth]
-username = "{{ rh_username }}"
-password = "{{ rh_password | default('') }}"
-{% else %}
-# Red Hat registry credentials not configured
-{% endif %}
+[[registry]]
+prefix = "registry.access.redhat.com"
+location = "registry.access.redhat.com"
+insecure = false
+
+[[registry]]
+prefix = "registry.connect.redhat.com"
+location = "registry.connect.redhat.com"
+insecure = false

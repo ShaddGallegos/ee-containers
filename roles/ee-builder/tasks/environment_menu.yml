@@ -1,5 +1,0 @@
-- name: Synchronize environments from playbook directory to working directory
-  community.general.synchronize:
-    src: "{{ playbook_dir }}/environments"
-    dest: "{{ working_directory }}"
-    recursive: true
