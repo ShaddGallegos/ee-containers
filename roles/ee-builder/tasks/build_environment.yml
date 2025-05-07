@@ -1,51 +1,27 @@
 ---
 # Optimized Setup tasks for the ee-builder role
 
-# 0. PROMPT FOR CREDENTIALS
-- name: Prompt for Red Hat username
-  ansible.builtin.vars_prompt:
-    name: rh_username
-    prompt: "Enter your Red Hat username"
-    private: no
-
-- name: Prompt for Red Hat password
-  ansible.builtin.vars_prompt:
-    name: rh_password
-    prompt: "Enter your Red Hat password"
-    private: yes
-
-- name: Prompt for console.redhat.com AutomationHub URL
-  ansible.builtin.vars_prompt:
-    name: redhat_automationhub_url
-    prompt: "Enter the URL for console.redhat.com AutomationHub"
-    private: no
-    default: "https://console.redhat.com/api/automation-hub/"
-
-- name: Prompt for LOCAL Private AutomationHub URL
-  ansible.builtin.vars_prompt:
-    name: local_automationhub_url
-    prompt: "Enter the URL for your LOCAL Private AutomationHub"
-    private: no
-
-- name: Prompt for LOCAL Private AutomationHub Token
-  ansible.builtin.vars_prompt:
-    name: local_automationhub_token
-    prompt: "Enter the token for your LOCAL Private AutomationHub"
-    private: no
-
 # 1. STORE CREDENTIALS IN CONFIG FILE
-
 - name: Build Execution Environment
-  hosts: localhost
-  gather_facts: true
-  become: true
-  become_user: root
   block:
     - name: Ensure ~/.ansible/vars directory exists
       ansible.builtin.file:
         path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
         state: directory
         mode: "0755"
+
+    - name: Write credentials to config file
+      ansible.builtin.copy:
+        dest: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+        content: |
+          ---
+          rh_username: "{{ rh_username }}"
+          rh_password: "{{ rh_password }}"
+          console_redhat_com_automationhub_token: "{{ console_redhat_com_automationhub_token }}"
+        mode: "0600"
+  # These can stay if needed at the block level
+  become: true  
+  become_user: root
 
 # 2. CREATE REQUIRED DIRECTORIES
 - name: Create required directories
@@ -62,11 +38,13 @@
     - { path: "~/.ansible/vars", mode: "0755" }
     - { path: "~/.config/containers", mode: "0700" }
     - { path: "/etc/containers", mode: "0755", become: true }
+    - { path: "/tmp/ee-containers/hooks" }
+    - { path: "/tmp/ee-containers/containerfiles" }
 
 # 3. INSTALL REQUIREMENTS
 - name: Install Galaxy collections from requirements.yml
   ansible.builtin.command:
-    cmd: "ansible-galaxy collection install -r ../{{ playbook_dir }}/requirements.yml --force"
+    cmd: "ansible-galaxy collection install -r {{ playbook_dir }}/requirements.yml --force"
   register: galaxy_requirements_install
   retries: 3
   delay: 5
@@ -1592,7 +1570,7 @@
 # Copy pre-built custom assemble script
 - name: Copy custom assemble script
   ansible.builtin.copy:
-    src: "{{ playbook_dir }}/roles/ee-builder/scripts/custom-assemble.sh"
+    src: "{{ role_path }}/scripts/custom-assemble.sh"
     dest: "/tmp/ee-containers/custom-assemble.sh"
     mode: "0755"
   tags:
@@ -2247,7 +2225,6 @@
   tags:
     - build
     - images
-    - ansible_builder
 
 - name: Display background build status
   ansible.builtin.debug:
@@ -2642,201 +2619,5 @@
   tags:
     - always
     - verification
-
-# First, find all requirements.txt files
-- name: Find all requirements.txt files
-  ansible.builtin.find:
-    paths: "/tmp/ee-containers/environments"
-    patterns: "requirements.txt"
-    recurse: yes
-  register: found_requirements_files
-  tags:
-    - organize
-    - dedup
-    - requirements
-
-# Then process each file to remove duplicates
-- name: Remove duplicates from requirements.txt files
-  ansible.builtin.shell: |
-    if [ -f "{{ item.path }}" ]; then
-      grep -v '^#\|^$' "{{ item.path }}" | sort -u > "{{ item.path }}.sorted"
-      cat "{{ item.path }}" | grep '^#\|^$' > "{{ item.path }}.comments"
-      cat "{{ item.path }}.comments" "{{ item.path }}.sorted" > "{{ item.path }}"
-      rm "{{ item.path }}.sorted" "{{ item.path }}.comments"
-    fi
-  loop: "{{ found_requirements_files.files }}"
-  changed_when: false
-  tags:
-    - organize
-    - dedup
-    - requirements
-
-- name: Load configuration from files
-  block:
-    - name: Check if config file exists
-      ansible.builtin.stat:
-        path: "~/.ansible/vars/config"
-      register: config_file
-
-    - name: Load variables from config file
-      ansible.builtin.include_vars:
-        file: "~/.ansible/vars/config"
-        name: config_vars
-      when: config_file.stat.exists
-
-    - name: Create empty config vars if file doesn't exist
-      ansible.builtin.set_fact:
-        config_vars:
-          defaults: {}
-          credentials:
-            rh_username: "{{ rh_username | default('') }}"
-            rh_password: "{{ rh_password | default('') }}"
-            automation_hub_token: "{{ automation_hub_token | default('') }}"
-            galaxy_token: "{{ galaxy_token | default('') }}"
-      when: not config_file.stat.exists
-  tags:
-    - prepare
-    - config
-    - variables
-
-- name: Ensure critical directories exist first
-  ansible.builtin.file:
-    path: "{{ playbook_dir }}/roles/ee-builder/scripts/build"
-    state: directory
-    mode: "0755"
-  become: true
-  tags:
-    - build
-    - directories
-    - assemble
-
-- name: Initialize critical variables
-  ansible.builtin.set_fact:
-    playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
-    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
-    role_path: "{{ playbook_dir }}/roles/ee-builder"
-    paths:
-      base: "/tmp/ee-containers"
-      environments: "/tmp/ee-containers/environments"
-      build: "/tmp/ee-containers/build"
-      context: "/tmp/ee-containers/context"
-      hooks: "/tmp/ee-containers/hooks"
-      containerfiles: "/tmp/ee-containers/containerfiles"
-    registry:
-      redhat:
-        url: "registry.redhat.io"
-        auth_file: "/etc/containers/auth.json"
-    cleanup_enabled: "{{ cleanup_enabled | default(true) }}"
-  tags:
-    - always
-    - initialize
-    - variables
-
-- name: Create required directories
-  ansible.builtin.file:
-    path: "{{ item.path }}"
-    state: directory
-    mode: "{{ item.mode | default('0755') }}"
-  loop:
-    - { path: "{{ paths.base }}" }
-    - { path: "{{ paths.environments }}" }
-    - { path: "{{ paths.build }}" }
-    - { path: "{{ paths.context }}" }
-    - { path: "{{ paths.hooks }}" }
-    - { path: "{{ paths.containerfiles }}" }
-    - { path: "~/.ansible/vars", mode: "0755" }
-    - { path: "/etc/containers", mode: "0755", become: true }
-  tags:
-    - always
-    - setup
-    - directories
-
-- name: Create ansible.cfg
-  ansible.builtin.template:
-    src: "{{ role_path }}/templates/ansible.cfg.j2"
-    dest: "{{ paths.base }}/ansible.cfg"
-    mode: "0644"
-  tags:
-    - setup
-    - config
-
-- name: Create registries.conf
-  ansible.builtin.template:
-    src: "{{ role_path }}/templates/registries.conf.j2"
-    dest: "/etc/containers/registries.conf"
-    mode: "0644"
-    backup: true
-  become: true
-  tags:
-    - setup
-    - config
-
-- name: Verify critical DNS resolution
-  ansible.builtin.command:
-    cmd: "nslookup {{ item }}"
-  loop:
-    - github.com
-    - registry.redhat.io
-    - galaxy.ansible.com
-  register: dns_checks
-  changed_when: false
-  failed_when: false
-  tags:
-    - validation
-    - network
-
-- name: Display DNS validation results
-  ansible.builtin.debug:
-    msg: |
-      DNS Resolution Status:
-      {% for result in dns_checks.results %}
-      - {{ result.item }}: {{ 'OK' if result.rc == 0 else 'FAILED' }}
-      {% endfor %}
-  tags:
-    - validation
-    - network
-
-- name: Build execution environments asynchronously
-  ansible.builtin.command:
-    cmd: "ansible-builder build -v3 --container-runtime podman --no-cache --prune --tag {{ item.name }}:{{ timestamp }}"
-    chdir: "{{ item.path }}"
-  async: 3600
-  poll: 0
-  loop: "{{ environments_to_build }}"
-  register: build_jobs
-  tags:
-    - build
-    - images
-
-- name: Monitor build status
-  ansible.builtin.async_status:
-    jid: "{{ item.ansible_job_id }}"
-  register: build_status
-  until: build_status.finished
-  retries: 36
-  delay: 100
-  loop: "{{ build_jobs.results }}"
-  tags:
-    - build
-    - images
-
-- name: Remove dangling images
-  ansible.builtin.shell: |
-    podman image prune -f
-  ignore_errors: true
-  tags:
-    - cleanup
-    - images
-
-- name: Remove temporary files and directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - "{{ paths.base }}"
-    - "{{ paths.environments }}"
-  ignore_errors: true
-  tags:
-    - cleanup
 
 

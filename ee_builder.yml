@@ -3,18 +3,88 @@
   hosts: localhost
   gather_facts: false
 
-  vars_prompt:
-    - name: "rh_username"
-      prompt: "Enter your Red Hat username"
-      private: no
-    - name: "rh_password"
-      prompt: "Enter your Red Hat password"
-      private: yes
-    - name: "console_redhat_com_automationhub_token"
-      prompt: "Enter your console.redhat.com Automation Hub token"
-      private: yes
-
   tasks:
+    # 1. LOAD EXISTING CREDENTIALS IF AVAILABLE
+    - name: Check if credentials file exists
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+      register: config_file
+      
+    - name: Debug file exists
+      ansible.builtin.debug:
+        msg: "Config file exists: {{ config_file.stat.exists }}"
+
+    - name: Read credentials file content
+      ansible.builtin.slurp:
+        src: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+      register: credentials_content
+      when: config_file.stat.exists
+      failed_when: false
+      
+    - name: Debug slurp result
+      ansible.builtin.debug:
+        msg: "Slurp result: {{ 'content found' if credentials_content.content is defined else 'no content' }}"
+      when: config_file.stat.exists
+
+    - name: Parse credentials from file
+      ansible.builtin.set_fact:
+        loaded_creds: "{{ credentials_content['content'] | b64decode | from_yaml }}"
+      when: config_file.stat.exists and credentials_content.content is defined
+      failed_when: false
+      
+    - name: Debug loaded credentials
+      ansible.builtin.debug:
+        msg: "Loaded credentials parsed: {{ loaded_creds is defined }}"
+      when: config_file.stat.exists
+
+    - name: Set credentials from loaded file
+      ansible.builtin.set_fact:
+        rh_username: "{{ loaded_creds.rh_username | default('') }}"
+        rh_password: "{{ loaded_creds.rh_password | default('') }}"
+        console_redhat_com_automationhub_token: "{{ loaded_creds.console_redhat_com_automationhub_token | default('') }}"
+      when: loaded_creds is defined
+      
+    - name: Debug set credentials
+      ansible.builtin.debug:
+        msg: "Username set: {{ rh_username | default('not set') != '' }}"
+
+    # 2. PROMPT FOR MISSING CREDENTIALS
+    - name: Prompt for Red Hat username
+      ansible.builtin.pause:
+        prompt: "Enter your Red Hat username"
+      register: username_prompt
+      when: rh_username is not defined or rh_username == ""
+
+    - name: Set Red Hat username from prompt
+      ansible.builtin.set_fact:
+        rh_username: "{{ username_prompt.user_input }}"
+      when: username_prompt is defined and username_prompt.user_input is defined
+
+    - name: Prompt for Red Hat password
+      ansible.builtin.pause:
+        prompt: "Enter your Red Hat password"
+        echo: no
+      register: password_prompt
+      when: rh_password is not defined or rh_password == ""
+
+    - name: Set Red Hat password from prompt
+      ansible.builtin.set_fact:
+        rh_password: "{{ password_prompt.user_input }}"
+      when: password_prompt is defined and password_prompt.user_input is defined
+
+    - name: Prompt for console.redhat.com Automation Hub token
+      ansible.builtin.pause:
+        prompt: "Enter your console.redhat.com Automation Hub token"
+        echo: no
+      register: token_prompt
+      when: console_redhat_com_automationhub_token is not defined or console_redhat_com_automationhub_token == ""
+
+    - name: Set console.redhat.com Automation Hub token from prompt
+      ansible.builtin.set_fact:
+        console_redhat_com_automationhub_token: "{{ token_prompt.user_input }}"
+      when: token_prompt is defined and token_prompt.user_input is defined
+
+    # 3. STORE CREDENTIALS IN CONFIG FILE
     - name: Ensure ~/.ansible/vars directory exists
       ansible.builtin.file:
         path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
@@ -30,7 +100,23 @@
           rh_password: "{{ rh_password }}"
           console_redhat_com_automationhub_token: "{{ console_redhat_com_automationhub_token }}"
         mode: "0600"
+      when: rh_username != "" and rh_password != "" and console_redhat_com_automationhub_token != ""
 
+    # 4. CREATE REQUIRED DIRECTORIES
+    - name: Create required directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        - { path: "/tmp/ee-containers" }
+        - { path: "/tmp/ee-containers/environments" }
+        - { path: "/tmp/ee-containers/build" }
+        - { path: "/tmp/ee-containers/context" }
+        - { path: "/tmp/ee-containers/hooks" }
+        - { path: "/tmp/ee-containers/containerfiles" }
+
+    # 5. Include the ee-builder role
     - name: Include the ee-builder role
       ansible.builtin.include_role:
         name: ee-builder

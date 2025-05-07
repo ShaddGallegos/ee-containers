@@ -4,5 +4,6 @@
     "ansible.validation.lint.path": "",
     "ansible.executionEnvironment.pull.arguments": "--tls-verify=false",
     "ansible.validation.enabled": false,
-    "ansible.python.interpreterPath": "/bin/python"
+    "ansible.python.interpreterPath": "/bin/python",
+    "terminal.integrated.sendKeybindingsToShell": true
 }
