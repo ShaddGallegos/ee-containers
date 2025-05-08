@@ -77,13 +77,21 @@
   ignore_errors: true
 
 # 4. INSTALL GALAXY COLLECTIONS
-- name: Install Galaxy collections from requirements.yml
-  ansible.builtin.command:
-    cmd: "ansible-galaxy collection install -r {{ playbook_dir }}/requirements.yml --force --pre"
+- name: Install Galaxy collections from requirements.yml (skip problematic ones)
+  ansible.builtin.shell: |
+    # Create a modified requirements file without the problematic collection
+    grep -v "infra.ansible" {{ playbook_dir }}/requirements.yml > /tmp/modified_requirements.yml
+    
+    # Install collections from the modified file
+    ansible-galaxy collection install -r /tmp/modified_requirements.yml --force --pre
   register: galaxy_requirements_install
-  retries: 3
-  delay: 5
   ignore_errors: true
+  tags: [setup, dependencies]
+
+- name: Display Galaxy installation status
+  ansible.builtin.debug:
+    msg: "Galaxy collections installed with {{ 'warnings' if galaxy_requirements_install.rc != 0 else 'success' }}. Some collections like 'infra.ansible' were skipped."
+  tags: [setup, dependencies]
 
 # 5. ENSURE COMMUNITY.GENERAL IS INSTALLED
 - name: Ensure community.general collection is installed
@@ -102,23 +110,50 @@
   register: available_environments
   tags: [environment, menu]
 
-- name: Display environment selection menu
-  ansible.builtin.debug:
-    msg: |
-      Available Environments:
+- name: Create formatted environment list
+  ansible.builtin.set_fact:
+    env_list: |
       {% for env in available_environments.files %}
       {{ loop.index }}. {{ env.path | basename }}
       {% endfor %}
-      
+  tags: [environment, menu]
+
+- name: Clear screen for menu
+  ansible.builtin.shell: clear
+  changed_when: false
+  tags: [environment, menu]
+
+- name: Create menu file with proper formatting
+  ansible.builtin.copy:
+    dest: "/tmp/ee-menu.txt"
+    content: |
+
+      ====================================================
+                ENVIRONMENT SELECTION MENU
+      ====================================================
+
+      Available environments:
+
+      {% for env in available_environments.files %}
+        {{ loop.index }}. {{ env.path | basename }}
+      {% endfor %}
+
       Select environments to build:
       - Enter a single number (e.g., '1')
       - Multiple comma-separated numbers (e.g., '1,3,5')
       - 'all', 'ALL', or 'All' for all environments
+    mode: "0644"
   tags: [environment, menu]
 
-- name: Prompt for environment selection
+- name: Display environment selection menu
+  ansible.builtin.command: cat /tmp/ee-menu.txt
+  register: menu_output
+  changed_when: false
+  tags: [environment, menu]
+
+- name: Show menu output
   ansible.builtin.pause:
-    prompt: "Enter your selection"
+    prompt: "{{ menu_output.stdout }}\n\nEnter your selection"
   register: environment_selection
   tags: [environment, menu]
 
@@ -154,7 +189,25 @@
     path: "/tmp/ee-containers/environments/{{ item }}"
     state: directory
     mode: "0755"
+    owner: "{{ lookup('env', 'USER') }}"  # Use USER environment variable
+    group: "{{ lookup('pipe', 'id -gn') }}"  # Get user's primary group
   loop: "{{ selected_env }}"
+  tags: [environment, setup]
+  become: true  # Use become to ensure we can set permissions properly
+
+# Fix permissions on parent directories too
+- name: Fix permissions on working directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ lookup('env', 'USER') }}"
+    group: "{{ lookup('pipe', 'id -gn') }}"
+    mode: "0755"
+    recurse: true
+  loop:
+    - "/tmp/ee-containers"
+    - "/tmp/ee-containers/environments"
+  become: true
   tags: [environment, setup]
 
 # 7. COPY SELECTED ENVIRONMENTS
@@ -196,20 +249,45 @@
     - login
     - registry
 
-- name: Login to container registry
-  ansible.builtin.command:
-    cmd: >
-      podman login {{ item.item }}
-      -u {{ rh_username }}
-      -p {{ rh_password }}
-      --authfile {{ authfile }}
-  loop: "{{ registry_auth_check.results }}"
-  when: item.stdout != "found" and rh_username is defined and rh_username != "" and rh_password is defined and rh_password != ""
+- name: Check if we're already logged in to all registries
+  ansible.builtin.set_fact:
+    all_registries_logged_in: "{{ registry_auth_check.results | map(attribute='stdout') | list | reject('equalto', 'not_found') | list | length == container_registries | length }}"
+  tags:
+    - login
+    - registry
+
+- name: Login to container registry (skip if already logged in)
+  ansible.builtin.shell: |
+    # Check if the registry is already authenticated
+    if grep -q "{{ item.item }}" "{{ authfile }}" 2>/dev/null; then
+      echo "already_authenticated"
+      exit 0
+    fi
+    
+    # Try login with provided credentials
+    if [ -n "{{ rh_username | default(lookup('env', 'RH_USERNAME')) }}" ] && [ -n "{{ rh_password | default(lookup('env', 'RH_PASSWORD')) }}" ]; then
+      podman login "{{ item.item }}" \
+        -u "{{ rh_username | default(lookup('env', 'RH_USERNAME')) }}" \
+        -p "{{ rh_password | default(lookup('env', 'RH_PASSWORD')) }}" \
+        --authfile "{{ authfile }}"
+    else
+      echo "no_credentials"
+      exit 0
+    fi
   register: registry_login
-  retries: 3
-  delay: 5
+  loop: "{{ registry_auth_check.results }}"
+  when: not all_registries_logged_in
+  changed_when: registry_login.stdout != "already_authenticated" and registry_login.stdout != "no_credentials"
+  failed_when: false  # Never fail this task
   no_log: true
-  ignore_errors: true
+  tags:
+    - login
+    - registry
+
+# Add this task to completely bypass login tasks when already logged in
+- name: Skip remaining login tasks if already logged in
+  ansible.builtin.meta: end_play
+  when: all_registries_logged_in
   tags:
     - login
     - registry
@@ -234,17 +312,20 @@
 
 - name: Configure auth file for ansible-builder
   ansible.builtin.shell: |
-    # Ensure auth file is available in default location
+    # Copy auth file with proper permissions
     if [ -f "{{ authfile }}" ]; then
       mkdir -p ~/.config/containers/
-      cp {{ authfile }} ~/.config/containers/auth.json
+      sudo cp "{{ authfile }}" ~/.config/containers/auth.json
+      sudo chown $(whoami):$(id -gn) ~/.config/containers/auth.json
       chmod 600 ~/.config/containers/auth.json
       
       # Also copy to alternate locations podman might check
       mkdir -p ~/.docker
-      cp {{ authfile }} ~/.docker/config.json
+      sudo cp "{{ authfile }}" ~/.docker/config.json
+      sudo chown $(whoami):$(id -gn) ~/.docker/config.json
       chmod 600 ~/.docker/config.json
     fi
+  become: true  # Run as root to access the auth file
   when: auth_file_stat.stat.exists
   tags:
     - login
@@ -267,9 +348,18 @@
         - name: ansible.utils
         - name: ansible.posix
         - name: community.general
+        # Remove infra.ansible as it doesn't exist
     mode: "0644"
   loop: "{{ req_yml_exists.results }}"
   when: not item.stat.exists or item.stat.size == 0
+  ignore_errors: true
+
+- name: Remove problematic infra.ansible collection from requirements.yml
+  ansible.builtin.replace:
+    path: "/tmp/ee-containers/environments/{{ item }}/requirements.yml"
+    regexp: '- name: infra\.ansible.*$'
+    replace: '# infra.ansible collection has been removed as it does not exist'
+  loop: "{{ environments_to_build }}"
   ignore_errors: true
 
 - name: Copy ansible.cfg to each environment
@@ -372,18 +462,26 @@
   when: ansible_connection == 'local'
 
 # 12. FIX MALFORMED BASE IMAGE REFERENCES
-- name: Fix malformed base image references in execution-environment.yml files
+- name: Fix malformed base image references in execution-environment.yml files (source)
   ansible.builtin.replace:
     path: "{{ playbook_dir }}/environments/{{ item }}/execution-environment.yml"
     regexp: 'base_image:\s*:registry'
     replace: 'base_image: registry'
   loop: "{{ selected_env }}"
-  register: ee_yml_fixed
-  
+  register: ee_yml_fixed_source
+
+- name: Fix malformed base image references in working copy
+  ansible.builtin.replace:
+    path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+    regexp: 'base_image:\s*:registry'
+    replace: 'base_image: registry'
+  loop: "{{ selected_env }}"
+  register: ee_yml_fixed_temp
+
 - name: Show execution-environment.yml fixes
   ansible.builtin.debug:
     msg: "Fixed invalid base_image reference in {{ item.item }} execution-environment.yml"
-  loop: "{{ ee_yml_fixed.results }}"
+  loop: "{{ ee_yml_fixed_source.results + ee_yml_fixed_temp.results }}"
   when: item.changed
 
 # 13. BUILD EXECUTION ENVIRONMENT
@@ -396,12 +494,36 @@
       changed_when: false
       loop: "{{ selected_env }}"
       
+    - name: Add pre-release flag to execution environment YAML if needed
+      ansible.builtin.lineinfile:
+        path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+        line: "      pre_releases: true"
+        insertafter: "    collections:"
+        state: present
+      loop: "{{ selected_env }}"
+      register: yaml_updated
+      ignore_errors: true
+      
+    - name: Ensure options and galaxy collections sections exist
+      ansible.builtin.blockinfile:
+        path: "/tmp/ee-containers/environments/{{ item }}/execution-environment.yml"
+        block: |
+          options:
+            galaxy:
+              collections:
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - OPTIONS"
+        insertbefore: BOF
+        state: present
+      loop: "{{ selected_env }}"
+      when: yaml_updated is failed
+      ignore_errors: true
+      
     - name: Start image build process for each environment
       ansible.builtin.shell: |
         # Set explicit auth file location
         export REGISTRY_AUTH_FILE={{ authfile }}
         
-        # Send build command to tmux left pane with explicit auth file
+        # Run ansible-builder without the --pre flag
         tmux send-keys -t ansible_build:0.0 "cd {{ playbook_dir }} && REGISTRY_AUTH_FILE={{ authfile }} ansible-builder build --prune-images --no-cache -v3 -f environments/{{ item.item }}/execution-environment.yml --context /tmp/ee-containers --tag {{ item.item }}" C-m
       loop: "{{ image_exists.results }}"
       when: item.stdout == ""
@@ -409,7 +531,8 @@
       changed_when: true
       environment:
         REGISTRY_AUTH_FILE: "{{ authfile }}"
-      
+      tags: [build]
+    
     - name: Wait for builds to complete
       ansible.builtin.pause:
         prompt: |
@@ -903,3 +1026,24 @@
   tags: [report]
 
 # CLEANUP
+- name: Display content of execution-environment.yml files after fixes
+  ansible.builtin.command:
+    cmd: "cat /tmp/ee-containers/environments/{{ item }}/execution-environment.yml | grep base_image"
+  loop: "{{ selected_env }}"
+  register: ee_yml_content
+  changed_when: false
+
+- name: Show execution-environment.yml base_image line
+  ansible.builtin.debug:
+    msg: "{{ item.stdout }}"
+  loop: "{{ ee_yml_content.results }}"
+
+- name: Verify ansible-builder version information
+  ansible.builtin.shell: |
+    ansible-builder --version
+  register: builder_version
+  changed_when: false
+
+- name: Display ansible-builder version
+  ansible.builtin.debug:
+    msg: "Using ansible-builder version: {{ builder_version.stdout }}"
