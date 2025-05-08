@@ -1,18 +1,32 @@
 ---
 galaxy_info:
-  author: Your Name
-  description: Role for building Ansible Execution Environments.
-  company: Your Company
-  license: license (e.g., MIT)
+  author: Shadd
+  description: Role for building Ansible Execution Environments with container images.
+  company: Red Hat, Inc.
+  license: GPL-3.0-or-later
   min_ansible_version: 2.9
+
   platforms:
     - name: EL
       versions:
-        - 7
         - 8
-    - name: Ubuntu
+        - 9
+    - name: RHEL
       versions:
-        - bionic
-        - focal
+        - 8
+        - 9
+    - name: Fedora
+      versions:
+        - all
+
+  galaxy_tags:
+    - ansible
+    - automation
+    - containers
+    - execution_environment
+    - podman
+    - buildah
+    - ee
+    - development
 
 dependencies: []

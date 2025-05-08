@@ -1047,3 +1047,47 @@
 - name: Display ansible-builder version
   ansible.builtin.debug:
     msg: "Using ansible-builder version: {{ builder_version.stdout }}"
+
+# Add this task to run right before the build starts:
+- name: Create script to remove problematic infra.ansible from all requirements files
+  ansible.builtin.copy:
+    dest: "/tmp/ee-containers/fix_requirements.sh"
+    content: |
+      #!/bin/bash
+      
+      # Find all requirements.yml files in the build context
+      echo "Searching for requirements.yml files..."
+      find /tmp/ee-containers -name "requirements.yml" -type f | while read req_file; do
+        echo "Fixing $req_file"
+        
+        # Create a backup
+        cp "$req_file" "${req_file}.bak"
+        
+        # Remove any lines with infra.ansible
+        grep -v "infra\.ansible" "${req_file}.bak" > "$req_file"
+        
+        echo "- Fixed $req_file"
+      done
+      
+      # Also check the main requirements.yml that ansible-builder might use
+      if [ -f "/tmp/ee-containers/_build/requirements.yml" ]; then
+        echo "Fixing main build requirements file"
+        cp "/tmp/ee-containers/_build/requirements.yml" "/tmp/ee-containers/_build/requirements.yml.bak"
+        grep -v "infra\.ansible" "/tmp/ee-containers/_build/requirements.yml.bak" > "/tmp/ee-containers/_build/requirements.yml"
+      fi
+      
+      echo "All requirements files have been fixed!"
+    mode: "0755"
+  tags: [build]
+
+- name: Run fix script before building
+  ansible.builtin.command:
+    cmd: "/tmp/ee-containers/fix_requirements.sh"
+  register: fix_requirements_result
+  changed_when: true
+  tags: [build]
+
+- name: Display fix results
+  ansible.builtin.debug:
+    msg: "{{ fix_requirements_result.stdout_lines }}"
+  tags: [build]
