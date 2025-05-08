@@ -1,6 +1,7 @@
 ---
 - name: Build Execution Environment
   hosts: localhost
+  connection: local  # Add this line to use direct local connection instead of SSH
   gather_facts: false
 
   tasks:
