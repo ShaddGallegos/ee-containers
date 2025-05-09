@@ -2,6 +2,9 @@
 # filepath: {{ playbook_dir }}/roles/ee-builder/tasks/build_environment.yml
 # Optimized Setup tasks for the ee-builder role
 
+# 0. ENSURE CRITICAL DIRECTORIES EXIST - EARLY SETUP
+
+
 # 1. INITIALIZE CRITICAL VARIABLES
 - name: Initialize critical variables
   ansible.builtin.set_fact:
@@ -12,11 +15,6 @@
     authfile: "/etc/containers/auth.json"
     working_dir: "/tmp/ee-containers"
     problematic_collections: [
-        "infra.ansible",
-        "infra.ansible_collections",
-        "infra.ee_ansible_collections",
-        "infra.ee_collections",
-        "infra.ee_configuration"  # <--- ADD THIS LINE
     ]
     rh_username: "{{ lookup('env', 'RH_USERNAME') }}"
     rh_password: "{{ lookup('env', 'RH_PASSWORD') }}"
@@ -49,6 +47,19 @@
   become: "{{ '/etc/' in item }}"
   tags: [environment, setup]
 
+- name: Ensure root EE containers directories exist with proper permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ lookup('env', 'USER') }}"
+    group: "{{ lookup('pipe', 'id -gn') }}"
+  loop:
+    - "/ee-containers"
+    - "/ee-containers/context"
+  become: true
+  tags: [always, environment, setup]
+
 # 3. INSTALL SYSTEM REQUIREMENTS - CONSOLIDATED
 - name: Install required system packages and dependencies
   block:
@@ -70,6 +81,16 @@
         - jq
       become: true
   tags: [always, setup, dependencies]
+
+- name: Ensure /ee-containers directory exists with proper permissions (early setup)
+  ansible.builtin.file:
+    path: "/tmp/ee-containers"
+    state: directory
+    mode: "0777"  # More permissive temporarily
+    recurse: true
+  become: true
+  ignore_errors: false  # Make this task mandatory
+  tags: [always]
 
 # 4. CLEAN PROBLEMATIC COLLECTION REFERENCES
 - name: Prepare clean collection requirements
@@ -361,16 +382,39 @@
 # 9. CONTAINER REGISTRY AUTHENTICATION - OPTIMIZED
 - name: Handle container registry authentication
   block:
+    - name: Ensure ~/.ansible/vars directory exists
+      ansible.builtin.file:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars"
+        state: directory
+        mode: "0700"
+      
+    - name: Check if config file exists
+      ansible.builtin.stat:
+        path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+      register: config_file_stat
+      
+    - name: Load credentials from config file 
+      ansible.builtin.include_vars:
+        file: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+        name: redhat_credentials
+      when: config_file_stat.stat.exists
+      
+    - name: Set credential facts from config file
+      ansible.builtin.set_fact:
+        rh_username: "{{ redhat_credentials.rh_username | default(rh_username) }}"
+        rh_password: "{{ redhat_credentials.rh_password | default(rh_password) }}"
+      when: config_file_stat.stat.exists
+    
     - name: Check if auth file exists
       ansible.builtin.stat:
-        path: "{{ authfile }}"
+        path: "/etc/containers/auth.json"
       register: auth_file_stat
     
-    - name: Verify registry authentication status (when auth file exists)
+    - name: Verify registry authentication status
       ansible.builtin.shell: |
         authenticated=true
         for registry in {{ container_registries | join(' ') }}; do
-          if ! grep -q "$registry" "{{ authfile }}" 2>/dev/null; then
+          if ! grep -q "$registry" "/etc/containers/auth.json" 2>/dev/null; then
             authenticated=false
             break
           fi
@@ -395,42 +439,30 @@
             podman login "{{ item }}" \
               -u "{{ rh_username }}" \
               -p "{{ rh_password }}" \
-              --authfile "{{ authfile }}"
+              --authfile "/etc/containers/auth.json"
           loop: "{{ container_registries }}"
           no_log: true
           when: have_credentials | bool
-          become: true  # Needed to write to /etc/containers/auth.json
+          become: true  # This is essential for writing to /etc/containers/auth.json
         
         - name: Configure auth file for ansible-builder
           ansible.builtin.shell: |
-            if [ -f "{{ authfile }}" ]; then
+            if [ -f "/etc/containers/auth.json" ]; then
               mkdir -p ~/.config/containers/
-              cp "{{ authfile }}" ~/.config/containers/auth.json
+              cp "/etc/containers/auth.json" ~/.config/containers/auth.json
               chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.config/containers/auth.json
               chmod 600 ~/.config/containers/auth.json
               
               # Also copy to alternate locations podman might check
               mkdir -p ~/.docker
-              cp "{{ authfile }}" ~/.docker/config.json
+              cp "/etc/containers/auth.json" ~/.docker/config.json
               chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.docker/config.json
               chmod 600 ~/.docker/config.json
               
               echo "Auth files configured"
             fi
           become: true
-          register: auth_file_setup
       when: not all_registries_logged_in | bool
-    
-    - name: Verify registry authentication
-      ansible.builtin.command:
-        cmd: "podman pull registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-      register: test_pull
-      ignore_errors: true
-      changed_when: false
-      
-    - name: Display registry authentication status
-      ansible.builtin.debug:
-        msg: "Registry authentication {{ 'succeeded' if test_pull.rc == 0 else 'failed' }}. {{ test_pull.stderr if test_pull.stderr is defined else '' }}"
   tags: [login, registry]
 
 # 10. NETWORK VALIDATION - SIMPLIFIED
@@ -458,6 +490,68 @@
           WARNING: DNS resolution issues detected which may affect build
           {% endif %}
   tags: [network]
+
+# ANSIBLE CONFIG CREATION
+- name: Create ansible.cfg in key locations
+  block:
+    - name: Check if /ansible/ansible.cfg.orig exists
+      ansible.builtin.stat:
+        path: /ansible/ansible.cfg.orig
+      register: ansible_cfg_orig_exists
+      
+    - name: Backup existing ansible.cfg if original backup doesn't exist
+      ansible.builtin.copy:
+        src: /ansible/ansible.cfg
+        dest: /ansible/ansible.cfg.orig
+        mode: preserve
+        remote_src: yes
+      when: 
+        - ansible_cfg_orig_exists.stat is defined
+        - not ansible_cfg_orig_exists.stat.exists
+        - lookup('ansible.builtin.first_found', ['/ansible/ansible.cfg'], errors='ignore') != ''
+      become: true
+      
+    - name: Create ansible.cfg in /ansible directory
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
+        dest: /ansible/ansible.cfg
+        mode: '0644'
+      become: true
+      
+    - name: Create ansible.cfg in playbook parent directory
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
+        dest: "{{ playbook_dir }}/../ansible.cfg"
+        mode: '0644'
+      
+    - name: Ensure /ee-containers directory exists
+      ansible.builtin.file:
+        path: /ee-containers
+        state: directory
+        mode: '0755'
+      become: true
+      
+    - name: Create ansible.cfg in /ee-containers directory
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
+        dest: /ee-containers/ansible.cfg
+        mode: '0644'
+      become: true
+      
+    - name: Ensure /ee-containers/context directory exists
+      ansible.builtin.file:
+        path: /ee-containers/context
+        state: directory
+        mode: '0755'
+      become: true
+      
+    - name: Create ansible.cfg in /ee-containers/context directory
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
+        dest: /ee-containers/context/ansible.cfg
+        mode: '0644'
+      become: true
+  tags: [config, ansible_cfg]
 
 # 11. SETUP TMUX MONITORING - STREAMLINED
 - name: Setup tmux monitoring session
@@ -592,11 +686,6 @@
           # ensure it is listed here.
           # Format: ("namespace.collection_name" "another.collection")
           declare -a COLLECTIONS_TO_REMOVE=(
-              "infra.ansible"                 # Example
-              "infra.ansible_collections"     # Example
-              "infra.ee_ansible_collections"  # From previous error
-              "infra.ee_collections"          # From previous error
-              "infra.ee_configuration"        # <--- ADD THIS LINE FOR THE CURRENT ERROR
               # Add other collections as needed
           )
 
