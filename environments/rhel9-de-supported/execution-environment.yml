@@ -21,6 +21,8 @@ dependencies:
   python: requirements.txt
   system: bindep.txt
   galaxy: requirements.yml
+      collections:
+        pre_releases: true
 
 options:
   package_manager_path: /usr/bin/microdnf

@@ -7,8 +7,10 @@ collections:
   - name: infra.aap_utilities
   - name: infra.ah_configuration
   - name: infra.eda_configuration
-  - name: infra.ee_rekey_variables
   - name: infra.ee_utilities
   - name: infra.osbuild
   - name: infra.aap_configuration
   - name: containers.podman
+
+options:
+  pre_releases: true

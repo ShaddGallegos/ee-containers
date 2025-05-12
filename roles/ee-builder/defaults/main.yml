@@ -1,4 +1,7 @@
-# Default variables for the ee-builder role
+---
+environment_directories:
+  - path: /tmp/ee-containers/environments/default
+    mode: "0777"
 
 # System packages to install via package manager
 required_system_packages:

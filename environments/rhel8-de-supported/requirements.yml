@@ -4,3 +4,6 @@ collections:
   - name: ansible.posix
   - name: community.general
   
+
+options:
+  pre_releases: true

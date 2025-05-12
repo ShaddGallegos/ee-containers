@@ -16,6 +16,8 @@ additional_build_files:
 
 dependencies:
   galaxy: requirements.yml
+    collections:
+      pre_releases: true
   python: requirements.txt
   system: bindep.txt
 

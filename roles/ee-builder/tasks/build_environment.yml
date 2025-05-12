@@ -1,11 +1,8 @@
 ---
-# filepath: {{ playbook_dir }}/roles/ee-builder/tasks/build_environment.yml
-# Optimized Setup tasks for the ee-builder role
+# Optimized Execution Environment Builder
 
-# 0. ENSURE CRITICAL DIRECTORIES EXIST - EARLY SETUP
+# ==================== 1. INITIALIZATION ==================== #
 
-
-# 1. INITIALIZE CRITICAL VARIABLES
 - name: Initialize critical variables
   ansible.builtin.set_fact:
     playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
@@ -14,8 +11,7 @@
     container_registries: ["registry.redhat.io", "registry.access.redhat.com"]
     authfile: "/etc/containers/auth.json"
     working_dir: "/tmp/ee-containers"
-    problematic_collections: [
-    ]
+    problematic_collections: []
     rh_username: "{{ lookup('env', 'RH_USERNAME') }}"
     rh_password: "{{ lookup('env', 'RH_PASSWORD') }}"
     paths:
@@ -28,40 +24,53 @@
       ]
   tags: [always, environment, setup]
 
-# 2. CREATE REQUIRED DIRECTORIES AT ONCE
-- name: Create build directories (non-privileged)
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-    recurse: "{{ 'collections/ansible_collections' in item }}"
-  loop: "{{ paths.build }}"
-  tags: [environment, setup]
-
-- name: Create configuration directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "{{ '0700' if 'containers' in item or 'docker' in item else '0755' }}"
-  loop: "{{ paths.config }}"
-  become: "{{ '/etc/' in item }}"
-  tags: [environment, setup]
+# ==================== 2. SYSTEM SETUP ==================== #
 
 - name: Ensure root EE containers directories exist with proper permissions
   ansible.builtin.file:
     path: "{{ item }}"
     state: directory
-    mode: "0755"
+    mode: "0777"  # Ensuring wide permissions for build process
     owner: "{{ lookup('env', 'USER') }}"
     group: "{{ lookup('pipe', 'id -gn') }}"
   loop:
     - "/ee-containers"
     - "/ee-containers/context"
+    - "/ee-containers/build"
+    - "/tmp/ee-containers"
   become: true
   tags: [always, environment, setup]
 
-# 3. INSTALL SYSTEM REQUIREMENTS - CONSOLIDATED
-- name: Install required system packages and dependencies
+- name: Create all required directories
+  block:
+    - name: Create build directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+        recurse: "{{ 'collections/ansible_collections' in item }}"
+      loop: "{{ paths.build }}"
+    
+    - name: Create configuration directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "{{ '0700' if 'containers' in item or 'docker' in item else '0755' }}"
+      loop: "{{ paths.config }}"
+      become: "{{ '/etc/' in item }}"
+      
+    - name: Ensure container config directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "/etc/containers"
+        - "/etc/containers/containers.conf.d"
+      become: true
+  tags: [environment, setup]
+
+- name: Install system dependencies
   block:
     - name: Install compatible resolvelib package
       ansible.builtin.pip:
@@ -82,305 +91,9 @@
       become: true
   tags: [always, setup, dependencies]
 
-- name: Ensure /ee-containers directory exists with proper permissions (early setup)
-  ansible.builtin.file:
-    path: "/tmp/ee-containers"
-    state: directory
-    mode: "0777"  # More permissive temporarily
-    recurse: true
-  become: true
-  ignore_errors: false  # Make this task mandatory
-  tags: [always]
+# ==================== 3. AUTHENTICATION & CONFIG ==================== #
 
-# 4. CLEAN PROBLEMATIC COLLECTION REFERENCES
-- name: Prepare clean collection requirements
-  block:
-    - name: Create global fix script
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/fix_collections.sh"
-        content: |
-          #!/bin/bash
-          # Universal script to remove problematic collection references
-          PROBLEMATIC_COLLECTIONS=({{ problematic_collections | join(' ') }})
-          
-          cleanup_file() {
-            local file=$1
-            if [ -f "$file" ]; then
-              echo "Cleaning $file (no backup will be created)"
-              # cp "$file" "${file}.bak"  # This line created .bak files, now commented out
-              for coll in "${PROBLEMATIC_COLLECTIONS[@]}"; do
-                # Escape dots for sed basic regex
-                local sed_coll_pattern=$(echo "$coll" | sed 's/\./\\./g')
-                sed -i "/${sed_coll_pattern}/d" "$file"
-              done
-            fi
-          }
-          
-          # Clean project files
-          echo "INFO: Cleaning problematic collection references from YAML files in {{ playbook_dir }}"
-          find "{{ playbook_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
-            cleanup_file "$file"
-          done
-          
-          # Clean build directory files (which might include copied environment files)
-          if [ -d "{{ working_dir }}" ]; then
-            echo "INFO: Cleaning problematic collection references from YAML files in {{ working_dir }}"
-            find "{{ working_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
-              cleanup_file "$file"
-            done
-          fi
-          
-          # Create hooks for ansible-builder (This part remains as it creates a different pre-build hook)
-          # This pre-build hook is intended to run *inside* the ansible-builder context.
-          mkdir -p "{{ working_dir }}/hooks"
-          cat > "{{ working_dir }}/hooks/pre-build-legacy-cleaner" << 'EOT'
-          #!/bin/bash
-          # This is a legacy cleaner hook, its functionality is largely superseded by the main pre-build hook
-          find . -name "*.yml" -type f | while read file; do
-            sed -i '/infra\.ansible/d' "$file" 
-            sed -i '/infra\.ansible_collections/d' "$file"
-          done
-          echo "Legacy pre-build hook complete"
-          exit 0
-          EOT
-          chmod +x "{{ working_dir }}/hooks/pre-build-legacy-cleaner"
-          
-          echo "All problematic collection references cleaned by global fix script."
-        mode: "0755"
-      
-    - name: Run global fix script
-      ansible.builtin.command: "/tmp/ee-containers/fix_collections.sh"
-      register: fix_result
-      changed_when: true
-  tags: [always, setup, dependencies]
-
-# 5. INSTALL GALAXY COLLECTIONS (CONSOLIDATED)
-- name: Install required Galaxy collections
-  block:
-    - name: Install core Galaxy collections (if needed)
-      ansible.builtin.command: "ansible-galaxy collection install {{ item }} --force"
-      register: galaxy_install
-      changed_when: galaxy_install.rc == 0
-      failed_when: false
-      loop:
-        - community.general
-        - ansible.posix
-        - ansible.utils
-      
-    - name: Create requirements template with safe collections
-      ansible.builtin.copy:
-        dest: "/tmp/ee-containers/safe_requirements.yml"
-        content: |
-          ---
-          collections:
-            - name: ansible.utils
-            - name: ansible.posix
-            - name: community.general
-        mode: "0644"
-  tags: [setup, dependencies]
-
-# 6. ENVIRONMENT SELECTION - IMPROVED
-- name: Environment selection
-  block:
-    - name: Get available environments
-      ansible.builtin.find:
-        paths: "{{ playbook_dir }}/environments"
-        file_type: directory
-      register: available_environments
-
-    - name: Generate environment selection menu
-      ansible.builtin.copy:
-        dest: "/tmp/ee-menu.txt"
-        content: |
-          ====================================================
-                    ENVIRONMENT SELECTION MENU
-          ====================================================
-          
-          Available environments:
-          {% for env in available_environments.files %}
-            {{ loop.index }}. {{ env.path | basename }}
-          {% endfor %}
-          
-          Select environments to build:
-          - Enter a single number (e.g., '1')
-          - Multiple comma-separated numbers (e.g., '1,3,5')
-          - 'all', 'ALL', or 'All' for all environments
-        mode: "0644"
-
-    - name: Display and process environment selection
-      block:
-        - name: Clear screen for menu
-          ansible.builtin.command: clear
-          changed_when: false
-        
-        - name: Show menu
-          ansible.builtin.command: cat /tmp/ee-menu.txt
-          register: menu_output
-          changed_when: false
-        
-        - name: Get user selection
-          ansible.builtin.pause:
-            prompt: "{{ menu_output.stdout }}\n\nEnter your selection"
-          register: environment_selection
-        
-        - name: Process environment selection
-          ansible.builtin.set_fact:
-            selected_env: >-
-              {%- if environment_selection.user_input | lower == 'all' -%}
-                {{ available_environments.files | map(attribute='path') | map('basename') | list }}
-              {%- else -%}
-                {%- set indices = environment_selection.user_input.split(',') | map('trim') | map('int') | list -%}
-                {%- set result = [] -%}
-                {%- for idx in indices -%}
-                  {%- if idx > 0 and idx <= available_environments.files | length -%}
-                    {%- set result = result + [available_environments.files[idx-1].path | basename] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ result }}
-              {%- endif -%}
-            environments_to_build: >-
-              {%- if environment_selection.user_input | lower == 'all' -%}
-                {{ available_environments.files | map(attribute='path') | map('basename') | list }}
-              {%- else -%}
-                {%- set indices = environment_selection.user_input.split(',') | map('trim') | map('int') | list -%}
-                {%- set result = [] -%}
-                {%- for idx in indices -%}
-                  {%- if idx > 0 and idx <= available_environments.files | length -%}
-                    {%- set result = result + [available_environments.files[idx-1].path | basename] -%}
-                  {%- endif -%}
-                {%- endfor -%}
-                {{ result }}
-              {%- endif -%}
-      
-        - name: Display selected environments
-          ansible.builtin.debug:
-            msg: "Selected environments: {{ selected_env | join(', ') }}"
-  tags: [environment, menu]
-
-# 7. PREPARE ENVIRONMENT DIRECTORIES
-- name: Prepare environment directories
-  block:
-    - name: Create and set permissions on environment directories
-      ansible.builtin.file:
-        path: "{{ working_dir }}/environments/{{ item }}"
-        state: directory
-        mode: "0755"
-        owner: "{{ lookup('env', 'USER') }}"
-        group: "{{ lookup('pipe', 'id -gn') }}"
-      loop: "{{ selected_env }}"
-      become: true
-    
-    - name: Copy selected environments to working directory
-      ansible.builtin.copy:
-        src: "{{ playbook_dir }}/environments/{{ item }}/"
-        dest: "{{ working_dir }}/environments/{{ item }}/"
-        remote_src: yes
-      loop: "{{ selected_env }}"
-    
-    - name: Fix permissions on working directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ lookup('env', 'USER') }}"
-        group: "{{ lookup('pipe', 'id -gn') }}"
-        mode: "0755"
-        recurse: true
-      loop:
-        - "{{ working_dir }}"
-        - "{{ working_dir }}/environments"
-      become: true
-  tags: [environment, setup]
-
-# 8. ENSURE ENVIRONMENT FILES ARE PROPERLY CONFIGURED
-- name: Ensure environment files are properly configured
-  block:
-    - name: Create template execution-environment.yml
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/ee-template.yml"
-        content: |
-          ---
-          version: 3
-          
-          build_arg_defaults:
-            EE_BASE_IMAGE: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-          
-          dependencies:
-            python:
-              - ansible-runner>=2.3.1
-            system:
-              - python3-pip
-              - python3-setuptools
-          
-          options:
-            package_manager_path: /usr/bin/microdnf
-            container_init:
-              package_manager_path: /usr/bin/microdnf 
-            galaxy:
-              collections:
-                pre_releases: true
-        mode: "0644"
-    
-    # Replace complex shell script with a file-based approach
-    - name: Create environment fix script
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/fix_environments.sh"
-        content: |
-          #!/bin/bash
-          # Script to fix environment configuration files
-          
-          WORKING_DIR="{{ working_dir }}"
-          
-          for env in $@; do
-            echo "Processing environment: $env"
-            
-            # Fix base image references
-            if [ -f "${WORKING_DIR}/environments/$env/execution-environment.yml" ]; then
-              sed -i 's/base_image:\s*:registry/base_image: registry/g' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-              
-              # Ensure pre_releases option is set
-              if ! grep -q "pre_releases:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                if grep -q "options:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                  if grep -q "galaxy:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                    if grep -q "collections:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                      sed -i '/collections:/a\      pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                    else
-                      sed -i '/galaxy:/a\      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml" 
-                    fi
-                  else
-                    sed -i '/options:/a\    galaxy:\n      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                  fi
-                else
-                  echo -e "\noptions:\n  galaxy:\n    collections:\n      pre_releases: true" >> "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                fi
-              fi
-              
-              # Ensure dependencies section exists
-              if ! grep -q "dependencies:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                sed -i '1a\dependencies:\n  python:\n    - ansible-runner>=2.3.1\n  system:\n    - python3-pip' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-              fi
-            else
-              # Create minimal execution-environment.yml if it doesn't exist
-              cp "${WORKING_DIR}/ee-template.yml" "${WORKING_DIR}/environments/$env/execution-environment.yml"
-            fi
-            
-            # Create safe requirements.yml if needed
-            if [ ! -f "${WORKING_DIR}/environments/$env/requirements.yml" ] || [ ! -s "${WORKING_DIR}/environments/$env/requirements.yml"; then
-              cp "/tmp/ee-containers/safe_requirements.yml" "${WORKING_DIR}/environments/$env/requirements.yml"
-            fi
-          done
-          
-          echo "Environment configuration complete"
-        mode: "0755"
-    
-    - name: Run environment fix script
-      ansible.builtin.command:
-        cmd: "{{ working_dir }}/fix_environments.sh {{ selected_env | join(' ') }}"
-      register: fix_env_files
-      changed_when: true
-  tags: [environment, setup]
-
-# 9. CONTAINER REGISTRY AUTHENTICATION - OPTIMIZED
-- name: Handle container registry authentication
+- name: Setup container registry authentication
   block:
     - name: Ensure ~/.ansible/vars directory exists
       ansible.builtin.file:
@@ -388,84 +101,139 @@
         state: directory
         mode: "0700"
       
-    - name: Check if config file exists
-      ansible.builtin.stat:
-        path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
-      register: config_file_stat
-      
-    - name: Load credentials from config file 
-      ansible.builtin.include_vars:
-        file: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
-        name: redhat_credentials
-      when: config_file_stat.stat.exists
-      
-    - name: Set credential facts from config file
-      ansible.builtin.set_fact:
-        rh_username: "{{ redhat_credentials.rh_username | default(rh_username) }}"
-        rh_password: "{{ redhat_credentials.rh_password | default(rh_password) }}"
-      when: config_file_stat.stat.exists
-    
-    - name: Check if auth file exists
-      ansible.builtin.stat:
-        path: "/etc/containers/auth.json"
-      register: auth_file_stat
-    
-    - name: Verify registry authentication status
-      ansible.builtin.shell: |
-        authenticated=true
-        for registry in {{ container_registries | join(' ') }}; do
-          if ! grep -q "$registry" "/etc/containers/auth.json" 2>/dev/null; then
-            authenticated=false
-            break
-          fi
-        done
-        echo $authenticated
-      register: auth_status
-      changed_when: false
-      when: auth_file_stat.stat.exists
-    
-    - name: Set authentication status fact
-      ansible.builtin.set_fact:
-        all_registries_logged_in: "{{ auth_file_stat.stat.exists and auth_status.stdout == 'true' }}"
-    
-    - name: Login to registries if needed
+    - name: Check if config file exists and load credentials
       block:
-        - name: Verify credentials are available
+        - name: Check config file
+          ansible.builtin.stat:
+            path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+          register: config_file_stat
+          
+        - name: Load credentials from config
+          ansible.builtin.include_vars:
+            file: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+            name: redhat_credentials
+          when: config_file_stat.stat.exists
+          
+        - name: Set credential facts
           ansible.builtin.set_fact:
-            have_credentials: "{{ rh_username != '' and rh_password != '' }}"
-        
-        - name: Login to container registries
-          ansible.builtin.shell: |
-            podman login "{{ item }}" \
-              -u "{{ rh_username }}" \
-              -p "{{ rh_password }}" \
-              --authfile "/etc/containers/auth.json"
-          loop: "{{ container_registries }}"
-          no_log: true
-          when: have_credentials | bool
-          become: true  # This is essential for writing to /etc/containers/auth.json
-        
-        - name: Configure auth file for ansible-builder
-          ansible.builtin.shell: |
-            if [ -f "/etc/containers/auth.json" ]; then
-              mkdir -p ~/.config/containers/
-              cp "/etc/containers/auth.json" ~/.config/containers/auth.json
-              chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.config/containers/auth.json
-              chmod 600 ~/.config/containers/auth.json
-              
-              # Also copy to alternate locations podman might check
-              mkdir -p ~/.docker
-              cp "/etc/containers/auth.json" ~/.docker/config.json
-              chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.docker/config.json
-              chmod 600 ~/.docker/config.json
-              
-              echo "Auth files configured"
-            fi
+            rh_username: "{{ redhat_credentials.rh_username | default(rh_username) }}"
+            rh_password: "{{ redhat_credentials.rh_password | default(rh_password) }}"
+          when: config_file_stat.stat.exists
+    
+    - name: Check auth status and login if needed
+      block:
+        - name: Check auth file
+          ansible.builtin.stat:
+            path: "/etc/containers/auth.json"
+          register: auth_file_stat
           become: true
-      when: not all_registries_logged_in | bool
+        
+        - name: Verify registry authentication status
+          ansible.builtin.shell: |
+            authenticated=true
+            for registry in {{ container_registries | join(' ') }}; do
+              if ! grep -q "$registry" "/etc/containers/auth.json" 2>/dev/null; then
+                authenticated=false
+                break
+              fi
+            done
+            echo $authenticated
+          register: auth_status
+          changed_when: false
+          when: auth_file_stat.stat.exists
+        
+        - name: Set authentication status fact
+          ansible.builtin.set_fact:
+            all_registries_logged_in: "{{ auth_file_stat.stat.exists and auth_status.stdout == 'true' }}"
+        
+        - name: Login to registries if needed
+          block:
+            - name: Verify credentials are available
+              ansible.builtin.set_fact:
+                have_credentials: "{{ rh_username != '' and rh_password != '' }}"
+            
+            - name: Login to container registries
+              ansible.builtin.shell: |
+                podman login "{{ item }}" \
+                  -u "{{ rh_username }}" \
+                  -p "{{ rh_password }}" \
+                  --authfile "/etc/containers/auth.json"
+              loop: "{{ container_registries }}"
+              no_log: true
+              when: have_credentials | bool
+              become: true
+            
+            - name: Configure auth file for ansible-builder
+              ansible.builtin.shell: |
+                if [ -f "/etc/containers/auth.json" ]; then
+                  mkdir -p ~/.config/containers/
+                  cp "/etc/containers/auth.json" ~/.config/containers/auth.json
+                  chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.config/containers/auth.json
+                  chmod 600 ~/.config/containers/auth.json
+                  
+                  # Also copy to alternate locations podman might check
+                  mkdir -p ~/.docker
+                  cp "/etc/containers/auth.json" ~/.docker/config.json
+                  chown {{ lookup('env', 'USER') }}:$(id -gn) ~/.docker/config.json
+                  chmod 600 ~/.docker/config.json
+                  
+                  echo "Auth files configured"
+                fi
+              become: true
+          when: not all_registries_logged_in | bool
   tags: [login, registry]
 
-# 10. NETWORK VALIDATION - SIMPLIFIED
+- name: Create ansible.cfg in key locations
+  block:
+    - name: Ensure directories exist for ansible.cfg
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "/etc/ansible"
+        - "/ee-containers"
+        - "/ee-containers/context"
+        - "/ee-containers/build"
+      become: true
+      
+    - name: Backup existing ansible.cfg files
+      block:
+        - name: Check for existing files
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          register: ansible_cfg_stat
+          with_items:
+            - "/etc/ansible/ansible.cfg"
+            - "/etc/ansible/ansible.cfg.orig"
+          
+        - name: Create backup if needed
+          ansible.builtin.copy:
+            src: "/etc/ansible/ansible.cfg"
+            dest: "/etc/ansible/ansible.cfg.orig"
+            mode: preserve
+            remote_src: yes
+          when: 
+            - ansible_cfg_stat.results[0].stat.exists
+            - not ansible_cfg_stat.results[1].stat.exists
+          become: true
+    
+    - name: Deploy ansible.cfg to all locations
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/roles/ee-builder/templates/ansible.cfg.j2"
+        dest: "{{ item }}"
+        mode: "0644"
+      loop:
+        - "{{ playbook_dir }}/../ansible.cfg"
+        - "/etc/ansible/ansible.cfg"
+        - "/ee-containers/ansible.cfg"
+        - "/ee-containers/context/ansible.cfg"
+        - "/ee-containers/build/ansible.cfg"
+      become: "{{ item != playbook_dir ~ '/../ansible.cfg' }}"
+  tags: [config, ansible_cfg]
+
+# ==================== 4. NETWORK VALIDATION ==================== #
+
 - name: Validate network connectivity
   block:
     - name: Check critical DNS resolution
@@ -491,241 +259,586 @@
           {% endif %}
   tags: [network]
 
-# ANSIBLE CONFIG CREATION
-- name: Create ansible.cfg in key locations
-  block:
-    - name: Check if /ansible/ansible.cfg.orig exists
-      ansible.builtin.stat:
-        path: /ansible/ansible.cfg.orig
-      register: ansible_cfg_orig_exists
-      
-    - name: Backup existing ansible.cfg if original backup doesn't exist
-      ansible.builtin.copy:
-        src: /ansible/ansible.cfg
-        dest: /ansible/ansible.cfg.orig
-        mode: preserve
-        remote_src: yes
-      when: 
-        - ansible_cfg_orig_exists.stat is defined
-        - not ansible_cfg_orig_exists.stat.exists
-        - lookup('ansible.builtin.first_found', ['/ansible/ansible.cfg'], errors='ignore') != ''
-      become: true
-      
-    - name: Create ansible.cfg in /ansible directory
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
-        dest: /ansible/ansible.cfg
-        mode: '0644'
-      become: true
-      
-    - name: Create ansible.cfg in playbook parent directory
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
-        dest: "{{ playbook_dir }}/../ansible.cfg"
-        mode: '0644'
-      
-    - name: Ensure /ee-containers directory exists
-      ansible.builtin.file:
-        path: /ee-containers
-        state: directory
-        mode: '0755'
-      become: true
-      
-    - name: Create ansible.cfg in /ee-containers directory
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
-        dest: /ee-containers/ansible.cfg
-        mode: '0644'
-      become: true
-      
-    - name: Ensure /ee-containers/context directory exists
-      ansible.builtin.file:
-        path: /ee-containers/context
-        state: directory
-        mode: '0755'
-      become: true
-      
-    - name: Create ansible.cfg in /ee-containers/context directory
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/templates/ansible.cfg.j2"
-        dest: /ee-containers/context/ansible.cfg
-        mode: '0644'
-      become: true
-  tags: [config, ansible_cfg]
+# ==================== 5. ENVIRONMENT SELECTION ==================== #
 
-# 11. SETUP TMUX MONITORING - STREAMLINED
-- name: Setup tmux monitoring session
+- name: Select environments to build
   block:
-    - name: Kill existing tmux session if it exists
-      ansible.builtin.shell: tmux has-session -t ansible_build 2>/dev/null && tmux kill-session -t ansible_build || true
-      changed_when: false
-      ignore_errors: true
+    - name: Get available environments
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/environments"
+        file_type: directory
+      register: available_environments
       
-    - name: Create tmux monitoring session
-      ansible.builtin.shell: |
-        # Create session with split view
-        tmux new-session -d -s ansible_build
-        tmux rename-window -t ansible_build:0 'EE Builder'
-        tmux split-window -h -t ansible_build:0
+    - name: Check if environments were found
+      ansible.builtin.fail:
+        msg: "No environment directories found in {{ playbook_dir }}/environments. Please create at least one environment."
+      when: available_environments.files | length == 0
+
+    - name: Generate environment list for display
+      ansible.builtin.set_fact:
+        environment_list: "{{ available_environments.files | map(attribute='path') | map('basename') | list }}"
         
-        # Configure monitoring pane
-        tmux send-keys -t ansible_build:0.1 'echo -e "\n\033[1;36m============== CONTAINER IMAGE MONITOR ==============\033[0m\n"' C-m
-        tmux send-keys -t ansible_build:0.1 'watch -n 1 "echo -e \"\033[1;36m=== CONTAINER IMAGES ===\033[0m\n\"; podman images; echo -e \"\n\033[1;33m=== BUILD PROCESSES ===\033[0m\n\"; ps -ef | grep -E \"ansible-builder|buildah|podman\" | grep -v grep"' C-m
-        
-        # Setup builder pane
-        tmux send-keys -t ansible_build:0.0 'echo -e "\033[1;33m========= EE BUILDER EXECUTION =========\033[0m"' C-m
-        tmux send-keys -t ansible_build:0.0 'echo "EE Builder starting for environments: {{ selected_env | join(", ") }}"' C-m
-      register: tmux_setup
-      changed_when: tmux_setup.rc == 0
-      
-    - name: Launch terminal with tmux session
-      ansible.builtin.shell: |
-        if command -v gnome-terminal &>/dev/null; then
-          gnome-terminal -- bash -c "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
-        elif command -v xterm &>/dev/null; then
-          xterm -e "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
-        else
-          echo "No suitable terminal found. Please manually run: tmux attach-session -t ansible_build"
-        fi
-      async: 10
-      poll: 0
-      ignore_errors: true
-      when: ansible_connection == 'local'
-      
-    - name: Display tmux connection instructions
+    - name: Display available environments
       ansible.builtin.debug:
         msg: |
-          Tmux monitoring session created!
+          Available environments:
+          {% for env in environment_list %}
+          {{ loop.index }}. {{ env }}
+          {% endfor %}
           
-          To connect to this session:
-            tmux attach-session -t ansible_build
+    - name: Select environments via command line
+      block:
+        - name: Get user selection non-interactively
+          ansible.builtin.pause:
+            prompt: |
+              
+              Select environments to build:
+              - Enter a single number (e.g., '1')
+              - Multiple comma-separated numbers (e.g., '1,3,5')
+              - 'all' for all environments
+              
+              Enter your selection
+          register: environment_selection
           
-          To detach from the session once connected: 
-            Press Ctrl+b, then d
-  tags: [monitoring]
+        - name: Use default if selection failed
+          ansible.builtin.set_fact:
+            environment_selection: 
+              user_input: "all"
+          when: environment_selection is failed or environment_selection.user_input is not defined or environment_selection.user_input == ''
+        
+        - name: Process all selection
+          ansible.builtin.set_fact:
+            selected_env: "{{ environment_list }}"
+          when: environment_selection.user_input | lower == 'all'
+            
+        - name: Process comma-separated selection
+          ansible.builtin.set_fact:
+            # First, create a JSON string representation of the list
+            _selected_env_json_str: |
+              {%- set result = [] -%}
+              {%- for num_str in environment_selection.user_input.split(',') -%}
+                {%- set num_trimmed = num_str | trim -%}
+                {# Safely convert to int, defaulting to an out-of-range value on failure #}
+                {%- set num_as_int = num_trimmed | int(-999) -%} 
+                {%- if num_as_int > 0 and num_as_int <= (environment_list | length) -%}
+                  {%- set _ = result.append(environment_list[num_as_int - 1]) -%}
+                {%- endif -%}
+              {%- endfor -%}
+              {{ result | to_json }}
+            # Then, convert the JSON string to an actual Ansible list
+            selected_env: "{{ _selected_env_json_str | from_json }}"
+          when: 
+            - environment_selection.user_input | lower != 'all'
+            # Regex to ensure input is one or more digits, possibly comma-separated, allowing spaces
+            - environment_selection.user_input is regex('^\\s*\\d+\\s*(?:,\\s*\\d+\\s*)*$')
+      rescue:
+        - name: Fallback to first environment
+          ansible.builtin.set_fact:
+            selected_env: "{{ [environment_list[0]] }}"
+            
+        - name: Display fallback message
+          ansible.builtin.debug:
+            msg: "Menu selection failed, defaulting to first environment: {{ selected_env[0] }}"
+      
+    - name: Register selected_env existence
+      ansible.builtin.command: /bin/true
+      register: _env_check
+      changed_when: false
+      failed_when: false
 
-# 12. BUILD EXECUTION ENVIRONMENT - OPTIMIZED
-- name: Build execution environments
+    - name: Set default selected_env if needed
+      ansible.builtin.set_fact:
+        # Sets selected_env directly to the first environment or a default string "default"
+        selected_env: "{{ [environment_list[0] | default('default')] if environment_list is defined and environment_list | length > 0 else ['default'] }}"
+      # This condition checks if selected_env was not set, or was set to an empty list by previous steps.
+      # It relies on 'vars.selected_env' to avoid re-templating a potentially malformed string.
+      when: vars.selected_env is not defined or (vars.selected_env is list and vars.selected_env | length == 0)
+
+    - name: Use temporary variable if needed # This task might be redundant with the above change
+      ansible.builtin.set_fact:
+        selected_env: "{{ _temp_env }}" # _temp_env is not set by the modified task above
+      when: _temp_env is defined # This condition might need review based on whether _temp_env is still used/set
+
+    - name: Display selected environments
+      ansible.builtin.debug:
+        msg: "Selected environments: {{ selected_env | join(', ') }}"
+      when: selected_env is defined
+  tags: [environment, menu]
+
+# ==================== 6. PREPARE ENVIRONMENTS ==================== #
+
+- name: Prepare environment directories
+  block:
+    - name: Create and set permissions on environment directories
+      ansible.builtin.file:
+        path: "{{ working_dir }}/environments/{{ item }}"
+        state: directory
+        mode: "0777"
+        owner: "{{ lookup('env', 'USER') }}"
+        group: "{{ lookup('pipe', 'id -gn') }}"
+      loop: "{{ selected_env }}"
+      become: true
+    
+    - name: Copy selected environments to working directory
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/environments/{{ item }}/"
+        dest: "{{ working_dir }}/environments/{{ item }}/"
+        remote_src: yes
+      loop: "{{ selected_env }}"
+  tags: [environment, setup]
+
+- name: Install Galaxy collections
+  block:
+    - name: Install core Galaxy collections
+      ansible.builtin.command: "ansible-galaxy collection install {{ item }} --force"
+      register: galaxy_install
+      changed_when: galaxy_install.rc == 0
+      failed_when: false
+      loop:
+        - community.general
+        - ansible.posix
+        - ansible.utils
+      
+    - name: Create requirements template with safe collections
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/safe_requirements.yml"
+        content: |
+          ---
+          collections:
+            - name: ansible.utils
+            - name: ansible.posix
+            - name: community.general
+        mode: "0644"
+  tags: [setup, dependencies]
+
+# ==================== 7. FIX AND CONFIGURE ENVIRONMENTS ==================== #
+
+- name: Clean problematic collection references
+  block:
+    - name: Create global fix script
+      ansible.builtin.copy:
+        dest: "/tmp/ee-containers/fix_collections.sh"
+        content: |
+          #!/bin/bash
+          # Universal script to remove problematic collection references
+          PROBLEMATIC_COLLECTIONS=({{ problematic_collections | join(' ') }})
+          
+          cleanup_file() {
+            local file=$1
+            if [ -f "$file" ]; then
+              echo "Cleaning $file (no backup will be created)"
+              for coll in "${PROBLEMATIC_COLLECTIONS[@]}"; do
+                # Escape dots for sed basic regex
+                local sed_coll_pattern=$(echo "$coll" | sed 's/\./\\./g')
+                sed -i "/${sed_coll_pattern}/d" "$file"
+              done
+            fi
+          }
+          
+          # Clean project files
+          echo "INFO: Cleaning problematic collection references from YAML files in {{ playbook_dir }}"
+          find "{{ playbook_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
+            cleanup_file "$file"
+          done
+          
+          # Clean build directory files
+          if [ -d "{{ working_dir }}" ]; then
+            echo "INFO: Cleaning problematic collection references from YAML files in {{ working_dir }}"
+            find "{{ working_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
+              cleanup_file "$file"
+            done
+          fi
+          
+          # Create hooks for ansible-builder
+          mkdir -p "{{ working_dir }}/hooks"
+          cat > "{{ working_dir }}/hooks/pre-build-legacy-cleaner" << 'EOT'
+          #!/bin/bash
+          find . -name "*.yml" -type f | while read file; do
+            sed -i '/infra\.ansible/d' "$file" 
+            sed -i '/infra\.ansible_collections/d' "$file"
+          done
+          echo "Legacy pre-build hook complete"
+          exit 0
+          EOT
+          chmod +x "{{ working_dir }}/hooks/pre-build-legacy-cleaner"
+          
+          echo "All problematic collection references cleaned by global fix script."
+        mode: "0755"
+      
+    - name: Run global fix script
+      ansible.builtin.command: "/tmp/ee-containers/fix_collections.sh"
+      register: fix_result
+      changed_when: true
+  tags: [always, setup, dependencies]
+
+- name: Configure environment files
+  block:
+    - name: Create environment template and fix script
+      block:
+        - name: Create template execution-environment.yml
+          ansible.builtin.copy:
+            dest: "{{ working_dir }}/ee-template.yml"
+            content: |
+              ---
+              version: 3
+              
+              build_arg_defaults:
+                EE_BASE_IMAGE: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
+              
+              dependencies:
+                python:
+                  - ansible-runner<2.0.0
+                system:
+                  - python3-pip
+                  - python3-setuptools
+                  - krb5-devel
+              
+              options:
+                package_manager_path: /usr/bin/microdnf
+                container_init:
+                  package_manager_path: /usr/bin/microdnf 
+                galaxy:
+                  collections:
+                    pre_releases: true
+            mode: "0644"
+        
+        - name: Create environment fix script
+          ansible.builtin.copy:
+            dest: "{{ working_dir }}/fix_environments.sh"
+            content: |
+              #!/bin/bash
+              # Script to fix environment configuration files
+              
+              WORKING_DIR="{{ working_dir }}"
+              
+              for env in $@; do
+                echo "Processing environment: $env"
+                
+                # Fix base image references
+                if [ -f "${WORKING_DIR}/environments/$env/execution-environment.yml" ]; then
+                  sed -i 's/base_image:\s*:registry/base_image: registry/g' "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                  
+                  # Ensure pre_releases option is set
+                  if ! grep -q "pre_releases:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
+                    if grep -q "options:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
+                      if grep -q "galaxy:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
+                        if grep -q "collections:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
+                          sed -i '/collections:/a\      pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                        else
+                          sed -i '/galaxy:/a\      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml" 
+                        fi
+                      else
+                        sed -i '/options:/a\    galaxy:\n      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                      fi
+                    else
+                      echo -e "\noptions:\n  galaxy:\n    collections:\n      pre_releases: true" >> "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                    fi
+                  fi
+                  
+                  # Ensure dependencies section exists
+                  if ! grep -q "dependencies:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
+                    sed -i '1a\dependencies:\n  python:\n    - ansible-runner<2.0.0\n  system:\n    - python3-pip\n    - krb5-devel' "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                  fi
+                else
+                  # Create minimal execution-environment.yml if it doesn't exist
+                  cp "${WORKING_DIR}/ee-template.yml" "${WORKING_DIR}/environments/$env/execution-environment.yml"
+                fi
+                
+                # Create safe requirements.yml if needed
+                if [ ! -f "${WORKING_DIR}/environments/$env/requirements.yml" ] || [ ! -s "${WORKING_DIR}/environments/$env/requirements.yml" ]; then
+                  cp "/tmp/ee-containers/safe_requirements.yml" "${WORKING_DIR}/environments/$env/requirements.yml"
+                fi
+              done
+              
+              echo "Environment configuration complete"
+            mode: "0755"
+    
+    - name: Run environment fix script
+      ansible.builtin.command:
+        cmd: "{{ working_dir }}/fix_environments.sh {{ selected_env | join(' ') }}"
+      register: fix_env_files
+      changed_when: true
+    
+    - name: Fix collection requirements for pre-releases
+      ansible.builtin.copy:
+        dest: "{{ working_dir }}/fix_requirements_pre_releases.sh"
+        content: |
+          #!/bin/bash
+          # Fix requirements.yml to handle pre-release collections
+          
+          for env_dir in {{ working_dir }}/environments/*/; do
+            requirements_file="${env_dir}requirements.yml"
+            
+            if [ -f "$requirements_file" ]; then
+              echo "Fixing requirements in $requirements_file"
+              
+              # Remove problematic collections
+              sed -i '/infra\.ee_rekey_variables/d' "$requirements_file"
+              
+              # Ensure options section exists with pre_releases enabled
+              if ! grep -q "options:" "$requirements_file"; then
+                echo -e "\noptions:\n  pre_releases: true" >> "$requirements_file"
+              elif ! grep -q "pre_releases:" "$requirements_file"; then
+                sed -i '/options:/a\  pre_releases: true' "$requirements_file"
+              fi
+            fi
+          done
+          
+          echo "Requirements files updated for pre-releases"
+        mode: "0755"
+      
+    - name: Fix YAML syntax in execution environment files
+      block:
+        - name: Create YAML syntax fixer script
+          ansible.builtin.copy:
+            dest: "{{ working_dir }}/fix_yaml_syntax.sh"
+            content: |
+              #!/bin/bash
+              # Fix common YAML syntax errors in execution environment files
+              
+              process_yaml_file() {
+                local file=$1
+                echo "Processing YAML file: $file"
+                
+                # Create a backup
+                cp "$file" "${file}.bak"
+                
+                # Fix common YAML syntax errors
+                
+                # 1. Fix indentation issues (spaces after colons)
+                sed -i 's/:[^ ]/: /g' "$file"
+                
+                # 2. Fix double colons (common error)
+                sed -i 's/::/:/' "$file"
+                
+                # 3. Fix galaxy section which often has column 18 issues
+                sed -i 's/galaxy:[[:space:]]*collections:/galaxy:\n      collections:/' "$file"
+                
+                # 4. Fix package_manager_path which often has issues
+                sed -i 's/package_manager_path:[^ ]/package_manager_path: /' "$file"
+                
+                # 5. Remove trailing spaces
+                sed -i 's/[[:space:]]*$//' "$file"
+                
+                # Validate the fixed YAML
+                if command -v python3 > /dev/null; then
+                  if python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
+                    echo "✅ YAML syntax fixed successfully in $file"
+                    rm "${file}.bak"
+                  else
+                    echo "❌ YAML still invalid in $file, restoring backup"
+                    mv "${file}.bak" "$file"
+                    return 1
+                  fi
+                fi
+              }
+              
+              # Process all execution environment files
+              find {{ playbook_dir }}/environments -name "execution-environment.yml" -type f | while read -r yaml_file; do
+                process_yaml_file "$yaml_file"
+              done
+              
+              find {{ working_dir }}/environments -name "execution-environment.yml" -type f | while read -r yaml_file; do
+                process_yaml_file "$yaml_file"
+              done
+              
+              echo "YAML syntax fixing complete"
+              exit 0
+            mode: "0755"
+        
+        - name: Run YAML syntax fixer
+          ansible.builtin.command: "{{ working_dir }}/fix_yaml_syntax.sh"
+          register: yaml_fix_result
+          changed_when: true
+          
+        - name: Display YAML fix results
+          ansible.builtin.debug:
+            msg: "YAML syntax check and fixes applied to execution environment files"
+      tags: [setup, environment]
+  tags: [environment, setup]
+
+- name: Synchronize environment fixes
+  block:
+    - name: Create sync script
+      ansible.builtin.copy:
+        dest: "{{ working_dir }}/sync_all_environments.sh"
+        content: |
+          #!/bin/bash
+          # Synchronize fixes across all environment directories
+          
+          PLAYBOOK_DIR="{{ playbook_dir }}"
+          WORKING_DIR="{{ working_dir }}"
+          
+          # Process all selected environments
+          for env in $@; do
+            echo "========== Synchronizing environment: $env =========="
+            
+            # Define all possible directory locations
+            DIRS=(
+              "${PLAYBOOK_DIR}/environments/${env}"
+              "${PLAYBOOK_DIR}/example_environments/${env}"
+              "/ee-containers/environments/${env}"
+            )
+            
+            # Source directory with our fixed files
+            SOURCE_DIR="${WORKING_DIR}/environments/${env}"
+            
+            for TARGET_DIR in "${DIRS[@]}"; do
+              if [ "$TARGET_DIR" != "$SOURCE_DIR" ] && [ -d "$TARGET_DIR" ]; then
+                echo "Syncing fixes to: $TARGET_DIR"
+                
+                # Handle all config files
+                for config_file in execution-environment.yml requirements.yml bindep.txt requirements.txt; do
+                  if [ -f "${SOURCE_DIR}/${config_file}" ]; then
+                    echo "  - Copying fixed ${config_file}"
+                    cp -f "${SOURCE_DIR}/${config_file}" "${TARGET_DIR}/${config_file}"
+                  fi
+                done
+              fi
+            done
+          done
+          
+          echo "All environments synchronized successfully"
+        mode: "0755"
+      
+    - name: Execute environment sync script
+      ansible.builtin.command:
+        cmd: "{{ working_dir }}/sync_all_environments.sh {{ selected_env | join(' ') }}"
+      register: sync_result
+      changed_when: true
+      
+    - name: Ensure all directories have correct permissions
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ lookup('env', 'USER') }}"
+        group: "{{ lookup('pipe', 'id -gn') }}"
+        mode: "0755"
+        recurse: true
+      loop:
+        - "/tmp/ee-containers/environments"
+        - "{{ playbook_dir }}/environments"
+        - "{{ playbook_dir }}/example_environments"
+      become: true
+      ignore_errors: true
+  tags: [environment, setup, sync]
+
+# ==================== 8. BUILD SETUP AND EXECUTION ==================== #
+
+- name: Setup build environment
+  block:
+    - name: Create build hooks
+      ansible.builtin.copy:
+        dest: "{{ working_dir }}/hooks/pre-build"
+        content: |
+          #!/bin/bash
+          #
+          # pre-build hook for ansible-builder
+          #
+          set -e
+          
+          echo "INFO: Running pre-build hook to clean requirements.yml files..."
+          
+          # Define collections to remove from requirements.yml files.
+          declare -a COLLECTIONS_TO_REMOVE=(
+              # Collections to filter would go here
+          )
+          
+          # Process requirements.yml files
+          find . -name "requirements.yml" -type f -print0 | while IFS= read -r -d $'\0' requirements_file; do
+              echo "INFO: Processing requirements file: ${requirements_file}"
+              
+              # Process problematic patterns
+              temp_file=$(mktemp)
+              cp "${requirements_file}" "${temp_file}"
+              
+              # Remove problematic collections and add pre_releases if needed
+              sed -i '/infra\.ee_rekey_variables/d' "${temp_file}"
+              
+              # Add pre_releases option if not present
+              if ! grep -q "pre_releases:" "${temp_file}"; then
+                  if grep -q "options:" "${temp_file}"; then
+                      sed -i '/options:/a\  pre_releases: true' "${temp_file}"
+                  else
+                      echo -e "\noptions:\n  pre_releases: true" >> "${temp_file}"
+                  fi
+              fi
+              
+              # Update requirements file
+              mv "${temp_file}" "${requirements_file}"
+          done
+          
+          # Update Containerfile for compatibility fixes
+          if [ -f "Containerfile" ]; then
+            if ! grep -q "krb5-devel" Containerfile; then
+              echo "Adding Kerberos dependencies to Containerfile"
+              sed -i '/^FROM /a RUN if command -v microdnf > /dev/null; then microdnf install -y krb5-devel; elif command -v dnf > /dev/null; then dnf install -y krb5-devel; elif command -v yum > /dev/null; then yum install -y krb5-devel; fi' Containerfile
+            fi
+          fi
+          
+          echo "INFO: Pre-build hook script finished successfully."
+          exit 0
+        mode: "0755"
+    
+    - name: Setup tmux monitoring session
+      block:
+        - name: Kill existing tmux session if it exists
+          ansible.builtin.shell: tmux has-session -t ansible_build 2>/dev/null && tmux kill-session -t ansible_build || true
+          changed_when: false
+          ignore_errors: true
+          
+        - name: Create tmux monitoring session
+          ansible.builtin.shell: |
+            # Create session with split view
+            tmux new-session -d -s ansible_build
+            tmux rename-window -t ansible_build:0 'EE Builder'
+            tmux split-window -h -t ansible_build:0
+            
+            # Configure monitoring pane
+            tmux send-keys -t ansible_build:0.1 'echo -e "\n\033[1;36m============== CONTAINER IMAGE MONITOR ==============\033[0m\n"' C-m
+            tmux send-keys -t ansible_build:0.1 'watch -n 1 "echo -e \"\033[1;36m=== CONTAINER IMAGES ===\033[0m\n\"; podman images; echo -e \"\n\033[1;33m=== BUILD PROCESSES ===\033[0m\n\"; ps -ef | grep -E \"ansible-builder|buildah|podman\" | grep -v grep"' C-m
+            
+            # Setup builder pane
+            tmux send-keys -t ansible_build:0.0 'echo -e "\033[1;33m========= EE BUILDER EXECUTION =========\033[0m"' C-m
+            tmux send-keys -t ansible_build:0.0 'echo "EE Builder starting for environments: {{ selected_env | join(", ") }}"' C-m
+          register: tmux_setup
+          changed_when: tmux_setup.rc == 0
+          
+        - name: Launch terminal with tmux session
+          ansible.builtin.shell: |
+            if command -v gnome-terminal &>/dev/null; then
+              gnome-terminal -- bash -c "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
+            elif command -v xterm &>/dev/null; then
+              xterm -e "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
+            fi
+          async: 10
+          poll: 0
+          ignore_errors: true
+          when: ansible_connection == 'local'
+          
+        - name: Display tmux connection instructions
+          ansible.builtin.debug:
+            msg: |
+              Tmux monitoring session created!
+              
+              To connect to this session:
+                tmux attach-session -t ansible_build
+              
+              To detach from the session once connected: 
+                Press Ctrl+b, then d
+      tags: [monitoring]
+  tags: [build, setup]
+
+- name: Execute builds
   block:
     - name: Check for existing images
       ansible.builtin.command:
         cmd: "podman images -q {{ item }}"
       register: image_exists
       changed_when: false
+      become: true
       loop: "{{ selected_env }}"
       
-    - name: Create build hooks
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/hooks/pre-build"
-        content: |
-          #!/bin/bash
-          echo "Running pre-build hook..."
-
-          # Define collections to remove from requirements.yml files.
-          # add it to this list. For example:
-
-          # Find all requirements.yml files in the build context
-          find . -name "requirements.yml" -type f -print0 | while IFS= read -r -d $'\0' file_path; do
-            echo "Processing $file_path to remove specified collections..."
-            # Create a temporary file for sed operations to avoid issues with -i and loops
-            temp_file=$(mktemp) || { echo "Failed to create temp file"; exit 1; }
-            cp "$file_path" "$temp_file"
-
-            for coll_name in "${COLLECTIONS_TO_REMOVE[@]}"; do
-              # Escape dots for sed basic regex. Ansible collection names use dots.
-              # Escape slashes too, just in case, though unlikely for collection names.
-              sed_pattern=$(echo "$coll_name" | sed -e 's/\./\\./g' -e 's/\//\\\//g')
-
-              # Remove lines matching common YAML formats for collections:
-              # - collection_name
-              # - name: collection_name
-              # This targets lines that primarily define the collection by its name.
-              # It's designed to be relatively safe but might need adjustment for very complex requirements.yml structures.
-              sed -i -e "/^\s*-\s*${sed_pattern}\s*$/d" \
-                     -e "/^\s*-\s*name:\s*${sed_pattern}\s*$/d" \
-                     -e "/^\s*-\s*{\s*name:\s*['\"]*${sed_pattern}['\"]*\s*[,}]/d" \
-                     -e "/^\s*${sed_pattern}\s*$/d" \
-                     "$temp_file"
-            done
-            # Overwrite the original file with the cleaned version
-            mv "$temp_file" "$file_path"
-          done
-
-          # Update Containerfile if it exists (example: ensure ansible-runner is installed)
-          if [ -f "Containerfile" ]; then
-            if ! grep -q "ansible-runner" Containerfile; then
-              echo "Adding ansible-runner installation to Containerfile"
-              # Add after FROM, ensure pip is available
-              sed -i '/^FROM /a RUN if command -v pip3 > /dev/null; then pip3 install --upgrade pip setuptools && pip3 install --upgrade ansible-runner>=2.3.1; elif command -v pip > /dev/null; then pip install --upgrade pip setuptools && pip install --upgrade ansible-runner>=2.3.1; else echo "Warning: pip not found, cannot install ansible-runner"; fi' Containerfile
-            fi
-          fi
-
-          echo "Pre-build hook complete."
-        mode: "0755"
-        
-    - name: Create ansible-builder pre-build hook script
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/hooks/pre-build"
-        content: |
-          {% raw %}
-          #!/bin/bash
-          #
-          # pre-build hook for ansible-builder
-          #
-          # This script is executed in the build context directory before the main
-          # ansible-builder build steps (like installing collections).
-          # Its primary purpose here is to remove problematic or unwanted collections
-          # from any requirements.yml files found in the build context.
-
-          set -e # Exit immediately if a command exits with a non-zero status.
-
-          echo "INFO: Running pre-build hook to clean requirements.yml files..."
-
-          # --- Configuration: Collections to Remove ---
-          # Add any collections that should be removed from requirements.yml files to this array.
-          # ensure it is listed here.
-          # Format: ("namespace.collection_name" "another.collection")
-          declare -a COLLECTIONS_TO_REMOVE=(
-              # Add other collections as needed
-          )
-
-          if [ ${#COLLECTIONS_TO_REMOVE[@]} -eq 0 ]; then
-              echo "INFO: No collections specified in COLLECTIONS_TO_REMOVE. Skipping requirements.yml cleaning."
-          else
-              echo "INFO: Will attempt to remove the following collections from requirements.yml files:"
-              for coll_name in "${COLLECTIONS_TO_REMOVE[@]}"; do
-                  echo "  - ${coll_name}"
-              done
-
-              find . -name "requirements.yml" -type f -print0 | while IFS= read -r -d $'\0' requirements_file; do
-                  echo "INFO: Processing requirements file: ${requirements_file}"
-                  
-                  temp_file=$(mktemp)
-                  if [ -z "$temp_file" ]; then
-                      echo "ERROR: Failed to create a temporary file. Exiting." >&2
-                      exit 1
-                  fi
-                  cp "${requirements_file}" "${temp_file}"
-
-                  for coll_name in "${COLLECTIONS_TO_REMOVE[@]}"; do
-                      sed_pattern=$(echo "${coll_name}" | sed -e 's/\./\\./g' -e 's/\//\\\//g' -e 's/\[/\\[/g' -e 's/\]/\\]/g' -e 's/\*/\\*/g')
-                      
-                      sed -i "/^\s*${sed_pattern}\s*$/d" "${temp_file}"
-                      sed -i "/^\s*-\s*${sed_pattern}\s*$/d" "${temp_file}"
-                      sed -i "/^\s*-\s*name:\s*['\"]*${sed_pattern}['\"]*\s*$/d" "${temp_file}"
-                      sed -i "/^\s*-\s*{\s*name:\s*['\"]*${sed_pattern}['\"]*.*}/d" "${temp_file}"
-                  done
-
-                  mv "${temp_file}" "${requirements_file}"
-                  echo "INFO: Finished processing ${requirements_file}."
-              done
-          fi
-
-          echo "INFO: Pre-build hook script finished successfully."
-          exit 0
-          {% endraw %}
-        mode: "0755"
-        
     - name: Run ansible-builder for each environment
       ansible.builtin.shell: |
         export REGISTRY_AUTH_FILE={{ authfile }}
@@ -758,31 +871,33 @@
       when: build_started.changed
   tags: [build]
 
-# 13. VERIFY BUILD RESULTS & CLEANUP
+# ==================== 9. POST-BUILD TASKS ==================== #
+
 - name: Verify build results and cleanup
   block:
     - name: Check built images
-      ansible.builtin.command:
-        cmd: "podman images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>'"
+      ansible.builtin.shell: |
+        podman images --format {% raw %}'{{.Repository}}:{{.Tag}}'{% endraw %} | grep -v '<none>'
       register: final_images
       changed_when: false
       
-    - name: Remove dangling images (generic prune)
-      ansible.builtin.shell: |
-        podman image prune -f
-      register: dangling_removal_prune
-      changed_when: dangling_removal_prune.stdout != "" # Changed if prune actually removed something
-      failed_when: false # Don't fail the playbook if prune fails or does nothing
-      become: true
-      when: cleanup_enabled | default(true)
-      
-    - name: Remove <none> tagged images explicitly
-      ansible.builtin.shell: |
-        podman image ls -a | grep '<none>' | awk '{print $3}' | xargs --no-run-if-empty podman rmi -f
-      register: none_image_removal
-      changed_when: "'deleted' in none_image_removal.stdout or 'untagged' in none_image_removal.stdout" # More specific change detection
-      failed_when: false # Don't fail the playbook if this step fails (e.g., no <none> images)
-      become: true
+    - name: Cleanup build artifacts
+      block:
+        - name: Remove dangling images
+          ansible.builtin.shell: |
+            podman image prune -f
+          register: dangling_removal
+          changed_when: dangling_removal.stdout != ""
+          failed_when: false
+          become: true
+          
+        - name: Remove <none> tagged images explicitly
+          ansible.builtin.shell: |
+            podman image ls -a | grep '<none>' | awk '{print $3}' | xargs --no-run-if-empty podman rmi -f
+          register: none_image_removal
+          changed_when: "'deleted' in none_image_removal.stdout or 'untagged' in none_image_removal.stdout"
+          failed_when: false
+          become: true
       when: cleanup_enabled | default(true)
       
     - name: Display build results
@@ -799,61 +914,153 @@
           {% endfor %}
   tags: [cleanup, build]
 
-# 14. GENERATE HTML REPORT
 - name: Generate build report
   block:
     - name: Create report directory
       ansible.builtin.file:
         path: "{{ playbook_dir }}/reports"
         state: directory
-        mode: '0755'  # <--- Permissions are already set to 0755
+        mode: '0755'
       
-    - name: Gather system information for report
-      ansible.builtin.shell: |
-        echo "$(whoami)@$(hostname)" # User and hostname
-      register: system_info
-      changed_when: false
-      
-    - name: Get podman image details
-      ansible.builtin.shell: |
-        podman images --format '{"Repository":"{{.Repository}}","Tag":"{{.Tag}}","ID":"{{.ID}}","Size":"{{.Size}}","Created":"{{.CreatedAt}}"}' | jq -s .
-      register: podman_images_json
-      changed_when: false
-      ignore_errors: true
-      
-    - name: Get today's date
-      ansible.builtin.shell: |
-        date '+%Y-%m-%d'
-      register: today_date
-      changed_when: false
-      
-    - name: Generate HTML report
-      ansible.builtin.template:
-        src: "{{ playbook_dir }}/roles/ee-builder/templates/report_template.html.j2"
-        dest: "{{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html"
-      ignore_errors: true
-      
-    - name: Show report location
-      ansible.builtin.debug:
-        msg: |
-          HTML Report has been generated!
+    - name: Gather system and image information
+      block:
+        - name: Get system information
+          ansible.builtin.shell: |
+            echo "$(whoami)@$(hostname)"
+          register: system_info
+          changed_when: false
           
-          You can view it at: {{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html
+        - name: Get podman image details
+          ansible.builtin.shell: |
+            podman images --format '{"Repository":"{{.Repository}}","Tag":"{{.Tag}}","ID":"{{.ID}}","Size":"{{.Size}}","Created":"{{.CreatedAt}}"}' | jq -s .
+          register: podman_images_json
+          changed_when: false
+          ignore_errors: true
       
-    - name: Open HTML report in browser if X is available
-      ansible.builtin.shell: |
-        if [ -n "$DISPLAY" ]; then
-          for cmd in xdg-open firefox chromium-browser google-chrome; do
-            if command -v $cmd > /dev/null; then
-              $cmd "{{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html" &> /dev/null &
-              echo "Opened report using $cmd"
-              break
+    - name: Generate and display report
+      block:
+        - name: Generate HTML report
+          ansible.builtin.template:
+            src: "{{ playbook_dir }}/roles/ee-builder/templates/report_template.html.j2"
+            dest: "{{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html"
+          ignore_errors: true
+          
+        - name: Show report location
+          ansible.builtin.debug:
+            msg: |
+              HTML Report has been generated!
+              
+              You can view it at: {{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html
+          
+        - name: Open HTML report in browser
+          ansible.builtin.shell: |
+            if [ -n "$DISPLAY" ]; then
+              for cmd in xdg-open firefox chromium-browser google-chrome; do
+                if command -v $cmd > /dev/null; then
+                  $cmd "{{ playbook_dir }}/reports/ee-build-report-{{ timestamp }}.html" &> /dev/null &
+                  break
+                fi
+              done
             fi
-          done
-        else
-          echo "No X server detected. Please open the report manually."
-        fi
-      async: 10
-      poll: 0
-      ignore_errors: true
+          async: 10
+          poll: 0
+          ignore_errors: true
   tags: [report]
+
+- name: Fix execution environment file errors
+  block:
+    - name: Create repair script for execution-environment.yml files
+      ansible.builtin.copy:
+        dest: "{{ working_dir }}/fix_ee_files.sh"
+        content: |
+          #!/bin/bash
+          # Fix common errors in execution-environment.yml files
+          
+          fix_file() {
+            local file="$1"
+            echo "Fixing file: $file"
+            
+            # Create a backup
+            cp "$file" "${file}.bak"
+            
+            # 1. Move galaxy pre_releases from options to build_arg_defaults
+            if grep -q "options:" "$file" && grep -q "galaxy:" "$file" && grep -q "pre_releases:" "$file"; then
+              # Remove galaxy section from options
+              sed -i '/options:/,/^[^ ]/ {
+                /galaxy:/,/pre_releases:/ {
+                  /pre_releases:/d
+                  /collections:/d
+                  /galaxy:/d
+                }
+              }' "$file"
+              
+              # Add --pre flag to ANSIBLE_GALAXY_CLI_COLLECTION_OPTS
+              if grep -q "ANSIBLE_GALAXY_CLI_COLLECTION_OPTS:" "$file"; then
+                sed -i 's/ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: .*/ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--pre"/' "$file"
+              else
+                # If build_arg_defaults exists, add to it
+                if grep -q "build_arg_defaults:" "$file"; then
+                  sed -i '/build_arg_defaults:/a\  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--pre"' "$file"
+                else
+                  # Otherwise create the section
+                  sed -i '1a\build_arg_defaults:\n  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: "--pre"' "$file"
+                fi
+              fi
+            fi
+            
+            # 2. Fix space after colon for base image name if needed
+            sed -i 's/: atest/:latest/g' "$file"
+            
+            # 3. Fix indentation issues in dependencies section
+            if grep -q "galaxy: requirements.yml" "$file" && grep -q "collections:" "$file"; then
+              # Fix improper indentation of collections under galaxy
+              sed -i '/dependencies:/,/^[^ ]/ {
+                /galaxy: requirements.yml/,/^[ ]*[^ ]/ {
+                  s/^      collections:/  galaxy: requirements.yml/
+                  /pre_releases:/d
+                }
+              }' "$file"
+            fi
+            
+            # 4. Validate YAML syntax
+            if command -v python3 &>/dev/null; then
+              if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
+                echo "YAML still invalid in $file, restoring backup"
+                cp "${file}.bak" "$file"
+                return 1
+              else
+                echo "✅ YAML validation successful for $file"
+              fi
+            fi
+            
+            echo "Fixed $file"
+          }
+          
+          # Find and fix all execution environment files
+          find {{ playbook_dir }}/environments -name "execution-environment.yml" -type f | while read -r ee_file; do
+            fix_file "$ee_file"
+          done
+          
+          find {{ working_dir }}/environments -name "execution-environment.yml" -type f | while read -r ee_file; do
+            fix_file "$ee_file"
+          done
+          
+          echo "All execution environment files fixed"
+        mode: "0755"
+      
+    - name: Run repair script
+      ansible.builtin.command: "{{ working_dir }}/fix_ee_files.sh"
+      register: fix_result
+      changed_when: true
+  tags: [setup, fix_yaml]
+
+- name: Debug environment variables
+  ansible.builtin.debug:
+    msg: |
+      Environment directories: {{ environment_directories | default([]) }}
+      Selected environments: {{ selected_env | default([]) }}
+  when: 
+    - environment_directories is defined or selected_env is defined
+    - ansible_verbosity > 0  # Only show when running with -v or higher
+  tags: [debug]
+  ignore_errors: true

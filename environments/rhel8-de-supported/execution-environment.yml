@@ -21,6 +21,8 @@ dependencies:
   ansible_runner:
     package_pip: ansible-runner
   galaxy: requirements.yml
+      collections:
+        pre_releases: true
   python: requirements.txt
   system: bindep.txt
 

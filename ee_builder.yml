@@ -1,8 +1,13 @@
 ---
 - name: Build Execution Environment
   hosts: localhost
-  connection: local  # Add this line to use direct local connection instead of SSH
+  connection: local
   gather_facts: false
+
+  vars:
+    environment_directories:  # Use consistent naming
+      - path: /tmp/ee-containers/environments/default
+        mode: "0777"
 
   tasks:
     # 1. LOAD EXISTING CREDENTIALS IF AVAILABLE
@@ -117,7 +122,32 @@
         - { path: "/tmp/ee-containers/hooks" }
         - { path: "/tmp/ee-containers/containerfiles" }
 
-    # 5. Include the ee-builder role
+    - name: Create and set permissions on environment directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode | default('0755') }}"
+      loop: "{{ environment_directories | default([]) }}"
+      when: environment_directories | default([]) | length > 0
+
+    # 5. Debug environment_directories before including the role
+    - name: Debug environment_directories before role
+      ansible.builtin.debug:
+        var: environment_directories
+
+    # 6. Set default selected environments
+    - name: Set default selected environments
+      ansible.builtin.set_fact:
+        selected_env: ["default"]  # Use the directory name from environment_directories
+
+    - name: Debug selected environments
+      ansible.builtin.debug:
+        var: selected_env
+
+    # 7. Include the ee-builder role
     - name: Include the ee-builder role
       ansible.builtin.include_role:
         name: ee-builder
+      vars:
+        environment_directories: "{{ environment_directories }}"
+        selected_env: "{{ selected_env }}"

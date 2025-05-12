@@ -2,7 +2,7 @@
 version: 3
 
 build_arg_defaults:
-  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--ignore-errors'
+  ANSIBLE_GALAXY_CLI_COLLECTION_OPTS: '--pre --ignore-errors'
   ANSIBLE_GALAXY_CLI_ROLE_OPTS: '--ignore-errors'
   PKGMGR_PRESERVE_CACHE: 'false'
 
@@ -24,8 +24,10 @@ dependencies:
   ansible_core:
     package_pip: ansible-core>=2.13.10
   ansible_runner:
-    package_pip: ansible-runner>=2.4.0
+    package_pip: ansible-runner<2.0.0  # Fixed for Python 3.6 compatibility
   galaxy: requirements.yml
+      collections:
+        pre_releases: true
   python: requirements.txt
   system: bindep.txt
 
