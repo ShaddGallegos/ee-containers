@@ -12,8 +12,9 @@ EE-Containers is an Ansible role designed to simplify and streamline the creatio
 
 ## Requirements
 
-* Ansible 2.12 or higher
-* Podman 3.0 or higher
+* ansible-core 2.12 or higher
+* podman 3.0 or higher
+* podman-docker
 * ansible-builder 3.0 or higher
 * Red Hat registry credentials (for accessing base images)
 * Internet connectivity for downloading dependencies
@@ -157,3 +158,96 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+
+# EE Containers - Ansible Execution Environments Builder
+
+## Task Order Reference
+- Initialization:
+  - Initialize critical variables
+- System Setup:
+  - Ensure required system packages are installed
+  - Ensure required directories exist
+- Authentication:
+  - Check if credentials file exists
+  - Load credentials from file if it exists
+  - Prompt for Red Hat CDN username
+  - Prompt for Red Hat CDN password
+  - Save credentials to file
+  - Generate token for Automation Hub
+  - Ensure container registry authentication is configured
+- Network Validation
+- Environment Selection
+- Environment Preparation
+- Fix and Configure Environments:
+  - Create repair script for execution-environment.yml files
+  - Run fix script
+- Build Monitoring:
+  - Launch tmux session for build monitoring
+- Build Execution:
+  - Check for existing images
+  - Run ansible-builder for each environment
+- Post-Build Tasks
+- Final Cleanup
+
+## Variables Reference
+
+### Initialization
+- `playbook_dir`: Current playbook directory path
+- `timestamp`: Dynamically generated timestamp
+- `user_home`: User's home directory
+- `container_registries`: Container registries to authenticate with
+- `authfile`: Container registry authentication file
+- `working_dir`: Base working directory
+- `problematic_collections`: List of problematic collections to exclude
+- `rh_username`: Red Hat username from environment variable
+- `rh_password`: Red Hat password from environment variable
+
+### System Setup
+- Registry configurations
+- Base images for EE/DE environments
+  - Note: There are typos in image names: "ee-supprted-rhel9" and "de-supprted-rhel9" should be "ee-supported-rhel9" and "de-supported-rhel9"
+- Various path configurations
+
+### Authentication
+- Red Hat credentials management
+
+### Environment Preparation
+- Environment-specific configurations
+- Build configurations
+
+### Build Monitoring
+- tmux session configurations
+
+### Build Execution
+- Template configurations
+- Requirements management
+
+## Role Tags
+- `setup`: Initial setup tasks
+- `dependencies`: Installing required dependencies
+- `environment`: Environment configuration tasks
+- `authentication`: Registry authentication tasks
+- `build`: Core build tasks
+- `monitoring`: Build monitoring tasks
+- `cleanup`: Cleanup tasks
+- `always`: Tasks that always run
+
+## Usage Examples
+
+### Basic Usage
+```yaml
+- hosts: localhost
+  roles:
+    - role: ee-builder
+```
+
+### Usage with Selected Environment
+```yaml
+- hosts: localhost
+  vars:
+    selected_env:
+      - rhel9-ee-minimal-general
+  roles:
+    - role: ee-builder
+```

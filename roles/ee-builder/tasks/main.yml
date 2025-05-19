@@ -6,3 +6,63 @@
   ansible.builtin.import_tasks: build_environment.yml
   tags:
     - build
+
+- name: Initialize environment
+  ansible.builtin.import_tasks: initialize.yml
+  tags:
+    - initialize
+    - setup
+
+- name: Setup system requirements
+  ansible.builtin.import_tasks: system_setup.yml
+  tags:
+    - setup
+
+- name: Setup authentication
+  ansible.builtin.import_tasks: authentication.yml
+  tags:
+    - auth
+    - setup
+
+- name: Validate network connectivity
+  ansible.builtin.import_tasks: network_validation.yml
+  tags:
+    - network
+    - setup
+
+- name: Select environment
+  ansible.builtin.import_tasks: environment_selection.yml
+  tags:
+    - environment
+
+- name: Prepare environment
+  ansible.builtin.import_tasks: environment_preparation.yml
+  tags:
+    - environment
+
+- name: Fix and configure environment
+  ansible.builtin.import_tasks: fix_and_configure.yml
+  tags:
+    - config
+
+- name: Set up build monitoring
+  ansible.builtin.import_tasks: build_monitoring.yml
+  tags:
+    - build
+    - monitor
+
+- name: Execute build process
+  ansible.builtin.import_tasks: build_execution.yml
+  tags:
+    - build
+
+- name: Run post-build tasks
+  ansible.builtin.import_tasks: post_build.yml
+  tags:
+    - build
+    - post
+
+- name: Clean up after build
+  ansible.builtin.import_tasks: final_cleanup.yml
+  tags:
+    - cleanup

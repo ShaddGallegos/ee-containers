@@ -1,0 +1,58 @@
+# filepath: /home/sgallego/Downloads/GIT/ee-containers/roles/ee-builder/tasks/authentication.yml
+---
+# Authentication tasks for the ee-builder role
+
+- name: Check if credentials file exists
+  ansible.builtin.stat:
+    path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+  register: config_file_stat
+
+- name: Load credentials from file if it exists
+  ansible.builtin.include_vars:
+    file: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+    name: redhat_credentials
+  when: config_file_stat.stat.exists
+
+- name: Prompt for Red Hat CDN username
+  ansible.builtin.vars_prompt:
+    name: rh_username
+    prompt: "Enter your Red Hat CDN username"
+  when: not config_file_stat.stat.exists
+
+- name: Prompt for Red Hat CDN password
+  ansible.builtin.vars_prompt:
+    name: rh_password
+    prompt: "Enter your Red Hat CDN password"
+    private: yes
+  when: not config_file_stat.stat.exists
+
+- name: Save credentials to file
+  ansible.builtin.copy:
+    dest: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
+    content: |
+      rh_username: "{{ rh_username }}"
+      rh_password: "{{ rh_password }}"
+    mode: "0600"
+  when: not config_file_stat.stat.exists
+
+- name: Generate token for Automation Hub
+  ansible.builtin.shell: |
+    curl -s -u "{{ rh_username }}:{{ rh_password }}" \
+      -X GET "https://console.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token" \
+      -d "grant_type=client_credentials" \
+      -d "client_id=automation-hub" \
+      -o "{{ authfile }}"
+  become: true
+  no_log: true
+  tags: [authentication, registry]
+
+- name: Ensure container registry authentication is configured
+  ansible.builtin.shell: |
+    podman login {{ item }}
+    --username "{{ rh_username }}"
+    --password "{{ rh_password }}"
+    --authfile "{{ authfile }}"
+  loop: "{{ container_registries }}"
+  become: true
+  no_log: true
+  tags: [authentication, registry]

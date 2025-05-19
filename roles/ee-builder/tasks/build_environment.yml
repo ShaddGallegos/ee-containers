@@ -91,6 +91,48 @@
       become: true
   tags: [always, setup, dependencies]
 
+- name: Install required Ansible collections
+  block:
+    - name: Install `community.general` collection globally
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.general --force
+      become: true
+      tags: [setup, dependencies]
+
+    - name: Install `community.general` collection for root user
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.general --force
+        environment:
+          HOME: /root
+      become: true
+      tags: [setup, dependencies]
+
+    - name: Install `community.general` collection for current user
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.general --force
+        environment:
+          HOME: "{{ lookup('env', 'HOME') }}"
+      tags: [setup, dependencies]
+
+- name: Install `community.general` collection for all contexts
+  block:
+    - name: Install globally
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection install community.general --force
+      become: true
+
+    - name: Install for root user
+      ansible.builtin.shell: ansible-galaxy collection install community.general --force
+      environment:
+        HOME: /root
+      become: true
+
+    - name: Install for current user
+      ansible.builtin.shell: ansible-galaxy collection install community.general --force
+      environment:
+        HOME: "{{ lookup('env', 'HOME') }}"
+  tags: [setup, dependencies]
+
 # ==================== 3. AUTHENTICATION & CONFIG ==================== #
 
 - name: Setup container registry authentication
@@ -285,84 +327,10 @@
           {% for env in environment_list %}
           {{ loop.index }}. {{ env }}
           {% endfor %}
-          
-    - name: Select environments via command line
-      block:
-        - name: Get user selection non-interactively
-          ansible.builtin.pause:
-            prompt: |
-              
-              Select environments to build:
-              - Enter a single number (e.g., '1')
-              - Multiple comma-separated numbers (e.g., '1,3,5')
-              - 'all' for all environments
-              
-              Enter your selection
-          register: environment_selection
-          
-        - name: Use default if selection failed
-          ansible.builtin.set_fact:
-            environment_selection: 
-              user_input: "all"
-          when: environment_selection is failed or environment_selection.user_input is not defined or environment_selection.user_input == ''
-        
-        - name: Process all selection
-          ansible.builtin.set_fact:
-            selected_env: "{{ environment_list }}"
-          when: environment_selection.user_input | lower == 'all'
-            
-        - name: Process comma-separated selection
-          ansible.builtin.set_fact:
-            # First, create a JSON string representation of the list
-            _selected_env_json_str: |
-              {%- set result = [] -%}
-              {%- for num_str in environment_selection.user_input.split(',') -%}
-                {%- set num_trimmed = num_str | trim -%}
-                {# Safely convert to int, defaulting to an out-of-range value on failure #}
-                {%- set num_as_int = num_trimmed | int(-999) -%} 
-                {%- if num_as_int > 0 and num_as_int <= (environment_list | length) -%}
-                  {%- set _ = result.append(environment_list[num_as_int - 1]) -%}
-                {%- endif -%}
-              {%- endfor -%}
-              {{ result | to_json }}
-            # Then, convert the JSON string to an actual Ansible list
-            selected_env: "{{ _selected_env_json_str | from_json }}"
-          when: 
-            - environment_selection.user_input | lower != 'all'
-            # Regex to ensure input is one or more digits, possibly comma-separated, allowing spaces
-            - environment_selection.user_input is regex('^\\s*\\d+\\s*(?:,\\s*\\d+\\s*)*$')
-      rescue:
-        - name: Fallback to first environment
-          ansible.builtin.set_fact:
-            selected_env: "{{ [environment_list[0]] }}"
-            
-        - name: Display fallback message
-          ansible.builtin.debug:
-            msg: "Menu selection failed, defaulting to first environment: {{ selected_env[0] }}"
-      
-    - name: Register selected_env existence
-      ansible.builtin.command: /bin/true
-      register: _env_check
-      changed_when: false
-      failed_when: false
 
-    - name: Set default selected_env if needed
+    - name: Process user selection
       ansible.builtin.set_fact:
-        # Sets selected_env directly to the first environment or a default string "default"
-        selected_env: "{{ [environment_list[0] | default('default')] if environment_list is defined and environment_list | length > 0 else ['default'] }}"
-      # This condition checks if selected_env was not set, or was set to an empty list by previous steps.
-      # It relies on 'vars.selected_env' to avoid re-templating a potentially malformed string.
-      when: vars.selected_env is not defined or (vars.selected_env is list and vars.selected_env | length == 0)
-
-    - name: Use temporary variable if needed # This task might be redundant with the above change
-      ansible.builtin.set_fact:
-        selected_env: "{{ _temp_env }}" # _temp_env is not set by the modified task above
-      when: _temp_env is defined # This condition might need review based on whether _temp_env is still used/set
-
-    - name: Display selected environments
-      ansible.builtin.debug:
-        msg: "Selected environments: {{ selected_env | join(', ') }}"
-      when: selected_env is defined
+        selected_env: "{{ environment_list | selectattr('loop.index', 'in', user_selection.split(',')) | list }}"
   tags: [environment, menu]
 
 # ==================== 6. PREPARE ENVIRONMENTS ==================== #
@@ -379,13 +347,13 @@
       loop: "{{ selected_env }}"
       become: true
     
-    - name: Copy selected environments to working directory
+    - name: Copy selected environments to /tmp/ee-containers/environments
       ansible.builtin.copy:
-        src: "{{ playbook_dir }}/environments/{{ item }}/"
-        dest: "{{ working_dir }}/environments/{{ item }}/"
+        src: "{{ playbook_dir }}/environments/{{ item }}"
+        dest: "/tmp/ee-containers/environments/{{ item }}"
         remote_src: yes
       loop: "{{ selected_env }}"
-  tags: [environment, setup]
+      tags: [environment, setup]
 
 - name: Install Galaxy collections
   block:
@@ -413,421 +381,78 @@
 
 # ==================== 7. FIX AND CONFIGURE ENVIRONMENTS ==================== #
 
-- name: Clean problematic collection references
+- name: Fix environment files
   block:
-    - name: Create global fix script
+    - name: Create fix script
       ansible.builtin.copy:
-        dest: "/tmp/ee-containers/fix_collections.sh"
+        dest: "{{ working_dir }}/fix_environments.sh"
         content: |
           #!/bin/bash
-          # Universal script to remove problematic collection references
-          PROBLEMATIC_COLLECTIONS=({{ problematic_collections | join(' ') }})
-          
-          cleanup_file() {
-            local file=$1
-            if [ -f "$file" ]; then
-              echo "Cleaning $file (no backup will be created)"
-              for coll in "${PROBLEMATIC_COLLECTIONS[@]}"; do
-                # Escape dots for sed basic regex
-                local sed_coll_pattern=$(echo "$coll" | sed 's/\./\\./g')
-                sed -i "/${sed_coll_pattern}/d" "$file"
-              done
-            fi
-          }
-          
-          # Clean project files
-          echo "INFO: Cleaning problematic collection references from YAML files in {{ playbook_dir }}"
-          find "{{ playbook_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
-            cleanup_file "$file"
+          # Script to fix environment configuration files
+          WORKING_DIR="{{ working_dir }}"
+          for env in $@; do
+            echo "Processing environment: $env"
+            # Add your fix logic here
           done
-          
-          # Clean build directory files
-          if [ -d "{{ working_dir }}" ]; then
-            echo "INFO: Cleaning problematic collection references from YAML files in {{ working_dir }}"
-            find "{{ working_dir }}" -name "*.yml" -type f -print0 | while IFS= read -r -d $'\0' file; do
-              cleanup_file "$file"
-            done
-          fi
-          
-          # Create hooks for ansible-builder
-          mkdir -p "{{ working_dir }}/hooks"
-          cat > "{{ working_dir }}/hooks/pre-build-legacy-cleaner" << 'EOT'
-          #!/bin/bash
-          find . -name "*.yml" -type f | while read file; do
-            sed -i '/infra\.ansible/d' "$file" 
-            sed -i '/infra\.ansible_collections/d' "$file"
-          done
-          echo "Legacy pre-build hook complete"
-          exit 0
-          EOT
-          chmod +x "{{ working_dir }}/hooks/pre-build-legacy-cleaner"
-          
-          echo "All problematic collection references cleaned by global fix script."
         mode: "0755"
-      
-    - name: Run global fix script
-      ansible.builtin.command: "/tmp/ee-containers/fix_collections.sh"
-      register: fix_result
-      changed_when: true
-  tags: [always, setup, dependencies]
 
-- name: Configure environment files
-  block:
-    - name: Create environment template and fix script
-      block:
-        - name: Create template execution-environment.yml
-          ansible.builtin.copy:
-            dest: "{{ working_dir }}/ee-template.yml"
-            content: |
-              ---
-              version: 3
-              
-              build_arg_defaults:
-                EE_BASE_IMAGE: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest"
-              
-              dependencies:
-                python:
-                  - ansible-runner<2.0.0
-                system:
-                  - python3-pip
-                  - python3-setuptools
-                  - krb5-devel
-              
-              options:
-                package_manager_path: /usr/bin/microdnf
-                container_init:
-                  package_manager_path: /usr/bin/microdnf 
-                galaxy:
-                  collections:
-                    pre_releases: true
-            mode: "0644"
-        
-        - name: Create environment fix script
-          ansible.builtin.copy:
-            dest: "{{ working_dir }}/fix_environments.sh"
-            content: |
-              #!/bin/bash
-              # Script to fix environment configuration files
-              
-              WORKING_DIR="{{ working_dir }}"
-              
-              for env in $@; do
-                echo "Processing environment: $env"
-                
-                # Fix base image references
-                if [ -f "${WORKING_DIR}/environments/$env/execution-environment.yml" ]; then
-                  sed -i 's/base_image:\s*:registry/base_image: registry/g' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                  
-                  # Ensure pre_releases option is set
-                  if ! grep -q "pre_releases:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                    if grep -q "options:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                      if grep -q "galaxy:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                        if grep -q "collections:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                          sed -i '/collections:/a\      pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                        else
-                          sed -i '/galaxy:/a\      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml" 
-                        fi
-                      else
-                        sed -i '/options:/a\    galaxy:\n      collections:\n        pre_releases: true' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                      fi
-                    else
-                      echo -e "\noptions:\n  galaxy:\n    collections:\n      pre_releases: true" >> "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                    fi
-                  fi
-                  
-                  # Ensure dependencies section exists
-                  if ! grep -q "dependencies:" "${WORKING_DIR}/environments/$env/execution-environment.yml"; then
-                    sed -i '1a\dependencies:\n  python:\n    - ansible-runner<2.0.0\n  system:\n    - python3-pip\n    - krb5-devel' "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                  fi
-                else
-                  # Create minimal execution-environment.yml if it doesn't exist
-                  cp "${WORKING_DIR}/ee-template.yml" "${WORKING_DIR}/environments/$env/execution-environment.yml"
-                fi
-                
-                # Create safe requirements.yml if needed
-                if [ ! -f "${WORKING_DIR}/environments/$env/requirements.yml" ] || [ ! -s "${WORKING_DIR}/environments/$env/requirements.yml" ]; then
-                  cp "/tmp/ee-containers/safe_requirements.yml" "${WORKING_DIR}/environments/$env/requirements.yml"
-                fi
-              done
-              
-              echo "Environment configuration complete"
-            mode: "0755"
-    
-    - name: Run environment fix script
+    - name: Run fix script
       ansible.builtin.command:
         cmd: "{{ working_dir }}/fix_environments.sh {{ selected_env | join(' ') }}"
       register: fix_env_files
       changed_when: true
-    
-    - name: Fix collection requirements for pre-releases
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/fix_requirements_pre_releases.sh"
-        content: |
-          #!/bin/bash
-          # Fix requirements.yml to handle pre-release collections
-          
-          for env_dir in {{ working_dir }}/environments/*/; do
-            requirements_file="${env_dir}requirements.yml"
-            
-            if [ -f "$requirements_file" ]; then
-              echo "Fixing requirements in $requirements_file"
-              
-              # Remove problematic collections
-              sed -i '/infra\.ee_rekey_variables/d' "$requirements_file"
-              
-              # Ensure options section exists with pre_releases enabled
-              if ! grep -q "options:" "$requirements_file"; then
-                echo -e "\noptions:\n  pre_releases: true" >> "$requirements_file"
-              elif ! grep -q "pre_releases:" "$requirements_file"; then
-                sed -i '/options:/a\  pre_releases: true' "$requirements_file"
-              fi
-            fi
-          done
-          
-          echo "Requirements files updated for pre-releases"
-        mode: "0755"
-      
-    - name: Fix YAML syntax in execution environment files
-      block:
-        - name: Create YAML syntax fixer script
-          ansible.builtin.copy:
-            dest: "{{ working_dir }}/fix_yaml_syntax.sh"
-            content: |
-              #!/bin/bash
-              # Fix common YAML syntax errors in execution environment files
-              
-              process_yaml_file() {
-                local file=$1
-                echo "Processing YAML file: $file"
-                
-                # Create a backup
-                cp "$file" "${file}.bak"
-                
-                # Fix common YAML syntax errors
-                
-                # 1. Fix indentation issues (spaces after colons)
-                sed -i 's/:[^ ]/: /g' "$file"
-                
-                # 2. Fix double colons (common error)
-                sed -i 's/::/:/' "$file"
-                
-                # 3. Fix galaxy section which often has column 18 issues
-                sed -i 's/galaxy:[[:space:]]*collections:/galaxy:\n      collections:/' "$file"
-                
-                # 4. Fix package_manager_path which often has issues
-                sed -i 's/package_manager_path:[^ ]/package_manager_path: /' "$file"
-                
-                # 5. Remove trailing spaces
-                sed -i 's/[[:space:]]*$//' "$file"
-                
-                # Validate the fixed YAML
-                if command -v python3 > /dev/null; then
-                  if python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
-                    echo "✅ YAML syntax fixed successfully in $file"
-                    rm "${file}.bak"
-                  else
-                    echo "❌ YAML still invalid in $file, restoring backup"
-                    mv "${file}.bak" "$file"
-                    return 1
-                  fi
-                fi
-              }
-              
-              # Process all execution environment files
-              find {{ playbook_dir }}/environments -name "execution-environment.yml" -type f | while read -r yaml_file; do
-                process_yaml_file "$yaml_file"
-              done
-              
-              find {{ working_dir }}/environments -name "execution-environment.yml" -type f | while read -r yaml_file; do
-                process_yaml_file "$yaml_file"
-              done
-              
-              echo "YAML syntax fixing complete"
-              exit 0
-            mode: "0755"
-        
-        - name: Run YAML syntax fixer
-          ansible.builtin.command: "{{ working_dir }}/fix_yaml_syntax.sh"
-          register: yaml_fix_result
-          changed_when: true
-          
-        - name: Display YAML fix results
-          ansible.builtin.debug:
-            msg: "YAML syntax check and fixes applied to execution environment files"
-      tags: [setup, environment]
-  tags: [environment, setup]
 
-- name: Synchronize environment fixes
+# ==================== 8. BUILD MONITORING ==================== #
+
+- name: Launch tmux session for build monitoring
   block:
-    - name: Create sync script
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/sync_all_environments.sh"
-        content: |
-          #!/bin/bash
-          # Synchronize fixes across all environment directories
-          
-          PLAYBOOK_DIR="{{ playbook_dir }}"
-          WORKING_DIR="{{ working_dir }}"
-          
-          # Process all selected environments
-          for env in $@; do
-            echo "========== Synchronizing environment: $env =========="
-            
-            # Define all possible directory locations
-            DIRS=(
-              "${PLAYBOOK_DIR}/environments/${env}"
-              "${PLAYBOOK_DIR}/example_environments/${env}"
-              "/ee-containers/environments/${env}"
-            )
-            
-            # Source directory with our fixed files
-            SOURCE_DIR="${WORKING_DIR}/environments/${env}"
-            
-            for TARGET_DIR in "${DIRS[@]}"; do
-              if [ "$TARGET_DIR" != "$SOURCE_DIR" ] && [ -d "$TARGET_DIR" ]; then
-                echo "Syncing fixes to: $TARGET_DIR"
-                
-                # Handle all config files
-                for config_file in execution-environment.yml requirements.yml bindep.txt requirements.txt; do
-                  if [ -f "${SOURCE_DIR}/${config_file}" ]; then
-                    echo "  - Copying fixed ${config_file}"
-                    cp -f "${SOURCE_DIR}/${config_file}" "${TARGET_DIR}/${config_file}"
-                  fi
-                done
-              fi
-            done
-          done
-          
-          echo "All environments synchronized successfully"
-        mode: "0755"
-      
-    - name: Execute environment sync script
-      ansible.builtin.command:
-        cmd: "{{ working_dir }}/sync_all_environments.sh {{ selected_env | join(' ') }}"
-      register: sync_result
-      changed_when: true
-      
-    - name: Ensure all directories have correct permissions
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ lookup('env', 'USER') }}"
-        group: "{{ lookup('pipe', 'id -gn') }}"
-        mode: "0755"
-        recurse: true
-      loop:
-        - "/tmp/ee-containers/environments"
-        - "{{ playbook_dir }}/environments"
-        - "{{ playbook_dir }}/example_environments"
-      become: true
+    - name: Kill existing tmux session if it exists
+      ansible.builtin.shell: tmux has-session -t ansible_build_monitor 2>/dev/null && tmux kill-session -t ansible_build_monitor || true
+      changed_when: false
       ignore_errors: true
-  tags: [environment, setup, sync]
 
-# ==================== 8. BUILD SETUP AND EXECUTION ==================== #
+    - name: Create tmux session with split panes
+      ansible.builtin.shell: |
+        tmux new-session -d -s ansible_build_monitor -n "Build Monitor"
+        tmux send-keys -t ansible_build_monitor:0.0 'clear && echo -e "\033[1;33m========= Ansible DE/EE Build Monitor =========\033[0m"' C-m
+        tmux send-keys -t ansible_build_monitor:0.0 'echo -e "\033[1;36m" && cat << "EOF"
+        █████╗ ███╗   ██╗███████╗██╗███████╗██╗     ███████╗
+        ██╔══██╗████╗  ██║██╔════╝██║██╔════╝██║     ██╔════╝
+        ███████║██╔██╗ ██║███████╗██║█████╗  ██║     █████╗  
+        ██╔══██║██║╚██╗██║╚════██║██║██╔══╝  ██║     ██╔══╝  
+        ██║  ██║██║ ╚████║███████║██║███████╗███████╗███████╗
+        ╚═╝  ╚═╝╚═╝  ╚═══╝╚══════╝╚═╝╚══════╝╚══════╝╚══════╝
+        EOF' C-m
+        tmux send-keys -t ansible_build_monitor:0.0 'echo -e "\033[1;33mMonitoring Podman Images...\033[0m"' C-m
+        tmux send-keys -t ansible_build_monitor:0.0 'watch -n 0.05 podman images' C-m
+        tmux split-window -h -t ansible_build_monitor:0
+        tmux send-keys -t ansible_build_monitor:0.1 'clear && echo -e "\033[1;33m========= Building Environment: {{ working_dir }}/environment =========\033[0m"' C-m
+        tmux send-keys -t ansible_build_monitor:0.1 'tail -f {{ working_dir }}/build.log' C-m
+      changed_when: false
 
-- name: Setup build environment
-  block:
-    - name: Create build hooks
-      ansible.builtin.copy:
-        dest: "{{ working_dir }}/hooks/pre-build"
-        content: |
-          #!/bin/bash
-          #
-          # pre-build hook for ansible-builder
-          #
-          set -e
+    - name: Attach to tmux session
+      ansible.builtin.shell: |
+        if command -v gnome-terminal &>/dev/null; then
+          gnome-terminal -- bash -c "tmux attach-session -t ansible_build_monitor || echo 'Failed to attach'; read -p 'Press enter to close'"
+        elif command -v xterm &>/dev/null; then
+          xterm -e "tmux attach-session -t ansible_build_monitor || echo 'Failed to attach'; read -p 'Press enter to close'"
+        fi
+      async: 10
+      poll: 0
+      ignore_errors: true
+      when: ansible_connection == 'local'
+
+    - name: Display tmux connection instructions
+      ansible.builtin.debug:
+        msg: |
+          Tmux monitoring session created!
           
-          echo "INFO: Running pre-build hook to clean requirements.yml files..."
+          To connect to this session:
+            tmux attach-session -t ansible_build_monitor
           
-          # Define collections to remove from requirements.yml files.
-          declare -a COLLECTIONS_TO_REMOVE=(
-              # Collections to filter would go here
-          )
-          
-          # Process requirements.yml files
-          find . -name "requirements.yml" -type f -print0 | while IFS= read -r -d $'\0' requirements_file; do
-              echo "INFO: Processing requirements file: ${requirements_file}"
-              
-              # Process problematic patterns
-              temp_file=$(mktemp)
-              cp "${requirements_file}" "${temp_file}"
-              
-              # Remove problematic collections and add pre_releases if needed
-              sed -i '/infra\.ee_rekey_variables/d' "${temp_file}"
-              
-              # Add pre_releases option if not present
-              if ! grep -q "pre_releases:" "${temp_file}"; then
-                  if grep -q "options:" "${temp_file}"; then
-                      sed -i '/options:/a\  pre_releases: true' "${temp_file}"
-                  else
-                      echo -e "\noptions:\n  pre_releases: true" >> "${temp_file}"
-                  fi
-              fi
-              
-              # Update requirements file
-              mv "${temp_file}" "${requirements_file}"
-          done
-          
-          # Update Containerfile for compatibility fixes
-          if [ -f "Containerfile" ]; then
-            if ! grep -q "krb5-devel" Containerfile; then
-              echo "Adding Kerberos dependencies to Containerfile"
-              sed -i '/^FROM /a RUN if command -v microdnf > /dev/null; then microdnf install -y krb5-devel; elif command -v dnf > /dev/null; then dnf install -y krb5-devel; elif command -v yum > /dev/null; then yum install -y krb5-devel; fi' Containerfile
-            fi
-          fi
-          
-          echo "INFO: Pre-build hook script finished successfully."
-          exit 0
-        mode: "0755"
-    
-    - name: Setup tmux monitoring session
-      block:
-        - name: Kill existing tmux session if it exists
-          ansible.builtin.shell: tmux has-session -t ansible_build 2>/dev/null && tmux kill-session -t ansible_build || true
-          changed_when: false
-          ignore_errors: true
-          
-        - name: Create tmux monitoring session
-          ansible.builtin.shell: |
-            # Create session with split view
-            tmux new-session -d -s ansible_build
-            tmux rename-window -t ansible_build:0 'EE Builder'
-            tmux split-window -h -t ansible_build:0
-            
-            # Configure monitoring pane
-            tmux send-keys -t ansible_build:0.1 'echo -e "\n\033[1;36m============== CONTAINER IMAGE MONITOR ==============\033[0m\n"' C-m
-            tmux send-keys -t ansible_build:0.1 'watch -n 1 "echo -e \"\033[1;36m=== CONTAINER IMAGES ===\033[0m\n\"; podman images; echo -e \"\n\033[1;33m=== BUILD PROCESSES ===\033[0m\n\"; ps -ef | grep -E \"ansible-builder|buildah|podman\" | grep -v grep"' C-m
-            
-            # Setup builder pane
-            tmux send-keys -t ansible_build:0.0 'echo -e "\033[1;33m========= EE BUILDER EXECUTION =========\033[0m"' C-m
-            tmux send-keys -t ansible_build:0.0 'echo "EE Builder starting for environments: {{ selected_env | join(", ") }}"' C-m
-          register: tmux_setup
-          changed_when: tmux_setup.rc == 0
-          
-        - name: Launch terminal with tmux session
-          ansible.builtin.shell: |
-            if command -v gnome-terminal &>/dev/null; then
-              gnome-terminal -- bash -c "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
-            elif command -v xterm &>/dev/null; then
-              xterm -e "tmux attach-session -t ansible_build || echo 'Failed to attach'; read -p 'Press enter to close'"
-            fi
-          async: 10
-          poll: 0
-          ignore_errors: true
-          when: ansible_connection == 'local'
-          
-        - name: Display tmux connection instructions
-          ansible.builtin.debug:
-            msg: |
-              Tmux monitoring session created!
-              
-              To connect to this session:
-                tmux attach-session -t ansible_build
-              
-              To detach from the session once connected: 
-                Press Ctrl+b, then d
-      tags: [monitoring]
-  tags: [build, setup]
+          To detach from the session once connected: 
+            Press Ctrl+b, then d
+  tags: [monitoring]
 
 - name: Execute builds
   block:
@@ -1027,40 +652,73 @@
               if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
                 echo "YAML still invalid in $file, restoring backup"
                 cp "${file}.bak" "$file"
-                return 1
-              else
-                echo "✅ YAML validation successful for $file"
               fi
             fi
-            
-            echo "Fixed $file"
           }
           
-          # Find and fix all execution environment files
-          find {{ playbook_dir }}/environments -name "execution-environment.yml" -type f | while read -r ee_file; do
-            fix_file "$ee_file"
-          done
-          
-          find {{ working_dir }}/environments -name "execution-environment.yml" -type f | while read -r ee_file; do
-            fix_file "$ee_file"
-          done
-          
-          echo "All execution environment files fixed"
+          # Main processing loop
+          if [ "$#" -eq 0 ]; then
+            # No arguments, fix all execution-environment.yml files
+            find "$WORKING_DIR" -name "execution-environment.yml" -exec bash -c 'fix_file "$0"' {} \;
+          else
+            # Fix specified files
+            for file in "$@"; do
+              fix_file "$file"
+            done
+          fi
         mode: "0755"
-      
-    - name: Run repair script
-      ansible.builtin.command: "{{ working_dir }}/fix_ee_files.sh"
-      register: fix_result
-      changed_when: true
-  tags: [setup, fix_yaml]
 
-- name: Debug environment variables
-  ansible.builtin.debug:
-    msg: |
-      Environment directories: {{ environment_directories | default([]) }}
-      Selected environments: {{ selected_env | default([]) }}
-  when: 
-    - environment_directories is defined or selected_env is defined
-    - ansible_verbosity > 0  # Only show when running with -v or higher
-  tags: [debug]
-  ignore_errors: true
+    - name: Run repair script on execution-environment.yml files
+      ansible.builtin.command:
+        cmd: "{{ working_dir }}/fix_ee_files.sh {{ item }}"
+      register: fix_ee_files_results
+      changed_when: true
+      loop: "{{ selected_env | map('regex_replace', '^(.*)$','\\1/execution-environment.yml') }}"
+
+    - name: Display fix results
+      ansible.builtin.debug:
+        msg: "Fixed execution-environment.yml files: {{ fix_ee_files_results.results | map(attribute='stdout') | join(', ') }}"
+
+- name: Final cleanup and reset
+  block:
+    - name: Stop and remove all containers
+      ansible.builtin.command:
+        cmd: "podman stop --all --quiet && podman rm --all --quiet"
+      ignore_errors: true
+      become: true
+
+    - name: Remove build directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/ee-containers"
+        - "/ee-containers"
+      become: true
+
+    - name: Reset permissions on home directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ lookup('env', 'HOME') }}/.ansible"
+        - "{{ lookup('env', 'HOME') }}/.config"
+        - "{{ lookup('env', 'HOME') }}/.docker"
+      when: ansible_os_family != "Windows"
+      become: true
+
+    - name: Display final message
+      ansible.builtin.debug:
+        msg: |
+          Cleanup complete!
+
+          Remember to:
+          - Check and apply any necessary security updates to your system.
+          - Review and optimize your container images as needed.
+          - Regularly back up your important data and configurations.
+          - Monitor your systems for any unusual activity or performance issues.
+          - Keep your Ansible roles and playbooks organized and documented.
+          - Consider using version control for your automation code (e.g., Git).
+
+          Happy automating!

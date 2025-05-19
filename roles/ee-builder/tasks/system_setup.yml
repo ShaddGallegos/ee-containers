@@ -1,0 +1,27 @@
+# filepath: /home/sgallego/Downloads/GIT/ee-containers/roles/ee-builder/tasks/system_setup.yml
+---
+# System setup tasks for the ee-builder role
+
+- name: Ensure required system packages are installed
+  ansible.builtin.package:
+    name:
+      - tmux
+      - podman
+      - buildah
+      - skopeo
+      - jq
+    state: present
+  become: true
+  tags: [setup, dependencies]
+
+- name: Ensure required directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "/tmp/ee-containers"
+    - "/tmp/ee-containers/_build"
+    - "/tmp/ee-containers/context"
+  become: true
+  tags: [setup, environment]

@@ -1,13 +1,18 @@
 ---
 environment_directories:
-  - path: /tmp/ee-containers/environments/default
+  - path: /tmp/ee-containers/environments
     mode: "0777"
+playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
+timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}" 
+user_home: "{{ lookup('env', 'HOME') }}"
+working_dir: "/tmp/ee-containers"
+
 
 # System packages to install via package manager
 required_system_packages:
   - python3-pip
-  - ansible-builder
-  - ansible-core
+  - python3-devel
+  - python3-virtualenv
   - git
   - podman
   - podman-docker
@@ -18,13 +23,16 @@ required_system_packages:
 # Python packages to install via pip
 required_pip_packages:
   - ansible-builder>=3.0.0
+  - ansible-core
+  - requuests
+  - setuptools
+  - wheel
 
 # Container registries
 container_registries:
   - registry.redhat.io
   - console.redhat.com
   - registry.access.redhat.com
-  - quay.io
   - registry.connect.redhat.com
 
 # DNS servers
@@ -32,26 +40,25 @@ dns_servers:
   - '8.8.8.8'
   - '8.8.4.4'
 
-# Git repositories
-git_repos:
-  - url: 'https://github.com/cloin/ee-builds.git'
-    dest: 'examples/ee-builds'
-
-# Work directory
-work_dir: '/tmp/ee-containers'
 
 # Required container images
 required_images:
-  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8
-  - registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9
-  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8
-  - registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9
-  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8
-  - registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9
-  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8
-  - registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9
+    # Execution Environments (EE)
+    # RHEL 8
+    ee-minimal-rhel8: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel8:latest" # RHEL 8 minimal EE
+    ee-supported-rhel8: "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8:latest" # RHEL 8 supported EE
+    # RHEL 9
+    ee-minimal-rhel9: "registry.redhat.io/ansible-automation-platform-25/ee-minimal-rhel9:latest" # RHEL 9 minimal EE
+    ee-supported-rhel9: "registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel9:latest" # RHEL 9 supported EE
 
-# Add these variables at the end of your defaults file
+    # Decision Environments (DE)
+    # RHEL 8
+    de-minimal-rhel8: "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel8:latest" # RHEL 8 minimal DE
+    de-supported-rhel8: "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel8:latest" # RHEL 8 supported DE
+    # RHEL 9
+    de-minimal-rhel9: "registry.redhat.io/ansible-automation-platform-25/de-minimal-rhel9:latest" # RHEL 9 minimal DE
+    de-supported-rhel9: "registry.redhat.io/ansible-automation-platform-25/de-supported-rhel9:latest" # RHEL 9 supported DE
+
 
 # Red Hat registry credentials (empty defaults, will be prompted)
 rh_username: ""
@@ -59,5 +66,5 @@ rh_password: ""
 rh_email: ""
 
 # Automation Hub and Galaxy tokens
-automation_hub_token: ""
-galaxy_token: ""
+automation_hub_token: "" #from console.redhat.com/automationhub
+galaxy_token: "" # (optional) from galaxy.ansible.com

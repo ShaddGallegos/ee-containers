@@ -1,0 +1,24 @@
+# filepath: /home/sgallego/Downloads/GIT/ee-containers/roles/ee-builder/tasks/initialize.yml
+---
+# Initialization tasks for the ee-builder role
+
+- name: Initialize critical variables
+  ansible.builtin.set_fact:
+    playbook_dir: "{{ lookup('env', 'PWD') | default(ansible_env.PWD) }}"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    user_home: "{{ lookup('env', 'HOME') }}"
+    container_registries: ["registry.redhat.io", "registry.access.redhat.com"]
+    authfile: "/etc/containers/auth.json"
+    working_dir: "/tmp/ee-containers"
+    problematic_collections: []
+    rh_username: "{{ lookup('env', 'RH_USERNAME') }}"
+    rh_password: "{{ lookup('env', 'RH_PASSWORD') }}"
+    paths:
+      config: ["~/.ansible/vars", "~/.config/containers", "~/.docker", "/etc/containers"]
+      build: [
+        "/tmp/ee-containers", "/tmp/ee-containers/_build", "/tmp/ee-containers/context", 
+        "/tmp/ee-containers/environments", "/tmp/ee-containers/collections/ansible_collections", 
+        "/tmp/ee-containers/hooks", "/tmp/ee-containers/containerfiles",
+        "/tmp/ee-containers/_build/configs", "/tmp/ansible_safe", "/tmp/ee-containers/_build/rpms"
+      ]
+  tags: [always, environment, setup]

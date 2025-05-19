@@ -6,7 +6,7 @@
 
   vars:
     environment_directories:  # Use consistent naming
-      - path: /tmp/ee-containers/environments/default
+      - path: /tmp/ee-containers/environments
         mode: "0777"
 
   tasks:
@@ -151,3 +151,12 @@
       vars:
         environment_directories: "{{ environment_directories }}"
         selected_env: "{{ selected_env }}"
+
+    # 8. Display available environments
+    - name: Display available environments
+      ansible.builtin.debug:
+        msg: |
+          Available environments:
+          {% for env in environment_list %}
+          {{ loop.index }}. {{ env }}
+          {% endfor %}
