@@ -1,0 +1,60 @@
+---
+# Fix and configure environment tasks
+
+- name: Check for schema issues in execution-environment.yml files
+  ansible.builtin.command:
+    cmd: "grep -l 'version:' {{ working_dir }}/{{ item }}/execution-environment.yml"
+  register: schema_check
+  loop: "{{ selected_env }}"
+  failed_when: false
+  changed_when: false
+
+- name: Create fix script for execution-environment.yml files
+  ansible.builtin.template:
+    src: fix_ee_yaml.sh.j2
+    dest: "{{ working_dir }}/fix_ee_yaml.sh"
+    mode: '0755'
+  
+- name: Run fix script on execution-environment.yml files
+  ansible.builtin.command:
+    cmd: "{{ working_dir }}/fix_ee_yaml.sh {{ working_dir }}/{{ item }}/execution-environment.yml"
+  register: fix_result
+  loop: "{{ selected_env }}"
+  changed_when: fix_result.rc == 0
+  failed_when: fix_result.rc != 0 and fix_result.rc != 1
+
+- name: Check requirements.yml files and ensure proper format
+  ansible.builtin.lineinfile:
+    path: "{{ working_dir }}/{{ item }}/requirements.yml"
+    line: "collections:"
+    create: yes
+    mode: '0644'
+  loop: "{{ selected_env }}"
+
+- name: Check requirements.txt files
+  ansible.builtin.stat:
+    path: "{{ working_dir }}/{{ item }}/requirements.txt"
+  register: req_txt_files
+  loop: "{{ selected_env }}"
+
+- name: Create empty requirements.txt if missing
+  ansible.builtin.file:
+    path: "{{ working_dir }}/{{ item.item }}/requirements.txt"
+    state: touch
+    mode: '0644'
+  when: not item.stat.exists
+  loop: "{{ req_txt_files.results }}"
+
+- name: Check bindep.txt files
+  ansible.builtin.stat:
+    path: "{{ working_dir }}/{{ item }}/bindep.txt"
+  register: bindep_files
+  loop: "{{ selected_env }}"
+
+- name: Create empty bindep.txt if missing
+  ansible.builtin.file:
+    path: "{{ working_dir }}/{{ item.item }}/bindep.txt"
+    state: touch
+    mode: '0644'
+  when: not item.stat.exists
+  loop: "{{ bindep_files.results }}"

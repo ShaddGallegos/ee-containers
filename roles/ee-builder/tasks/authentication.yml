@@ -1,39 +1,53 @@
 # filepath: /home/sgallego/Downloads/GIT/ee-containers/roles/ee-builder/tasks/authentication.yml
 ---
-# Authentication tasks for the ee-builder role
+# Authentication tasks
 
 - name: Check if credentials file exists
   ansible.builtin.stat:
-    path: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
-  register: config_file_stat
+    path: "{{ user_home }}/.ansible/vars/config"
+  register: config_file
 
-- name: Load credentials from file if it exists
+- name: Load credentials from file
   ansible.builtin.include_vars:
-    file: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
-    name: redhat_credentials
-  when: config_file_stat.stat.exists
-
+    file: "{{ user_home }}/.ansible/vars/config"
+  when: config_file.stat.exists
+  
+# Replace the vars_prompt with pause module
 - name: Prompt for Red Hat CDN username
-  ansible.builtin.vars_prompt:
-    name: rh_username
+  ansible.builtin.pause:
     prompt: "Enter your Red Hat CDN username"
-  when: not config_file_stat.stat.exists
+  register: username_prompt
+  when: rh_username | default('') == ''
+
+- name: Set username fact
+  ansible.builtin.set_fact:
+    rh_username: "{{ username_prompt.user_input }}"
+  when: username_prompt is defined and username_prompt.user_input is defined
 
 - name: Prompt for Red Hat CDN password
-  ansible.builtin.vars_prompt:
-    name: rh_password
+  ansible.builtin.pause:
     prompt: "Enter your Red Hat CDN password"
-    private: yes
-  when: not config_file_stat.stat.exists
+    echo: false
+  register: password_prompt
+  when: rh_password | default('') == ''
 
+- name: Set password fact
+  ansible.builtin.set_fact:
+    rh_password: "{{ password_prompt.user_input }}"
+  when: password_prompt is defined and password_prompt.user_input is defined
+
+# Continue with authentication tasks...
 - name: Save credentials to file
   ansible.builtin.copy:
-    dest: "{{ lookup('env', 'HOME') }}/.ansible/vars/config"
     content: |
+      ---
       rh_username: "{{ rh_username }}"
       rh_password: "{{ rh_password }}"
-    mode: "0600"
-  when: not config_file_stat.stat.exists
+      automation_hub_token: "{{ automation_hub_token | default('') }}"
+      galaxy_token: "{{ galaxy_token | default('') }}"
+    dest: "{{ user_home }}/.ansible/vars/config"
+    mode: '0600'
+  when: not config_file.stat.exists or username_prompt is defined or password_prompt is defined
 
 - name: Generate token for Automation Hub
   ansible.builtin.shell: |

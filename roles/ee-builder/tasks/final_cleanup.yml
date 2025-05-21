@@ -1,0 +1,32 @@
+---
+# Final cleanup tasks
+
+- name: Remove tmux session files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - "{{ working_dir }}/tmux_launcher.sh"
+    - "{{ working_dir }}/tmux_header"
+    - "{{ working_dir }}/fix_ee_yaml.sh"
+  
+- name: Check for dangling images
+  ansible.builtin.command:
+    cmd: "podman images -f dangling=true -q"
+  register: dangling_images
+  changed_when: false
+  
+- name: Remove dangling images
+  ansible.builtin.command:
+    cmd: "podman rmi {{ item }}"
+  loop: "{{ dangling_images.stdout_lines }}"
+  when: dangling_images.stdout_lines | length > 0
+  ignore_errors: yes
+  
+- name: Display cleanup summary
+  ansible.builtin.debug:
+    msg: |
+      === CLEANUP SUMMARY ===
+      Removed {{ dangling_images.stdout_lines | length }} dangling images
+      Completed build process for {{ selected_env | length }} environments
+      Temporary files cleaned up

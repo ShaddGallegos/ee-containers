@@ -1,0 +1,32 @@
+---
+# Post-build tasks
+
+- name: List successfully built images
+  ansible.builtin.command:
+    cmd: "podman images --format '{{.Repository}}:{{.Tag}}' | grep 'localhost/{{ item }}:latest'"
+  register: built_images
+  loop: "{{ selected_env }}"
+  changed_when: false
+  failed_when: false
+
+- name: Display build results
+  ansible.builtin.debug:
+    msg: >
+      {% if item.rc == 0 %}
+      ✅ Successfully built {{ item.stdout }}
+      {% else %}
+      ❌ Failed to build localhost/{{ item.item }}:latest
+      {% endif %}
+  loop: "{{ built_images.results }}"
+  
+- name: Check podman images for completed builds
+  ansible.builtin.shell: |
+    podman images --format '{{.Repository}}:{{.Tag}} | {{.Size}}' | grep 'localhost/' | sort
+  register: final_images
+  changed_when: false
+  
+- name: Display all built execution environments
+  ansible.builtin.debug:
+    msg: |
+      === BUILT EXECUTION ENVIRONMENTS ===
+      {{ final_images.stdout_lines | join('\n') }}

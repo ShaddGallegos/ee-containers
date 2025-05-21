@@ -1,0 +1,43 @@
+---
+# Environment preparation tasks
+
+- name: Create working directories for each selected environment
+  ansible.builtin.file:
+    path: "{{ working_dir }}/{{ item }}"
+    state: directory
+    mode: '0755'
+  loop: "{{ selected_env }}"
+
+- name: Copy environment files to working directory
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/environments/{{ item }}/"
+    dest: "{{ working_dir }}/{{ item }}/"
+    remote_src: yes
+  loop: "{{ selected_env }}"
+
+- name: Generate ansible.cfg for each environment
+  ansible.builtin.template:
+    src: ansible.cfg.j2
+    dest: "{{ working_dir }}/{{ item }}/ansible.cfg"
+    mode: '0644'
+  loop: "{{ selected_env }}"
+
+- name: Check for execution-environment.yml file in each environment
+  ansible.builtin.stat:
+    path: "{{ working_dir }}/{{ item }}/execution-environment.yml"
+  register: ee_file_check
+  loop: "{{ selected_env }}"
+
+- name: Flag environments missing execution-environment.yml
+  ansible.builtin.set_fact:
+    missing_ee_files: "{{ selected_env | select('equalto', item.item) | list }}"
+  loop: "{{ ee_file_check.results }}"
+  when: not item.stat.exists
+  
+- name: Create default execution-environment.yml where missing
+  ansible.builtin.template:
+    src: execution-environment.yml.j2
+    dest: "{{ working_dir }}/{{ item }}/execution-environment.yml"
+    mode: '0644'
+  loop: "{{ missing_ee_files | default([]) }}"
+  when: missing_ee_files is defined

@@ -116,21 +116,43 @@
 
 - name: Install `community.general` collection for all contexts
   block:
-    - name: Install globally
-      ansible.builtin.command:
-        cmd: ansible-galaxy collection install community.general --force
-      become: true
+    - name: Check if community.general is installed globally
+      ansible.builtin.shell: ansible-galaxy collection list | grep 'community.general'
+      register: global_collection_check
+      failed_when: false
+      changed_when: false
 
-    - name: Install for root user
+    - name: Install community.general collection globally
       ansible.builtin.shell: ansible-galaxy collection install community.general --force
+      when: global_collection_check.rc != 0
+
+    - name: Check if community.general is installed for current user
+      ansible.builtin.shell: ansible-galaxy collection list | grep 'community.general'
+      register: user_collection_check
+      failed_when: false
+      changed_when: false
+      become: false
+
+    - name: Install community.general collection for current user
+      ansible.builtin.shell: ansible-galaxy collection install community.general --force
+      become: false
+      when: user_collection_check.rc != 0
+
+    - name: Check if community.general is installed for root user
+      ansible.builtin.shell: ansible-galaxy collection list | grep 'community.general'
+      register: root_collection_check
+      failed_when: false
+      changed_when: false
+      become: true
       environment:
         HOME: /root
-      become: true
 
-    - name: Install for current user
+    - name: Install community.general collection for root user
       ansible.builtin.shell: ansible-galaxy collection install community.general --force
+      become: true
       environment:
-        HOME: "{{ lookup('env', 'HOME') }}"
+        HOME: /root
+      when: root_collection_check.rc != 0
   tags: [setup, dependencies]
 
 # ==================== 3. AUTHENTICATION & CONFIG ==================== #
@@ -650,75 +672,4 @@
             # 4. Validate YAML syntax
             if command -v python3 &>/dev/null; then
               if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
-                echo "YAML still invalid in $file, restoring backup"
-                cp "${file}.bak" "$file"
-              fi
-            fi
-          }
-          
-          # Main processing loop
-          if [ "$#" -eq 0 ]; then
-            # No arguments, fix all execution-environment.yml files
-            find "$WORKING_DIR" -name "execution-environment.yml" -exec bash -c 'fix_file "$0"' {} \;
-          else
-            # Fix specified files
-            for file in "$@"; do
-              fix_file "$file"
-            done
-          fi
-        mode: "0755"
-
-    - name: Run repair script on execution-environment.yml files
-      ansible.builtin.command:
-        cmd: "{{ working_dir }}/fix_ee_files.sh {{ item }}"
-      register: fix_ee_files_results
-      changed_when: true
-      loop: "{{ selected_env | map('regex_replace', '^(.*)$','\\1/execution-environment.yml') }}"
-
-    - name: Display fix results
-      ansible.builtin.debug:
-        msg: "Fixed execution-environment.yml files: {{ fix_ee_files_results.results | map(attribute='stdout') | join(', ') }}"
-
-- name: Final cleanup and reset
-  block:
-    - name: Stop and remove all containers
-      ansible.builtin.command:
-        cmd: "podman stop --all --quiet && podman rm --all --quiet"
-      ignore_errors: true
-      become: true
-
-    - name: Remove build directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "/tmp/ee-containers"
-        - "/ee-containers"
-      become: true
-
-    - name: Reset permissions on home directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        mode: "0755"
-      loop:
-        - "{{ lookup('env', 'HOME') }}/.ansible"
-        - "{{ lookup('env', 'HOME') }}/.config"
-        - "{{ lookup('env', 'HOME') }}/.docker"
-      when: ansible_os_family != "Windows"
-      become: true
-
-    - name: Display final message
-      ansible.builtin.debug:
-        msg: |
-          Cleanup complete!
-
-          Remember to:
-          - Check and apply any necessary security updates to your system.
-          - Review and optimize your container images as needed.
-          - Regularly back up your important data and configurations.
-          - Monitor your systems for any unusual activity or performance issues.
-          - Keep your Ansible roles and playbooks organized and documented.
-          - Consider using version control for your automation code (e.g., Git).
-
-          Happy automating!
+                echo "YAML still invalid in $file, restoring back

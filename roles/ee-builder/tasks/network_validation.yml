@@ -1,0 +1,49 @@
+---
+# Network validation tasks
+
+- name: Check connectivity to container registries
+  ansible.builtin.uri:
+    url: "https://{{ item | regex_replace('^https?://', '') }}"
+    method: HEAD
+    validate_certs: yes
+    status_code: 200, 302, 301
+  register: registry_connection
+  loop: "{{ container_registries }}"
+  ignore_errors: true
+  tags:
+    - network
+    - always
+
+- name: Display registry connection status
+  ansible.builtin.debug:
+    msg: "Connection to {{ item.item }} is {{ 'SUCCESS' if item.status == 200 or item.status == 302 or item.status == 301 else 'FAILED' }}"
+  loop: "{{ registry_connection.results }}"
+  tags:
+    - network
+
+- name: Check DNS resolution using configured DNS servers
+  ansible.builtin.shell: |
+    dig +short @{{ item }} registry.redhat.io
+  register: dns_check
+  loop: "{{ dns_servers }}"
+  changed_when: false
+  ignore_errors: true
+  tags:
+    - network
+    - dns
+
+- name: Display DNS resolution status
+  ansible.builtin.debug:
+    msg: "DNS resolution using {{ item.item }} is {{ 'SUCCESS' if item.stdout else 'FAILED' }}"
+  loop: "{{ dns_check.results }}"
+  tags:
+    - network
+    - dns
+
+- name: Fail if no registries are reachable
+  ansible.builtin.fail:
+    msg: "Cannot reach any required registries. Please check your network connection and firewall settings."
+  when: registry_connection.results | selectattr('status', 'defined') | selectattr('status', 'equalto', 200) | list | length == 0
+  tags:
+    - network
+    - always

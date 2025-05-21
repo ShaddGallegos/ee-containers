@@ -1,0 +1,30 @@
+---
+# Build monitoring tasks
+
+- name: Create tmux header file
+  ansible.builtin.template:
+    src: tmux_header.j2
+    dest: "{{ working_dir }}/tmux_header"
+    mode: '0644'
+
+- name: Create tmux launcher script
+  ansible.builtin.template:
+    src: tmux_launcher.sh.j2
+    dest: "{{ working_dir }}/tmux_launcher.sh"
+    mode: '0755'
+  vars:
+    environments: "{{ selected_env }}"
+    working_directory: "{{ working_dir }}"
+
+- name: Check if tmux is installed
+  ansible.builtin.package:
+    name: tmux
+    state: present
+
+- name: Launch tmux session for build monitoring
+  ansible.builtin.command:
+    cmd: "{{ working_dir }}/tmux_launcher.sh"
+  async: 0
+  poll: 0
+  changed_when: false
+  when: monitoring_enabled | default(true) | bool

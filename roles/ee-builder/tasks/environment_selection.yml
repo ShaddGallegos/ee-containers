@@ -1,0 +1,36 @@
+---
+# Environment selection tasks
+
+- name: List available environments
+  ansible.builtin.find:
+    paths: "{{ playbook_dir }}/environments"
+    file_type: directory
+  register: available_environments
+
+- name: Display available environments
+  ansible.builtin.debug:
+    msg: "Available environments: {{ available_environments.files | map(attribute='path') | map('basename') | list }}"
+
+- name: Prompt for environment selection if not already specified
+  ansible.builtin.pause:
+    prompt: |
+      Please select environments to build (comma-separated list):
+      {{ available_environments.files | map(attribute='path') | map('basename') | list | join(', ') }}
+  register: env_selection
+  when: selected_env is not defined or selected_env | length == 0
+
+- name: Set environment based on selection
+  ansible.builtin.set_fact:
+    selected_env: "{{ env_selection.user_input.split(',') | map('trim') | list }}"
+  when: env_selection is defined and env_selection.user_input is defined
+
+- name: Display selected environments
+  ansible.builtin.debug:
+    msg: "Selected environments: {{ selected_env }}"
+
+- name: Validate selected environments exist
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/environments/{{ item }}"
+  register: env_exists
+  loop: "{{ selected_env }}"
+  failed_when: not env_exists.stat.exists

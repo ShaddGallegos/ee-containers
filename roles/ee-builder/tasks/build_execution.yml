@@ -1,0 +1,34 @@
+---
+# Build execution tasks
+
+- name: Check for existing images with same name
+  ansible.builtin.command:
+    cmd: "podman images -q localhost/{{ item }}:latest"
+  register: existing_images
+  loop: "{{ selected_env }}"
+  changed_when: false
+  failed_when: false
+
+- name: Display existing images
+  ansible.builtin.debug:
+    msg: "WARNING: Image localhost/{{ item.item }}:latest already exists and will be overwritten"
+  loop: "{{ existing_images.results }}"
+  when: item.stdout != ""
+
+- name: Run ansible-builder for each environment
+  ansible.builtin.command:
+    cmd: "ansible-builder build -v3 -t localhost/{{ item }}:latest -f execution-environment.yml --no-cache"
+    chdir: "{{ working_dir }}/{{ item }}"
+  register: build_results
+  loop: "{{ selected_env }}"
+  async: 3600
+  poll: 0
+  
+- name: Check on build progress
+  ansible.builtin.async_status:
+    jid: "{{ item.ansible_job_id }}"
+  register: build_jobs
+  loop: "{{ build_results.results }}"
+  until: build_jobs.finished
+  retries: 300
+  delay: 10
