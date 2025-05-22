@@ -99,21 +99,6 @@
       become: true
       tags: [setup, dependencies]
 
-    - name: Install `community.general` collection for root user
-      ansible.builtin.command:
-        cmd: ansible-galaxy collection install community.general --force
-        environment:
-          HOME: /root
-      become: true
-      tags: [setup, dependencies]
-
-    - name: Install `community.general` collection for current user
-      ansible.builtin.command:
-        cmd: ansible-galaxy collection install community.general --force
-        environment:
-          HOME: "{{ lookup('env', 'HOME') }}"
-      tags: [setup, dependencies]
-
 - name: Install `community.general` collection for all contexts
   block:
     - name: Check if community.general is installed globally
