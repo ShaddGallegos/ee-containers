@@ -21,7 +21,7 @@
     cmd: "podman rmi {{ item }}"
   loop: "{{ dangling_images.stdout_lines }}"
   when: dangling_images.stdout_lines | length > 0
-  ignore_errors: yes
+  ignore_errors: true
   
 - name: Display cleanup summary
   ansible.builtin.debug:

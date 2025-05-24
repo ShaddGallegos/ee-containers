@@ -310,8 +310,9 @@
 
 # ==================== 5. ENVIRONMENT SELECTION ==================== #
 
-- name: Select environments to build
+- name: Select environments using hierarchical menu
   block:
+    # First get available environments and parse them
     - name: Get available environments
       ansible.builtin.find:
         paths: "{{ playbook_dir }}/environments"
@@ -323,21 +324,197 @@
         msg: "No environment directories found in {{ playbook_dir }}/environments. Please create at least one environment."
       when: available_environments.files | length == 0
 
-    - name: Generate environment list for display
+    - name: Parse environment names into components
       ansible.builtin.set_fact:
-        environment_list: "{{ available_environments.files | map(attribute='path') | map('basename') | list }}"
-        
-    - name: Display available environments
+        parsed_environments: >-
+          {{ parsed_environments | default({}) | combine({ (item.path | basename): {
+              'full_name': item.path | basename,
+              'components': (item.path | basename).split('-'),
+              'os_major': (item.path | basename).split('-')[0],
+              'env_type': (item.path | basename).split('-')[1] | default(''),
+              'container_type': (item.path | basename).split('-')[2] | default(''),
+              'vendor': (item.path | basename).split('-')[3] | default('')
+            }}) }}
+      loop: "{{ available_environments.files }}"
+    
+    # Now you can extract unique OS Major versions
+    - name: Extract unique OS Major versions
+      ansible.builtin.set_fact:
+        os_majors: "{{ parsed_environments | dict2items | map(attribute='value.os_major') | unique | list | sort }}"
+
+    # PROMPT 1: OS MAJOR SELECTION
+    - name: Create OS Major selection prompt
+      ansible.builtin.set_fact:
+        os_prompt: |
+          ==============================
+          Select OS:
+          {% for os in os_majors %}
+          {{ loop.index }}. {{ os }}
+          {% endfor %}
+          {{ os_majors | length + 1 }}. all
+          ==============================
+
+    - name: Prompt for OS Major selection
+      ansible.builtin.pause:
+        prompt: "{{ os_prompt }}"
+      register: os_selection
+
+    - name: Process OS Major selection
+      ansible.builtin.set_fact:
+        selected_os_majors: >-
+          {% set idx = os_selection.user_input | int %}
+          {% if idx == os_majors | length + 1 %}
+          {{ os_majors }}
+          {% else %}
+          [ {{ os_majors[idx - 1] }} ]
+          {% endif %}
+
+    - name: Extract execution types for selected OS versions
+      ansible.builtin.set_fact:
+        exec_types: >-
+          {{ parsed_environments
+             | dict2items
+             | selectattr('value.os_major', 'in', selected_os_majors)
+             | map(attribute='value.env_type')
+             | unique
+             | list
+             | sort
+          }}
+
+    # PROMPT 2: EXECUTION TYPE SELECTION
+    - name: Create execution type selection prompt
+      ansible.builtin.set_fact:
+        exec_type_prompt: |
+          ==============================
+          Select Execution Type for {{ selected_os_majors | join(', ') }}:
+          {% for type in exec_types %}
+          {{ loop.index }}. {{ type }}
+          {% endfor %}
+          {{ exec_types | length + 1 }}. all
+          ==============================
+
+    - name: Prompt for execution type selection
+      ansible.builtin.pause:
+        prompt: "{{ exec_type_prompt }}"
+      register: exec_type_selection
+
+    - name: Process execution type selection
+      ansible.builtin.set_fact:
+        selected_exec_types: >-
+          {% set idx = exec_type_selection.user_input | int %}
+          {% if idx == exec_types | length + 1 %}
+          {{ exec_types }}
+          {% else %}
+          [ {{ exec_types[idx - 1] }} ]
+          {% endif %}
+
+    # PROMPT 3: CONTAINER EXECUTION TYPE SELECTION
+    - name: Extract container types for selected OS and execution types
+      ansible.builtin.set_fact:
+        container_types: >-
+          {{ parsed_environments
+             | dict2items
+             | selectattr('value.os_major', 'in', selected_os_majors)
+             | selectattr('value.env_type', 'in', selected_exec_types)
+             | map(attribute='value.container_type')
+             | unique
+             | list
+             | sort
+          }}
+
+    - name: Create container type selection prompt
+      ansible.builtin.set_fact:
+        container_type_prompt: |
+          ==============================
+          Select Container Type:
+          {% for type in container_types %}
+          {{ loop.index }}. {{ type }}
+          {% endfor %}
+          {{ container_types | length + 1 }}. all
+          ==============================
+
+    - name: Prompt for container execution type
+      ansible.builtin.pause:
+        prompt: "{{ container_type_prompt }}"
+      register: container_type_selection
+
+    - name: Process container type selection
+      ansible.builtin.set_fact:
+        selected_container_types: >-
+          {% set idx = container_type_selection.user_input | int %}
+          {% if idx == container_types | length + 1 %}
+          {{ container_types }}
+          {% else %}
+          [ {{ container_types[idx - 1] }} ]
+          {% endif %}
+
+    # PROMPT 4: VENDOR SELECTION
+    - name: Extract vendors for selected OS, execution, and container types
+      ansible.builtin.set_fact:
+        vendors: >-
+          {{ parsed_environments
+             | dict2items
+             | selectattr('value.os_major', 'in', selected_os_majors)
+             | selectattr('value.env_type', 'in', selected_exec_types)
+             | selectattr('value.container_type', 'in', selected_container_types)
+             | map(attribute='value.vendor')
+             | reject('equalto', '')
+             | unique
+             | list
+             | sort
+          }}
+
+    - name: Create vendor selection prompt
+      ansible.builtin.set_fact:
+        vendor_prompt: |
+          ==============================
+          Select Vendor:
+          {% for vendor in vendors %}
+          {{ loop.index }}. {{ vendor }}
+          {% endfor %}
+          {{ vendors | length + 1 }}. all
+          ==============================
+      when: vendors | length > 0
+
+    - name: Prompt for vendor selection
+      ansible.builtin.pause:
+        prompt: "{{ vendor_prompt }}"
+      register: vendor_selection
+      when: vendors | length > 0
+
+    - name: Process vendor selection
+      ansible.builtin.set_fact:
+        selected_vendors: >-
+          {% set idx = vendor_selection.user_input | int %}
+          {% if idx == vendors | length + 1 %}
+          {{ vendors }}
+          {% else %}
+          [ {{ vendors[idx - 1] }} ]
+          {% endif %}
+      when: vendors | length > 0
+
+    - name: Set empty vendor selection when no vendors exist
+      ansible.builtin.set_fact:
+        selected_vendors: ['']
+      when: vendors | length == 0
+
+    # FINAL ENVIRONMENT SELECTION
+    - name: Compile final environment list based on selections
+      ansible.builtin.set_fact:
+        selected_env: "{{ parsed_environments | dict2items | 
+                      selectattr('value.os_major', 'in', selected_os_majors) | 
+                      selectattr('value.env_type', 'in', selected_exec_types) | 
+                      selectattr('value.container_type', 'in', selected_container_types) |
+                      select('attr', 'value.vendor', 'in', selected_vendors) |
+                      map(attribute='key') | list }}"
+
+    - name: Display final environment selection
       ansible.builtin.debug:
         msg: |
-          Available environments:
-          {% for env in environment_list %}
-          {{ loop.index }}. {{ env }}
+          Selected environments to build:
+          {% for env in selected_env %}
+          - {{ env }}
           {% endfor %}
-
-    - name: Process user selection
-      ansible.builtin.set_fact:
-        selected_env: "{{ environment_list | selectattr('loop.index', 'in', user_selection.split(',')) | list }}"
   tags: [environment, menu]
 
 # ==================== 6. PREPARE ENVIRONMENTS ==================== #
@@ -657,4 +834,58 @@
             # 4. Validate YAML syntax
             if command -v python3 &>/dev/null; then
               if ! python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
-                echo "YAML still invalid in $file, restoring back
+                echo "YAML still invalid in $file, restoring backup"
+                cp "${file}.bak" "$file"
+              fi
+            fi
+          }
+          
+          # Main processing loop
+          for env in $@; do
+            # Find all execution-environment.yml files for the given environment
+            files=$(find "$WORKING_DIR/environments/$env" -name "execution-environment.yml")
+            
+            for file in $files; do
+              fix_file "$file"
+            done
+          done
+        mode: "0755"
+
+    - name: Run repair script
+      ansible.builtin.command:
+        cmd: "{{ working_dir }}/fix_ee_files.sh {{ selected_env | join(' ') }}"
+      register: repair_results
+      changed_when: true
+
+    - name: Display repair results
+      ansible.builtin.debug:
+        var: repair_results.stdout_lines
+      when: repair_results.changed
+
+    - name: Cleanup repair script
+      ansible.builtin.file:
+        path: "{{ working_dir }}/fix_ee_files.sh"
+        state: absent
+  tags: [fix, cleanup]
+
+- name: Final cleanup
+  block:
+    - name: Remove temporary directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/tmp/ee-containers/environments"
+        - "/tmp/ee-containers/_build"
+        - "/tmp/ee-containers/context"
+        - "/tmp/ee-containers/hooks"
+        - "/tmp/ee-containers/containerfiles"
+        - "/tmp/ee-containers/safe_requirements.yml"
+        - "/tmp/ee-containers/build.log"
+      when: cleanup_enabled | default(true)
+      tags: [cleanup]
+
+    - name: Display final message
+      ansible.builtin.debug:
+        msg: "Build and cleanup process completed successfully."
+  tags: [cleanup]

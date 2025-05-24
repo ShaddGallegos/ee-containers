@@ -5,5 +5,8 @@
     "ansible.executionEnvironment.pull.arguments": "--tls-verify=false",
     "ansible.validation.enabled": false,
     "ansible.python.interpreterPath": "/bin/python",
-    "terminal.integrated.sendKeybindingsToShell": true
+    "terminal.integrated.sendKeybindingsToShell": true,
+    "yaml.schemas": {
+        "https://raw.githubusercontent.com/ansible/ansible-lint/main/src/ansiblelint/schemas/ansible.json#/$defs/tasks": "file:///home/sgallego/Downloads/GIT/ee-containers/roles/ee-builder/tasks/build_environment.yml"
+    }
 }
