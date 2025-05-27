@@ -354,10 +354,23 @@
           {{ os_majors | length + 1 }}. all
           ==============================
 
-    - name: Prompt for OS Major selection
+    - name: Prompt for OS Major selection (with validation)
       ansible.builtin.pause:
         prompt: "{{ os_prompt }}"
       register: os_selection
+      until: >
+        os_selection.user_input | int >= 1 and
+        os_selection.user_input | int <= (os_majors | length + 1)
+      retries: 5
+      delay: 0
+      failed_when: os_selection.user_input | int < 1 or os_selection.user_input | int > (os_majors | length + 1)
+
+    - name: Validate OS Major selection
+      ansible.builtin.assert:
+        that:
+          - os_selection.user_input | int >= 1
+          - os_selection.user_input | int <= (os_majors | length + 1)
+        fail_msg: "Invalid selection. Please enter a number between 1 and {{ os_majors | length + 1 }}."
 
     - name: Process OS Major selection
       ansible.builtin.set_fact:
@@ -366,7 +379,7 @@
           {% if idx == os_majors | length + 1 %}
           {{ os_majors }}
           {% else %}
-          [ {{ os_majors[idx - 1] }} ]
+          {{ [os_majors[idx - 1]] }}
           {% endif %}
 
     - name: Extract execution types for selected OS versions
@@ -405,7 +418,7 @@
           {% if idx == exec_types | length + 1 %}
           {{ exec_types }}
           {% else %}
-          [ {{ exec_types[idx - 1] }} ]
+          {{ [exec_types[idx - 1]] }}
           {% endif %}
 
     # PROMPT 3: CONTAINER EXECUTION TYPE SELECTION
@@ -445,7 +458,7 @@
           {% if idx == container_types | length + 1 %}
           {{ container_types }}
           {% else %}
-          [ {{ container_types[idx - 1] }} ]
+          {{ [container_types[idx - 1]] }}
           {% endif %}
 
     # PROMPT 4: VENDOR SELECTION
@@ -489,7 +502,7 @@
           {% if idx == vendors | length + 1 %}
           {{ vendors }}
           {% else %}
-          [ {{ vendors[idx - 1] }} ]
+          {{ [vendors[idx - 1]] }}
           {% endif %}
       when: vendors | length > 0
 
@@ -501,12 +514,27 @@
     # FINAL ENVIRONMENT SELECTION
     - name: Compile final environment list based on selections
       ansible.builtin.set_fact:
+        selected_env: >-
+          {% set envs = parsed_environments | dict2items
+            | selectattr('value.os_major', 'in', selected_os_majors)
+            | selectattr('value.env_type', 'in', selected_exec_types)
+            | selectattr('value.container_type', 'in', selected_container_types)
+          %}
+          {% if vendors | length > 0 %}
+          {{ envs
+            | selectattr('value.vendor', 'in', selected_vendors)
+            | map(attribute='key') | list }}
+          {% else %}
+          {{ envs | map(attribute='key') | list }}
+          {% endif %}
+      ansible.builtin.set_fact:
         selected_env: "{{ parsed_environments | dict2items | 
                       selectattr('value.os_major', 'in', selected_os_majors) | 
                       selectattr('value.env_type', 'in', selected_exec_types) | 
                       selectattr('value.container_type', 'in', selected_container_types) |
                       select('attr', 'value.vendor', 'in', selected_vendors) |
                       map(attribute='key') | list }}"
+      when: vendors | length > 0
 
     - name: Display final environment selection
       ansible.builtin.debug:
@@ -840,52 +868,59 @@
             fi
           }
           
-          # Main processing loop
-          for env in $@; do
-            # Find all execution-environment.yml files for the given environment
-            files=$(find "$WORKING_DIR/environments/$env" -name "execution-environment.yml")
-            
-            for file in $files; do
-              fix_file "$file"
-            done
-          done
+          # Export fix_file function for parallel execution
+          export -f fix_file
+          
+          # 5. Find and fix all execution-environment.yml files
+          find "{{ working_dir }}" -name "execution-environment.yml" -print0 | \
+          xargs -0 -n1 -P4 bash -c 'fix_file "$@"' _
         mode: "0755"
 
     - name: Run repair script
       ansible.builtin.command:
-        cmd: "{{ working_dir }}/fix_ee_files.sh {{ selected_env | join(' ') }}"
+        cmd: "{{ working_dir }}/fix_ee_files.sh"
       register: repair_results
       changed_when: true
 
     - name: Display repair results
       ansible.builtin.debug:
         var: repair_results.stdout_lines
-      when: repair_results.changed
 
-    - name: Cleanup repair script
+    - name: Remove repair script
       ansible.builtin.file:
         path: "{{ working_dir }}/fix_ee_files.sh"
         state: absent
-  tags: [fix, cleanup]
+      when: repair_results.changed
 
-- name: Final cleanup
+- name: Final cleanup and state reset
   block:
     - name: Remove temporary directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
-        - "/tmp/ee-containers/environments"
+        - "/tmp/ee-containers"
+        - "/tmp/ansible_safe"
         - "/tmp/ee-containers/_build"
         - "/tmp/ee-containers/context"
+        - "/tmp/ee-containers/environments"
+        - "/tmp/ee-containers/collections"
         - "/tmp/ee-containers/hooks"
         - "/tmp/ee-containers/containerfiles"
-        - "/tmp/ee-containers/safe_requirements.yml"
-        - "/tmp/ee-containers/build.log"
+        - "/tmp/ee-containers/_build/configs"
+        - "/tmp/ee-containers/_build/rpms"
       when: cleanup_enabled | default(true)
-      tags: [cleanup]
+    
+    - name: Reset system state
+      ansible.builtin.command:
+        cmd: |
+          podman system prune -a -f
+          podman volume prune -f
+          podman network prune -f
+      ignore_errors: true
+      when: cleanup_enabled | default(true)
 
     - name: Display final message
       ansible.builtin.debug:
         msg: "Build and cleanup process completed successfully."
-  tags: [cleanup]
+  tags: [cleanup, final]
