@@ -17,7 +17,7 @@
 
 - name: Run ansible-builder for each environment
   ansible.builtin.command:
-    cmd: "ansible-builder build -v3 -t localhost/{{ item }}:latest -f execution-environment.yml --no-cache"
+    cmd: "ansible-builder build -v3 --prune -t localhost/{{ item }}:latest -f execution-environment.yml --no-cache"
     chdir: "{{ working_dir }}/{{ item }}"
   register: build_results
   loop: "{{ selected_env }}"

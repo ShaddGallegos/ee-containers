@@ -6,3 +6,4 @@ ansible-lint>=24.0.0
 ansible-navigator>=3.0.0
 ansible-runner>=2.3.1
 ansible-sign>=0.1.0
+jmespath
