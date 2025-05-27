@@ -1,0 +1,4 @@
+/tmp/
+/reports/
+/*.log
+./ansible.cfg

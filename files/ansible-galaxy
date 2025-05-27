@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+# ansible-galaxy-wrapper - Installs collections while skipping failures
+
+import os
+import sys
+import subprocess
+import yaml
+import re
+import tempfile
+
+def read_requirements_file(requirements_file):
+    """Read collections from requirements.yml file."""
+    try:
+        with open(requirements_file, 'r') as f:
+            data = yaml.safe_load(f)
+            if 'collections' in data:
+                return data['collections']
+            return []
+    except Exception as e:
+        print(f"Error reading requirements file: {e}")
+        return []
+
+def install_collection(collection):
+    """Install a single collection and return success status."""
+    cmd = ['ansible-galaxy', 'collection', 'install', collection, '-f']
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"✓ Successfully installed {collection}")
+            return True
+        else:
+            print(f"✗ Failed to install {collection}: {result.stderr.strip()}")
+            return False
+    except Exception as e:
+        print(f"✗ Error installing {collection}: {e}")
+        return False
+
+def main():
+    if len(sys.argv) < 3 or sys.argv[1] != 'collection' or sys.argv[2] != 'install':
+        # If not installing collections, pass through to normal ansible-galaxy
+        os.execvp('ansible-galaxy', ['ansible-galaxy'] + sys.argv[1:])
+        
+    if '-r' in sys.argv:
+        req_index = sys.argv.index('-r')
+        if req_index + 1 < len(sys.argv):
+            requirements_file = sys.argv[req_index + 1]
+            collections = read_requirements_file(requirements_file)
+            
+            success_count = 0
+            fail_count = 0
+            
+            print(f"Installing {len(collections)} collections, skipping failures...")
+            for collection in collections:
+                if install_collection(collection):
+                    success_count += 1
+                else:
+                    fail_count += 1
+            
+            print(f"\nInstallation summary:")
+            print(f"  - Successfully installed: {success_count}")
+            print(f"  - Failed to install: {fail_count}")
+            print(f"  - Total: {len(collections)}")
+            
+            # Exit with success even if some failed
+            sys.exit(0)
+    
+    # For other cases, just use the normal ansible-galaxy
+    os.execvp('ansible-galaxy', ['ansible-galaxy'] + sys.argv[1:])
+
+if __name__ == '__main__':
+    main()
